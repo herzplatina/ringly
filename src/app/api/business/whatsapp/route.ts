@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
-import twilio from "twilio";
 
 export async function POST(req: NextRequest) {
   const supabase = await createClient();
@@ -26,25 +25,9 @@ export async function POST(req: NextRequest) {
   if (!business)
     return NextResponse.json({ error: "Business not found" }, { status: 404 });
 
-  // Begin Twilio WhatsApp Business sender registration
-  try {
-    const client = twilio(
-      process.env.TWILIO_ACCOUNT_SID!,
-      process.env.TWILIO_AUTH_TOKEN!,
-    );
-    // Register the number as a WhatsApp Business sender via Twilio's Channel Endpoint API
-    await (client as any).messaging.v1.brandRegistrations.create({
-      customerProfileSid: whatsappNumber,
-      a2pProfileBundle: whatsappNumber,
-    });
-  } catch (err) {
-    // Log but don't fail — status will update via webhook when Meta processes it
-    console.warn(
-      "Twilio sender registration initiated (may already be pending):",
-      err,
-    );
-  }
-
+  // Save the WhatsApp number and mark as pending — the actual sender registration
+  // is completed out-of-band through the Twilio console. Status updates arrive
+  // via the /api/webhooks/twilio/sender-status webhook once Twilio/Meta approves.
   await supabase
     .from("businesses")
     .update({

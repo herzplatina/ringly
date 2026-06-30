@@ -48,6 +48,33 @@ export async function PUT(req: NextRequest) {
     hours_ranges: Array<{ open: string; close: string }>;
   }> = await req.json();
 
+  // Validate input
+  const HH_MM = /^\d{2}:\d{2}$/;
+  for (const h of hours) {
+    if (
+      !Number.isInteger(h.day_of_week) ||
+      h.day_of_week < 0 ||
+      h.day_of_week > 6
+    ) {
+      return NextResponse.json(
+        { error: `Invalid day_of_week: ${h.day_of_week}` },
+        { status: 400 },
+      );
+    }
+    if (!h.is_closed) {
+      for (const r of h.hours_ranges ?? []) {
+        if (!HH_MM.test(r.open) || !HH_MM.test(r.close)) {
+          return NextResponse.json(
+            {
+              error: `Invalid time format in hours_ranges (expected HH:MM): ${JSON.stringify(r)}`,
+            },
+            { status: 400 },
+          );
+        }
+      }
+    }
+  }
+
   // Upsert all 7 days atomically
   const rows = hours.map((h) => ({
     business_id: biz.id,

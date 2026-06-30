@@ -11,6 +11,12 @@ import { sendWhatsApp } from "@/lib/twilio";
 import { addHours } from "date-fns";
 import { fromZonedTime } from "date-fns-tz";
 
+// Normalize to E.164-ish digits-only for comparison (strips +, spaces, dashes).
+// Retell delivers from_number as "+14155551234"; AI-provided args may omit the "+".
+function normalizePhone(phone: string): string {
+  return phone.replace(/\D/g, "");
+}
+
 export async function POST(req: NextRequest) {
   const body = await req.text();
   const signature = req.headers.get("x-retell-signature") ?? "";
@@ -386,8 +392,12 @@ async function handleReschedule(
     return NextResponse.json({ result: "Appointment not found." });
   }
 
-  // Verify the caller owns this appointment
-  if ((appt as any).customers?.phone_number !== callerPhone) {
+  // Verify the caller owns this appointment (normalize before comparing — Retell
+  // delivers E.164 with "+", but stored numbers may lack the prefix)
+  if (
+    normalizePhone((appt as any).customers?.phone_number ?? "") !==
+    normalizePhone(callerPhone)
+  ) {
     return NextResponse.json({
       result: "You can only reschedule your own appointments.",
     });
@@ -495,8 +505,11 @@ async function handleCancel(
     return NextResponse.json({ result: "Appointment not found." });
   }
 
-  // Verify the caller owns this appointment
-  if ((appt as any).customers?.phone_number !== callerPhone) {
+  // Verify the caller owns this appointment (normalize before comparing)
+  if (
+    normalizePhone((appt as any).customers?.phone_number ?? "") !==
+    normalizePhone(callerPhone)
+  ) {
     return NextResponse.json({
       result: "You can only cancel your own appointments.",
     });

@@ -43,6 +43,14 @@ export async function PATCH(req: NextRequest) {
 
   const { id, whatsapp_consent_status } = await req.json();
 
+  const VALID_CONSENT = ["granted", "declined", "not_asked"] as const;
+  if (!VALID_CONSENT.includes(whatsapp_consent_status)) {
+    return NextResponse.json(
+      { error: "Invalid whatsapp_consent_status" },
+      { status: 400 },
+    );
+  }
+
   const { data, error } = await supabase
     .from("customers")
     .update({

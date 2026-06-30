@@ -34,7 +34,15 @@ export async function GET(req: NextRequest) {
     return errResp;
   }
 
-  const tokens = await exchangeCode(code);
+  let tokens: Awaited<ReturnType<typeof exchangeCode>>;
+  try {
+    tokens = await exchangeCode(code);
+  } catch {
+    return NextResponse.redirect(
+      new URL("/onboarding?step=5&error=code_exchange_failed", req.url),
+    );
+  }
+
   if (!tokens.refresh_token) {
     return NextResponse.redirect(
       new URL("/onboarding?step=5&error=no_refresh_token", req.url),
@@ -61,8 +69,13 @@ export async function GET(req: NextRequest) {
   );
   oauth2.setCredentials(tokens);
   const cal = google.calendar({ version: "v3", auth: oauth2 });
-  const { data: calList } = await cal.calendarList.list();
-  const primary = calList.items?.find((c) => c.primary)?.id ?? "primary";
+  let primary = "primary";
+  try {
+    const { data: calList } = await cal.calendarList.list();
+    primary = calList.items?.find((c) => c.primary)?.id ?? "primary";
+  } catch {
+    // Non-fatal: fall back to "primary" calendar ID
+  }
 
   await supabase
     .from("businesses")

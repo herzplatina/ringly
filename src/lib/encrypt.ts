@@ -26,7 +26,11 @@ export function encrypt(plaintext: string): string {
 }
 
 export function decrypt(ciphertext: string): string {
-  const [ivHex, tagHex, encryptedHex] = ciphertext.split(":");
+  const parts = ciphertext.split(":");
+  if (parts.length !== 3) {
+    throw new Error("decrypt: malformed ciphertext (expected iv:tag:data)");
+  }
+  const [ivHex, tagHex, encryptedHex] = parts;
   const iv = Buffer.from(ivHex, "hex");
   const tag = Buffer.from(tagHex, "hex");
   const encrypted = Buffer.from(encryptedHex, "hex");

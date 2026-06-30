@@ -50,13 +50,30 @@ export async function POST(req: NextRequest) {
     await bindAgentToNumber(business.retell_phone_number, agent.agent_id);
   }
 
-  await db
+  const { error: updateError } = await db
     .from("businesses")
     .update({
       retell_agent_id: agent.agent_id,
       retell_llm_id: llm.llm_id,
     })
     .eq("id", businessId);
+
+  if (updateError) {
+    // IDs were created in Retell but not persisted — log them so ops can clean up
+    console.error("provision: DB update failed after Retell creation", {
+      businessId,
+      llm_id: llm.llm_id,
+      agent_id: agent.agent_id,
+      error: updateError.message,
+    });
+    return NextResponse.json(
+      {
+        error:
+          "Provisioning succeeded in Retell but failed to save. Please retry.",
+      },
+      { status: 500 },
+    );
+  }
 
   return NextResponse.json({ ok: true, agent_id: agent.agent_id });
 }

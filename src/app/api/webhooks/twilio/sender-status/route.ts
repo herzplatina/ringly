@@ -20,24 +20,20 @@ export async function POST(req: NextRequest) {
   }
 
   const formData = new URLSearchParams(rawBody);
-  const status = String(formData.get("ChannelEndpointSid") ?? "");
+  // Twilio sends the approval status in the "Status" field (values: "approved", "rejected", etc.)
+  const statusValue = (formData.get("Status") ?? "").toLowerCase();
   const whatsappNumber = String(formData.get("PhoneNumber") ?? "");
-  const accountStatus = String(
-    formData.get("ChannelRegistrationSid") ?? "pending",
-  );
+
+  if (!whatsappNumber) {
+    return NextResponse.json({ error: "Missing PhoneNumber" }, { status: 400 });
+  }
 
   // Map Twilio status values to our schema
   let senderStatus: "pending_verification" | "approved" | "rejected" =
     "pending_verification";
-  if (
-    accountStatus.toLowerCase().includes("approved") ||
-    status.toLowerCase().includes("approved")
-  ) {
+  if (statusValue === "approved") {
     senderStatus = "approved";
-  } else if (
-    accountStatus.toLowerCase().includes("rejected") ||
-    status.toLowerCase().includes("rejected")
-  ) {
+  } else if (statusValue === "rejected" || statusValue === "failed") {
     senderStatus = "rejected";
   }
 

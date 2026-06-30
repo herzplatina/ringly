@@ -247,6 +247,12 @@ function OnboardingContent() {
 
   async function handleStep6() {
     if (!whatsappNumber.trim()) {
+      // Skip — persist the step advance so a page reload doesn't loop back
+      await fetch("/api/business", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ onboarding_step: 7 }),
+      });
       setStep(6);
       return;
     }

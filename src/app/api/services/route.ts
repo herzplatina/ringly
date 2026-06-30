@@ -61,6 +61,23 @@ export async function POST(req: NextRequest) {
   return NextResponse.json(data);
 }
 
+const SERVICE_MUTABLE_FIELDS = [
+  "name",
+  "description",
+  "price_cents",
+  "duration_minutes",
+  "active",
+] as const;
+type ServiceMutableField = (typeof SERVICE_MUTABLE_FIELDS)[number];
+
+function pickServiceFields(
+  body: Record<string, unknown>,
+): Partial<Record<ServiceMutableField, unknown>> {
+  return Object.fromEntries(
+    SERVICE_MUTABLE_FIELDS.filter((k) => k in body).map((k) => [k, body[k]]),
+  ) as Partial<Record<ServiceMutableField, unknown>>;
+}
+
 export async function PATCH(req: NextRequest) {
   const supabase = await createClient();
   const {
@@ -73,7 +90,9 @@ export async function PATCH(req: NextRequest) {
   if (!biz)
     return NextResponse.json({ error: "No business found" }, { status: 404 });
 
-  const { id, ...updates } = await req.json();
+  const body = await req.json();
+  const { id } = body;
+  const updates = pickServiceFields(body);
   const { data, error } = await supabase
     .from("services")
     .update(updates)
