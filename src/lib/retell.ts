@@ -1,5 +1,5 @@
 import "server-only";
-import crypto from "crypto";
+import { Retell } from "retell-sdk";
 import { env } from "./env";
 import { DAY_NAMES } from "./utils";
 import { createServiceClient } from "@/lib/supabase/server";
@@ -94,20 +94,15 @@ export async function getCall(retellCallId: string) {
   return retellFetch(`/get-call/${retellCallId}`);
 }
 
+// Delegate to the Retell SDK's official verifier (retell-sdk@5.9.0) so the
+// signing scheme stays correct if Retell changes it. Per their docs, the
+// x-retell-signature header is verified against the Retell API key (the key
+// with the webhook badge) — there is no separate webhook secret.
 export function verifyRetellSignature(
   body: string,
   signature: string,
-): boolean {
-  const secret = env.RETELL_WEBHOOK_SECRET;
-  const expected = crypto
-    .createHmac("sha256", secret)
-    .update(body)
-    .digest("hex");
-  const a = Buffer.from(expected);
-  const b = Buffer.from(signature);
-  // timingSafeEqual throws if lengths differ — guard first
-  if (a.length !== b.length) return false;
-  return crypto.timingSafeEqual(a, b);
+): Promise<boolean> {
+  return Retell.verify(body, env.RETELL_API_KEY, signature);
 }
 
 export function buildAgentPrompt(business: {

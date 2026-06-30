@@ -2,12 +2,22 @@
 jest.mock("@/lib/env", () => ({
   env: {
     RETELL_API_KEY: "test",
-    RETELL_WEBHOOK_SECRET: "test-secret",
     NEXT_PUBLIC_APP_URL: "http://localhost:3000",
   },
 }));
 
-import { buildAgentPrompt } from "@/lib/retell";
+import crypto from "crypto";
+import { buildAgentPrompt, verifyRetellSignature } from "@/lib/retell";
+
+// Build a signature the way Retell does: HMAC-SHA256(body + timestamp, apiKey),
+// header format "v={timestampMs},d={hexDigest}".
+function sign(body: string, timestampMs: number, apiKey = "test"): string {
+  const digest = crypto
+    .createHmac("sha256", apiKey)
+    .update(body + String(timestampMs))
+    .digest("hex");
+  return `v=${timestampMs},d=${digest}`;
+}
 
 const BASE_BIZ = {
   name: "Glamour Studio",
@@ -91,5 +101,45 @@ describe("buildAgentPrompt", () => {
   test("instructs not to re-ask consent if already on file", () => {
     const prompt = buildAgentPrompt(BASE_BIZ);
     expect(prompt).toContain("Do NOT ask again if consent is already on file");
+  });
+});
+
+describe("verifyRetellSignature", () => {
+  const body = '{"event":"call_ended","call_id":"abc"}';
+
+  test("accepts a correctly signed, fresh payload", async () => {
+    const now = Date.now();
+    await expect(verifyRetellSignature(body, sign(body, now))).resolves.toBe(
+      true,
+    );
+  });
+
+  test("rejects when the body has been tampered with", async () => {
+    const now = Date.now();
+    const sig = sign(body, now);
+    await expect(verifyRetellSignature(body + "tampered", sig)).resolves.toBe(
+      false,
+    );
+  });
+
+  test("rejects a signature made with the wrong key", async () => {
+    const now = Date.now();
+    await expect(
+      verifyRetellSignature(body, sign(body, now, "wrong-key")),
+    ).resolves.toBe(false);
+  });
+
+  test("rejects a stale timestamp (replay) beyond the 5-minute window", async () => {
+    const stale = Date.now() - 6 * 60 * 1000;
+    await expect(verifyRetellSignature(body, sign(body, stale))).resolves.toBe(
+      false,
+    );
+  });
+
+  test("rejects a malformed signature header", async () => {
+    await expect(
+      verifyRetellSignature(body, "not-a-valid-header"),
+    ).resolves.toBe(false);
+    await expect(verifyRetellSignature(body, "")).resolves.toBe(false);
   });
 });
