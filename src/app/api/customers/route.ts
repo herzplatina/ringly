@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import { WHATSAPP_CONSENT_STATUSES } from "@/types";
 
 export async function GET(req: NextRequest) {
   const supabase = await createClient();
@@ -43,8 +44,7 @@ export async function PATCH(req: NextRequest) {
 
   const { id, whatsapp_consent_status } = await req.json();
 
-  const VALID_CONSENT = ["granted", "declined", "not_asked"] as const;
-  if (!VALID_CONSENT.includes(whatsapp_consent_status)) {
+  if (!WHATSAPP_CONSENT_STATUSES.includes(whatsapp_consent_status)) {
     return NextResponse.json(
       { error: "Invalid whatsapp_consent_status" },
       { status: 400 },

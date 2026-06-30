@@ -10,12 +10,7 @@ import {
 import { sendWhatsApp } from "@/lib/twilio";
 import { addHours } from "date-fns";
 import { fromZonedTime } from "date-fns-tz";
-
-// Normalize to E.164-ish digits-only for comparison (strips +, spaces, dashes).
-// Retell delivers from_number as "+14155551234"; AI-provided args may omit the "+".
-function normalizePhone(phone: string): string {
-  return phone.replace(/\D/g, "");
-}
+import { normalizePhone } from "@/lib/utils";
 
 export async function POST(req: NextRequest) {
   const body = await req.text();
@@ -150,7 +145,7 @@ async function handleRecordConsent(
   args: Record<string, unknown>,
   callId: string,
 ) {
-  const phoneNumber = String(args.phone_number ?? "");
+  const phoneNumber = normalizePhone(String(args.phone_number ?? ""));
   const consent = args.consent; // true / false / "yes" / "no"
   const granted =
     consent === true || consent === "yes" || consent === "granted";
@@ -188,7 +183,7 @@ async function handleBookAppointment(
   callId: string,
 ) {
   const customerName = String(args.customer_name ?? "");
-  const phoneNumber = String(args.phone_number ?? "");
+  const phoneNumber = normalizePhone(String(args.phone_number ?? ""));
   const serviceId = String(args.service_id ?? "");
   const startsAt = String(args.starts_at ?? "");
 

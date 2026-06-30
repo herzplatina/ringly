@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { syncRetellPrompt } from "@/lib/retell";
+import { pickAllowed } from "@/lib/utils";
 
 async function getBusinessId(
   supabase: Awaited<ReturnType<typeof createClient>>,
@@ -68,15 +69,6 @@ const SERVICE_MUTABLE_FIELDS = [
   "duration_minutes",
   "active",
 ] as const;
-type ServiceMutableField = (typeof SERVICE_MUTABLE_FIELDS)[number];
-
-function pickServiceFields(
-  body: Record<string, unknown>,
-): Partial<Record<ServiceMutableField, unknown>> {
-  return Object.fromEntries(
-    SERVICE_MUTABLE_FIELDS.filter((k) => k in body).map((k) => [k, body[k]]),
-  ) as Partial<Record<ServiceMutableField, unknown>>;
-}
 
 export async function PATCH(req: NextRequest) {
   const supabase = await createClient();
@@ -92,7 +84,7 @@ export async function PATCH(req: NextRequest) {
 
   const body = await req.json();
   const { id } = body;
-  const updates = pickServiceFields(body);
+  const updates = pickAllowed(SERVICE_MUTABLE_FIELDS, body);
   const { data, error } = await supabase
     .from("services")
     .update(updates)

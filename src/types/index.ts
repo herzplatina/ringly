@@ -1,7 +1,12 @@
 export type BusinessType = "salon" | "clinic" | "tax_office" | "other";
 export type WhatsappSenderStatus =
   "not_started" | "pending_verification" | "approved" | "rejected";
-export type WhatsappConsentStatus = "not_asked" | "granted" | "declined";
+export const WHATSAPP_CONSENT_STATUSES = [
+  "not_asked",
+  "granted",
+  "declined",
+] as const;
+export type WhatsappConsentStatus = (typeof WHATSAPP_CONSENT_STATUSES)[number];
 export type AppointmentStatus =
   "booked" | "rescheduled" | "cancelled" | "completed" | "no_show";
 export type ReminderStatus = "pending" | "sent" | "cancelled" | "failed";

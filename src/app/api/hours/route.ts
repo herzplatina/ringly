@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { syncRetellPrompt } from "@/lib/retell";
 
+const HH_MM = /^\d{2}:\d{2}$/;
+
 export async function GET(req: NextRequest) {
   const supabase = await createClient();
   const {
@@ -49,7 +51,6 @@ export async function PUT(req: NextRequest) {
   }> = await req.json();
 
   // Validate input
-  const HH_MM = /^\d{2}:\d{2}$/;
   for (const h of hours) {
     if (
       !Number.isInteger(h.day_of_week) ||
