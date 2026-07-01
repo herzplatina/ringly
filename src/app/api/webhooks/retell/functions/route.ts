@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServiceClient } from "@/lib/supabase/server";
-import { verifyRetellSignature } from "@/lib/retell";
+import { verifyRetellSignature, parseRetellCall } from "@/lib/retell";
 import { computeAvailableSlots, formatSlotForSpeech } from "@/lib/availability";
 import {
   createCalendarEvent,
@@ -21,11 +21,10 @@ export async function POST(req: NextRequest) {
   }
 
   const payload = JSON.parse(body);
-  const functionName: string = payload.function_name ?? payload.name ?? "";
-  const args: Record<string, unknown> = payload.arguments ?? payload.args ?? {};
-  const callId: string = payload.call_id ?? "";
-  const toNumber: string = payload.to_number ?? "";
-  const fromNumber: string = payload.from_number ?? "";
+  // Retell custom-function body: { name, call: {...}, args }
+  const functionName: string = payload.name ?? payload.function_name ?? "";
+  const args: Record<string, unknown> = payload.args ?? payload.arguments ?? {};
+  const { callId, toNumber, fromNumber } = parseRetellCall(payload);
 
   const db = createServiceClient();
 

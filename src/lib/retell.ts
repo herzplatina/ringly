@@ -38,9 +38,129 @@ export async function createAgent(llmId: string, businessName: string) {
       response_engine: { type: "retell-llm", llm_id: llmId },
       voice_id: "eleven_turbo_v2",
       language: "en-US",
-      webhook_url: `${env.NEXT_PUBLIC_APP_URL}/api/webhooks/retell/functions`,
+      // Agent-level webhook receives call lifecycle events (call_started /
+      // call_ended / call_analyzed → transcript). In-call function execution is
+      // wired per-tool below, so this must point at the post-call route.
+      webhook_url: `${env.NEXT_PUBLIC_APP_URL}/api/webhooks/retell/post-call`,
     }),
   });
+}
+
+// Every booking action the agent can invoke mid-call. Retell POSTs the parsed
+// arguments to `url` (signed with x-retell-signature); the function route
+// dispatches on `name`. Names + parameters must match the switch in
+// src/app/api/webhooks/retell/functions/route.ts exactly.
+function bookingTool(
+  name: string,
+  description: string,
+  properties: Record<string, { type: string; description: string }>,
+  required: string[],
+) {
+  return {
+    type: "custom",
+    name,
+    description,
+    url: `${env.NEXT_PUBLIC_APP_URL}/api/webhooks/retell/functions`,
+    speak_during_execution: true,
+    speak_after_execution: true,
+    parameters: { type: "object", properties, required },
+  };
+}
+
+function bookingTools() {
+  return [
+    bookingTool(
+      "check_availability",
+      "Find open appointment slots for a service on a given date. Call this before booking so you can offer real times.",
+      {
+        date: {
+          type: "string",
+          description: "The date to check, as YYYY-MM-DD.",
+        },
+        service_id: {
+          type: "string",
+          description: "The id of the service the customer wants.",
+        },
+      },
+      ["date", "service_id"],
+    ),
+    bookingTool(
+      "record_whatsapp_consent",
+      "Record whether the customer agrees to receive WhatsApp confirmations and reminders. Ask for consent before booking.",
+      {
+        phone_number: {
+          type: "string",
+          description: "The customer's phone number in E.164 format.",
+        },
+        consent: {
+          type: "boolean",
+          description: "true if the customer agreed, false if they declined.",
+        },
+      },
+      ["phone_number", "consent"],
+    ),
+    bookingTool(
+      "book_appointment",
+      "Book a new appointment. Use the exact starts_at value returned by check_availability.",
+      {
+        customer_name: {
+          type: "string",
+          description: "The customer's full name.",
+        },
+        phone_number: {
+          type: "string",
+          description: "The customer's phone number in E.164 format.",
+        },
+        service_id: {
+          type: "string",
+          description: "The id of the service being booked.",
+        },
+        starts_at: {
+          type: "string",
+          description: "Appointment start time as an ISO 8601 timestamp.",
+        },
+      },
+      ["customer_name", "phone_number", "service_id", "starts_at"],
+    ),
+    bookingTool(
+      "reschedule_appointment",
+      "Move an existing appointment to a new time. The caller may only reschedule their own appointments.",
+      {
+        appointment_id: {
+          type: "string",
+          description:
+            "The id of the appointment to move (from get_customer_appointments).",
+        },
+        new_starts_at: {
+          type: "string",
+          description: "The new start time as an ISO 8601 timestamp.",
+        },
+      },
+      ["appointment_id", "new_starts_at"],
+    ),
+    bookingTool(
+      "cancel_appointment",
+      "Cancel an existing appointment. The caller may only cancel their own appointments.",
+      {
+        appointment_id: {
+          type: "string",
+          description: "The id of the appointment to cancel.",
+        },
+      },
+      ["appointment_id"],
+    ),
+    bookingTool(
+      "get_customer_appointments",
+      "Look up a customer's upcoming appointments by phone number. Use before rescheduling or cancelling to get the appointment_id.",
+      {
+        phone_number: {
+          type: "string",
+          description: "The customer's phone number in E.164 format.",
+        },
+      },
+      ["phone_number"],
+    ),
+  ];
 }
 
 export async function createRetellLLM(systemPrompt: string) {
@@ -50,6 +170,7 @@ export async function createRetellLLM(systemPrompt: string) {
       model: "gpt-4o",
       general_prompt: systemPrompt,
       general_tools: [
+        ...bookingTools(),
         {
           type: "end_call",
           name: "end_call",
@@ -103,6 +224,28 @@ export function verifyRetellSignature(
   signature: string,
 ): Promise<boolean> {
   return Retell.verify(body, env.RETELL_API_KEY, signature);
+}
+
+// Retell nests call metadata differently per webhook type: custom-function and
+// call-event bodies carry it under `call`, the inbound webhook under
+// `call_inbound`. Normalize to a flat shape (with a top-level fallback so unit
+// tests and any future flat payloads keep working).
+export function parseRetellCall(
+  payload: {
+    call?: { call_id?: string; from_number?: string; to_number?: string };
+    call_inbound?: { from_number?: string; to_number?: string };
+    call_id?: string;
+    from_number?: string;
+    to_number?: string;
+  } & Record<string, unknown>,
+): { callId: string; fromNumber: string; toNumber: string } {
+  const { call, call_inbound: inbound } = payload;
+  return {
+    callId: call?.call_id ?? payload.call_id ?? "",
+    fromNumber:
+      call?.from_number ?? inbound?.from_number ?? payload.from_number ?? "",
+    toNumber: call?.to_number ?? inbound?.to_number ?? payload.to_number ?? "",
+  };
 }
 
 export function buildAgentPrompt(business: {

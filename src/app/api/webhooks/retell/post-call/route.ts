@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServiceClient } from "@/lib/supabase/server";
-import { verifyRetellSignature } from "@/lib/retell";
+import { verifyRetellSignature, parseRetellCall } from "@/lib/retell";
 import { normalizePhone } from "@/lib/utils";
 
 // Order matters: rescheduled must come before booked because "rescheduled" contains "scheduled"
@@ -31,10 +31,20 @@ export async function POST(req: NextRequest) {
   }
 
   const payload = JSON.parse(body);
-  const retellCallId: string = payload.call_id ?? "";
-  const fromNumber: string = payload.from_number ?? "";
-  const toNumber: string = payload.to_number ?? "";
-  const transcript: string = payload.transcript ?? "";
+  // Retell sends call_started, call_ended, and call_analyzed for every call.
+  // Only the terminal events carry a transcript worth recording; skip the rest.
+  if (payload.event !== "call_ended" && payload.event !== "call_analyzed") {
+    return NextResponse.json({ ok: true });
+  }
+
+  // Call-event body: { event, call: { call_id, from_number, to_number, transcript } }
+  const {
+    callId: retellCallId,
+    fromNumber,
+    toNumber,
+  } = parseRetellCall(payload);
+  const transcript: string =
+    payload.call?.transcript ?? payload.transcript ?? "";
 
   const db = createServiceClient();
 

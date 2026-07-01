@@ -247,13 +247,25 @@ function OnboardingContent() {
 
   async function handleStep6() {
     if (!whatsappNumber.trim()) {
-      // Skip — persist the step advance so a page reload doesn't loop back
-      await fetch("/api/business", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ onboarding_step: 7 }),
-      });
-      setStep(6);
+      // Skip WhatsApp. Persist the advance so a reload doesn't loop back, and
+      // only move the UI forward if that write actually succeeded. Note the
+      // indexing: `step` is 0-indexed while `onboarding_step` is 1-indexed, so
+      // step 6 corresponds to onboarding_step 7 (see the loader's step = n - 1).
+      setLoading(true);
+      setError("");
+      try {
+        const res = await fetch("/api/business", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ onboarding_step: 7 }),
+        });
+        if (!res.ok) throw new Error("Failed to save progress");
+        setStep(6);
+      } catch (e: unknown) {
+        setError(e instanceof Error ? e.message : "Error saving progress");
+      } finally {
+        setLoading(false);
+      }
       return;
     }
     setLoading(true);

@@ -28,13 +28,21 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Missing PhoneNumber" }, { status: 400 });
   }
 
-  // Map Twilio status values to our schema
-  let senderStatus: "pending_verification" | "approved" | "rejected" =
-    "pending_verification";
+  // Map Twilio status values to our schema. Only terminal states are actionable;
+  // for any unknown or intermediate value (e.g. "pending", "verifying") we skip
+  // the write rather than clobbering an already-approved sender back to pending.
+  let senderStatus: "approved" | "rejected" | null = null;
   if (statusValue === "approved") {
     senderStatus = "approved";
   } else if (statusValue === "rejected" || statusValue === "failed") {
     senderStatus = "rejected";
+  }
+
+  if (senderStatus === null) {
+    console.warn(
+      `Twilio sender-status: unhandled Status "${statusValue}" for ${whatsappNumber}`,
+    );
+    return NextResponse.json({ ok: true });
   }
 
   const db = createServiceClient();

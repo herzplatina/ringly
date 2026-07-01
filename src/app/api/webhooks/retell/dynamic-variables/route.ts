@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServiceClient } from "@/lib/supabase/server";
-import { verifyRetellSignature } from "@/lib/retell";
+import { verifyRetellSignature, parseRetellCall } from "@/lib/retell";
 import { format } from "date-fns";
 import { toZonedTime } from "date-fns-tz";
 
@@ -13,8 +13,8 @@ export async function POST(req: NextRequest) {
   }
 
   const payload = JSON.parse(body);
-  const fromNumber: string = payload.from_number ?? "";
-  const toNumber: string = payload.to_number ?? "";
+  // Inbound webhook body: { event: "call_inbound", call_inbound: { from_number, to_number } }
+  const { fromNumber, toNumber } = parseRetellCall(payload);
 
   const db = createServiceClient();
 
@@ -26,7 +26,7 @@ export async function POST(req: NextRequest) {
     .single();
 
   if (!business) {
-    return NextResponse.json({});
+    return dynamicVariables({});
   }
 
   // Look up customer by phone number scoped to this business
@@ -38,7 +38,7 @@ export async function POST(req: NextRequest) {
     .single();
 
   if (!customer) {
-    return NextResponse.json({ is_new_customer: true });
+    return dynamicVariables({ is_new_customer: "true" });
   }
 
   const [{ data: nextAppt }, { data: lastAppt }] = await Promise.all([
@@ -81,5 +81,10 @@ export async function POST(req: NextRequest) {
     variables.last_service = (lastAppt as any).services?.name ?? "";
   }
 
-  return NextResponse.json(variables);
+  return dynamicVariables(variables);
+}
+
+// Retell's inbound webhook requires dynamic variables nested under call_inbound.
+function dynamicVariables(vars: Record<string, string>) {
+  return NextResponse.json({ call_inbound: { dynamic_variables: vars } });
 }

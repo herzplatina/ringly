@@ -4,6 +4,14 @@ import { syncRetellPrompt } from "@/lib/retell";
 
 const HH_MM = /^\d{2}:\d{2}$/;
 
+// Parse an HH:MM string to minutes-since-midnight, or null if the components
+// are out of range (the regex alone would accept "99:99").
+function toMinutes(hhmm: string): number | null {
+  const [h, m] = hhmm.split(":").map(Number);
+  if (h > 23 || m > 59) return null;
+  return h * 60 + m;
+}
+
 export async function GET(req: NextRequest) {
   const supabase = await createClient();
   const {
@@ -68,6 +76,24 @@ export async function PUT(req: NextRequest) {
           return NextResponse.json(
             {
               error: `Invalid time format in hours_ranges (expected HH:MM): ${JSON.stringify(r)}`,
+            },
+            { status: 400 },
+          );
+        }
+        const openMin = toMinutes(r.open);
+        const closeMin = toMinutes(r.close);
+        if (openMin === null || closeMin === null) {
+          return NextResponse.json(
+            {
+              error: `Time out of range in hours_ranges: ${JSON.stringify(r)}`,
+            },
+            { status: 400 },
+          );
+        }
+        if (openMin >= closeMin) {
+          return NextResponse.json(
+            {
+              error: `Open time must be before close time: ${JSON.stringify(r)}`,
             },
             { status: 400 },
           );

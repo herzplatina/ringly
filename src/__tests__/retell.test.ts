@@ -7,7 +7,11 @@ jest.mock("@/lib/env", () => ({
 }));
 
 import crypto from "crypto";
-import { buildAgentPrompt, verifyRetellSignature } from "@/lib/retell";
+import {
+  buildAgentPrompt,
+  verifyRetellSignature,
+  parseRetellCall,
+} from "@/lib/retell";
 
 // Build a signature the way Retell does: HMAC-SHA256(body + timestamp, apiKey),
 // header format "v={timestampMs},d={hexDigest}".
@@ -141,5 +145,56 @@ describe("verifyRetellSignature", () => {
       verifyRetellSignature(body, "not-a-valid-header"),
     ).resolves.toBe(false);
     await expect(verifyRetellSignature(body, "")).resolves.toBe(false);
+  });
+});
+
+describe("parseRetellCall", () => {
+  test("reads a custom-function / call-event payload (nested under call)", () => {
+    expect(
+      parseRetellCall({
+        name: "book_appointment",
+        call: {
+          call_id: "call_123",
+          from_number: "+14155550001",
+          to_number: "+14155550002",
+        },
+        args: {},
+      }),
+    ).toEqual({
+      callId: "call_123",
+      fromNumber: "+14155550001",
+      toNumber: "+14155550002",
+    });
+  });
+
+  test("reads an inbound-webhook payload (nested under call_inbound)", () => {
+    expect(
+      parseRetellCall({
+        event: "call_inbound",
+        call_inbound: {
+          from_number: "+14155550001",
+          to_number: "+14155550002",
+        },
+      }),
+    ).toEqual({
+      callId: "",
+      fromNumber: "+14155550001",
+      toNumber: "+14155550002",
+    });
+  });
+
+  test("falls back to top-level fields and empty strings", () => {
+    expect(
+      parseRetellCall({
+        call_id: "flat",
+        from_number: "+1",
+        to_number: "+2",
+      }),
+    ).toEqual({ callId: "flat", fromNumber: "+1", toNumber: "+2" });
+    expect(parseRetellCall({})).toEqual({
+      callId: "",
+      fromNumber: "",
+      toNumber: "",
+    });
   });
 });
