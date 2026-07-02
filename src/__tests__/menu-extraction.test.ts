@@ -1,4 +1,9 @@
-import { capServices, htmlToText } from "@/lib/menu-extraction";
+import {
+  capServices,
+  htmlToText,
+  fetchWebsiteText,
+  extractServicesFromUrl,
+} from "@/lib/menu-extraction";
 
 const svc = (name: string) => ({
   name,
@@ -37,5 +42,52 @@ describe("htmlToText", () => {
     expect(text).not.toContain("alert");
     expect(text).not.toContain("color:red");
     expect(text).not.toMatch(/<[^>]+>/);
+  });
+});
+
+describe("fetchWebsiteText (bounded crawl)", () => {
+  const realFetch = global.fetch;
+  afterEach(() => {
+    global.fetch = realFetch;
+  });
+
+  test("returns extracted text on a successful fetch", async () => {
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      text: async () => "<h1>Haircut $45</h1>",
+    }) as unknown as typeof fetch;
+    expect(await fetchWebsiteText("https://x.example")).toContain(
+      "Haircut $45",
+    );
+  });
+
+  test("returns '' on a non-OK response", async () => {
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: false,
+      text: async () => "nope",
+    }) as unknown as typeof fetch;
+    expect(await fetchWebsiteText("https://x.example")).toBe("");
+  });
+
+  test("returns '' when the fetch aborts/times out (rejects)", async () => {
+    global.fetch = jest
+      .fn()
+      .mockRejectedValue(new Error("aborted")) as unknown as typeof fetch;
+    expect(await fetchWebsiteText("https://x.example")).toBe("");
+  });
+});
+
+describe("extractServicesFromUrl", () => {
+  const realFetch = global.fetch;
+  afterEach(() => {
+    global.fetch = realFetch;
+  });
+
+  test("returns [] without calling the model when the site yields no text", async () => {
+    global.fetch = jest
+      .fn()
+      .mockRejectedValue(new Error("timeout")) as unknown as typeof fetch;
+    // No ANTHROPIC key / network needed — empty text short-circuits.
+    expect(await extractServicesFromUrl("https://x.example")).toEqual([]);
   });
 });
