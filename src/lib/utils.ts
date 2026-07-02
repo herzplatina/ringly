@@ -33,6 +33,17 @@ export function normalizePhone(phone: string): string {
   return phone.replace(/\D/g, "");
 }
 
+/**
+ * True only if both phone numbers are non-empty and equal once normalized to
+ * digits. Empty/whitespace/no-digit inputs never match (so a missing owner or
+ * caller number can't be mistaken for a self-call).
+ */
+export function phonesMatch(a: string, b: string): boolean {
+  const na = normalizePhone(a);
+  const nb = normalizePhone(b);
+  return na.length > 0 && na === nb;
+}
+
 /** Filter a request body to only the listed allowed keys. */
 export function pickAllowed<T extends string>(
   fields: readonly T[],

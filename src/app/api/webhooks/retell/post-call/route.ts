@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServiceClient } from "@/lib/supabase/server";
 import { verifyRetellSignature, parseRetellCall } from "@/lib/retell";
-import { normalizePhone } from "@/lib/utils";
+import { phonesMatch } from "@/lib/utils";
 
 // Order matters: rescheduled must come before booked because "rescheduled" contains "scheduled"
 const OUTCOME_PRIORITY: Array<[string, string[]]> = [
@@ -61,9 +61,7 @@ export async function POST(req: NextRequest) {
     business.owner_user_id,
   );
   const ownerPhone = owner?.user?.phone ?? "";
-  const isTestCall = ownerPhone
-    ? normalizePhone(fromNumber).includes(normalizePhone(ownerPhone))
-    : false;
+  const isTestCall = phonesMatch(fromNumber, ownerPhone);
 
   const outcome = deriveOutcome(transcript);
 
