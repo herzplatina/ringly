@@ -19,9 +19,11 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: "npm run dev",
+    // E2E_TEST=true activates the proxy.ts auth bypass so mocked pages render
+    // (never active in production — guarded by NODE_ENV in proxy.ts).
+    command: "E2E_TEST=true npm run dev",
     url: "http://localhost:3000",
-    reuseExistingServer: true,
-    timeout: 30000,
+    reuseExistingServer: false,
+    timeout: 60000,
   },
 });

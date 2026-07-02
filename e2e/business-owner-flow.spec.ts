@@ -1161,10 +1161,10 @@ test.describe("F3.8 — Navigation and UX", () => {
     await expect(page).toHaveTitle(/Ringly|Ringly AI/i);
   });
 
-  test("root / redirects to login when unauthenticated", async ({ page }) => {
+  test("root / shows the conversational intake (v2)", async ({ page }) => {
     await page.goto("/");
-    // Should end up at login
-    expect(page.url()).toContain("/login");
+    // v2: the public intake screen, not a login redirect.
+    await expect(page.getByLabel("Business name and address")).toBeVisible();
   });
 
   test("dashboard links navigate to correct pages", async ({ page }) => {

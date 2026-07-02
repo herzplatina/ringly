@@ -96,11 +96,15 @@ export function mapOpeningHours(
 }
 
 async function placesFetch(path: string, init: RequestInit, fieldMask: string) {
+  const apiKey = env.GOOGLE_MAPS_API_KEY;
+  if (!apiKey) {
+    throw new Error("GOOGLE_MAPS_API_KEY is not configured");
+  }
   const res = await fetch(`${PLACES_BASE}${path}`, {
     ...init,
     headers: {
       "Content-Type": "application/json",
-      "X-Goog-Api-Key": env.GOOGLE_MAPS_API_KEY,
+      "X-Goog-Api-Key": apiKey,
       "X-Goog-FieldMask": fieldMask,
       ...(init.headers ?? {}),
     },
