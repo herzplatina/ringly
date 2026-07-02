@@ -1,95 +1,47 @@
 import { NextRequest, NextResponse } from "next/server";
-import { exchangeCode } from "@/lib/google-calendar";
-import { createClient } from "@/lib/supabase/server";
-import { google } from "googleapis";
+import { createClient, createServiceClient } from "@/lib/supabase/server";
 import { encrypt } from "@/lib/encrypt";
-import { env } from "@/lib/env";
 
+// Google is Ringly's identity provider. Supabase runs the OAuth (PKCE); this
+// callback exchanges the code for a session and captures the offline
+// provider_refresh_token so we can call Google Calendar server-side later.
 export async function GET(req: NextRequest) {
   const code = req.nextUrl.searchParams.get("code");
-  const returnedState = req.nextUrl.searchParams.get("state") ?? "";
-
+  const origin = req.nextUrl.origin;
   if (!code) {
-    return NextResponse.redirect(
-      new URL("/onboarding?step=5&error=no_code", req.url),
-    );
+    return NextResponse.redirect(new URL("/login?error=no_code", origin));
   }
 
-  // Verify session BEFORE consuming the one-time authorization code
   const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) {
-    return NextResponse.redirect(new URL("/login", req.url));
+  const { data, error } = await supabase.auth.exchangeCodeForSession(code);
+  if (error || !data.session) {
+    return NextResponse.redirect(new URL("/login?error=exchange", origin));
   }
 
-  // Verify CSRF state cookie
-  const storedState = req.cookies.get("google_oauth_state")?.value ?? "";
-  if (!storedState || storedState !== returnedState) {
-    const errResp = NextResponse.redirect(
-      new URL("/onboarding?step=5&error=csrf_mismatch", req.url),
-    );
-    errResp.cookies.delete("google_oauth_state");
-    return errResp;
+  // provider_refresh_token is only present on first consent (prompt=consent).
+  // Stash it (encrypted) in the user's server-only app_metadata; claim will move
+  // it onto the business row for calendar sync.
+  const refreshToken = data.session.provider_refresh_token;
+  if (refreshToken) {
+    try {
+      const admin = createServiceClient();
+      await admin.auth.admin.updateUserById(data.session.user.id, {
+        app_metadata: { google_refresh_token_enc: encrypt(refreshToken) },
+      });
+    } catch (e) {
+      console.error("callback: failed to persist refresh token", e);
+    }
   }
 
-  let tokens: Awaited<ReturnType<typeof exchangeCode>>;
-  try {
-    tokens = await exchangeCode(code);
-  } catch {
-    return NextResponse.redirect(
-      new URL("/onboarding?step=5&error=code_exchange_failed", req.url),
-    );
-  }
-
-  if (!tokens.refresh_token) {
-    return NextResponse.redirect(
-      new URL("/onboarding?step=5&error=no_refresh_token", req.url),
-    );
-  }
-
-  const { data: business } = await supabase
+  // Returning owner (already has a business) → dashboard; new owner → finish.
+  const admin = createServiceClient();
+  const { data: biz } = await admin
     .from("businesses")
     .select("id")
-    .eq("owner_user_id", user.id)
-    .single();
+    .eq("owner_user_id", data.session.user.id)
+    .maybeSingle();
 
-  if (!business) {
-    return NextResponse.redirect(
-      new URL("/onboarding?step=5&error=no_business", req.url),
-    );
-  }
-
-  // Discover primary calendar ID
-  const oauth2 = new google.auth.OAuth2(
-    env.GOOGLE_CLIENT_ID,
-    env.GOOGLE_CLIENT_SECRET,
-    env.GOOGLE_REDIRECT_URI,
+  return NextResponse.redirect(
+    new URL(biz ? "/dashboard" : "/onboarding/finish", origin),
   );
-  oauth2.setCredentials(tokens);
-  const cal = google.calendar({ version: "v3", auth: oauth2 });
-  let primary = "primary";
-  try {
-    const { data: calList } = await cal.calendarList.list();
-    primary = calList.items?.find((c) => c.primary)?.id ?? "primary";
-  } catch {
-    // Non-fatal: fall back to "primary" calendar ID
-  }
-
-  await supabase
-    .from("businesses")
-    .update({
-      google_refresh_token: encrypt(tokens.refresh_token),
-      google_calendar_id: primary,
-      onboarding_step: 6,
-    })
-    .eq("id", business.id);
-
-  const response = NextResponse.redirect(
-    new URL("/onboarding?step=6", req.url),
-  );
-  // Clear the CSRF state cookie
-  response.cookies.delete("google_oauth_state");
-  return response;
 }

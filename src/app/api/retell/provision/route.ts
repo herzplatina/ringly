@@ -6,6 +6,7 @@ import {
   createAgent,
   bindAgentToNumber,
   buildAgentPrompt,
+  purchasePhoneNumber,
 } from "@/lib/retell";
 
 export async function POST(req: NextRequest) {
@@ -30,7 +31,11 @@ export async function POST(req: NextRequest) {
   if (!business)
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   if (business.retell_agent_id)
-    return NextResponse.json({ ok: true, already_provisioned: true });
+    return NextResponse.json({
+      ok: true,
+      already_provisioned: true,
+      phone_number: business.retell_phone_number,
+    });
 
   const prompt = buildAgentPrompt({
     name: business.name,
@@ -41,20 +46,29 @@ export async function POST(req: NextRequest) {
     hours: business.business_hours ?? [],
   });
 
+  // Auto-buy a dedicated Retell number if the business doesn't have one yet.
+  let phoneNumber: string | null = business.retell_phone_number;
+  if (!phoneNumber) {
+    const purchased = await purchasePhoneNumber();
+    phoneNumber = purchased.phone_number;
+  }
+
   // Sequential: LLM must exist before agent can reference it
   const llm = await createRetellLLM(prompt);
   const agent = await createAgent(llm.llm_id, business.name);
 
-  // Bind agent to phone number if already purchased
-  if (business.retell_phone_number) {
-    await bindAgentToNumber(business.retell_phone_number, agent.agent_id);
+  // Bind agent to the (now guaranteed) phone number
+  if (phoneNumber) {
+    await bindAgentToNumber(phoneNumber, agent.agent_id);
   }
 
   const { error: updateError } = await db
     .from("businesses")
     .update({
+      retell_phone_number: phoneNumber,
       retell_agent_id: agent.agent_id,
       retell_llm_id: llm.llm_id,
+      onboarding_status: "live",
     })
     .eq("id", businessId);
 
@@ -75,5 +89,9 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  return NextResponse.json({ ok: true, agent_id: agent.agent_id });
+  return NextResponse.json({
+    ok: true,
+    agent_id: agent.agent_id,
+    phone_number: phoneNumber,
+  });
 }

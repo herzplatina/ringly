@@ -49,10 +49,7 @@ export async function proxy(request: NextRequest) {
   }
 
   // Redirect authenticated users away from auth pages
-  if (
-    user &&
-    (pathname === "/login" || pathname === "/signup" || pathname === "/")
-  ) {
+  if (user && (pathname === "/login" || pathname === "/")) {
     return NextResponse.redirect(new URL("/dashboard", request.url));
   }
 

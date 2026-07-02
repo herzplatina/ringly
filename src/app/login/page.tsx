@@ -1,83 +1,40 @@
 "use client";
 export const dynamic = "force-dynamic";
-import { useState } from "react";
 import { createClient } from "@/lib/supabase/client";
-import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import Link from "next/link";
 
+// Google is Ringly's sole identity provider (email/password removed).
 export default function LoginPage() {
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [error, setError] = useState("");
-  const [loading, setLoading] = useState(false);
-  const router = useRouter();
-  const supabase = createClient();
-
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    setLoading(true);
-    setError("");
-    const { error } = await supabase.auth.signInWithPassword({
-      email,
-      password,
+  async function signIn() {
+    const supabase = createClient();
+    await supabase.auth.signInWithOAuth({
+      provider: "google",
+      options: {
+        scopes: "https://www.googleapis.com/auth/calendar.events",
+        redirectTo: `${window.location.origin}/api/auth/google/callback`,
+        queryParams: { access_type: "offline", prompt: "consent" },
+      },
     });
-    if (error) {
-      setError(error.message);
-      setLoading(false);
-    } else {
-      router.push("/dashboard");
-    }
   }
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-50 px-4">
-      <div className="w-full max-w-md space-y-8">
-        <div className="text-center">
+      <div className="w-full max-w-md space-y-8 text-center">
+        <div>
           <h1 className="text-3xl font-bold text-indigo-600">Ringly</h1>
           <p className="mt-2 text-gray-600">Sign in to your account</p>
         </div>
-        <form
-          onSubmit={handleSubmit}
-          className="bg-white rounded-2xl shadow p-8 space-y-5"
-        >
-          {error && (
-            <div className="rounded-lg bg-red-50 border border-red-200 p-3 text-sm text-red-700">
-              {error}
-            </div>
-          )}
-          <Input
-            id="email"
-            label="Email"
-            type="email"
-            required
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            placeholder="you@example.com"
-          />
-          <Input
-            id="password"
-            label="Password"
-            type="password"
-            required
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            placeholder="••••••••"
-          />
-          <Button type="submit" loading={loading} className="w-full" size="lg">
-            Sign in
+        <div className="bg-white rounded-2xl shadow p-8 space-y-4">
+          <Button onClick={signIn} className="w-full">
+            Continue with Google
           </Button>
-          <p className="text-center text-sm text-gray-600">
-            Don&apos;t have an account?{" "}
-            <Link
-              href="/signup"
-              className="text-indigo-600 hover:underline font-medium"
-            >
-              Sign up
-            </Link>
+          <p className="text-xs text-gray-500">
+            Your Google account is your Ringly login and your booking calendar.
           </p>
-        </form>
+        </div>
+        <a href="/" className="text-sm text-indigo-600 underline">
+          New here? Set up your receptionist →
+        </a>
       </div>
     </div>
   );

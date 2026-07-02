@@ -16,6 +16,77 @@ export type ExtractedService = {
   duration_minutes: number | null;
 };
 
+const HAIKU = "claude-haiku-4-5-20251001";
+const MENU_CAP = 5;
+
+/** Keep at most `max` services (v1 caps auto-extracted menus at 5). */
+export function capServices(
+  services: ExtractedService[],
+  max = MENU_CAP,
+): ExtractedService[] {
+  return services.slice(0, max);
+}
+
+/** Strip tags/scripts from HTML and collapse whitespace to plain text. */
+export function htmlToText(html: string): string {
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/** Fetch a website's visible text under a bounded timeout; "" on any failure. */
+export async function fetchWebsiteText(
+  url: string,
+  timeoutMs = 5000,
+): Promise<string> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, {
+      signal: controller.signal,
+      headers: { "user-agent": "RinglyBot/1.0" },
+    });
+    if (!res.ok) return "";
+    const html = await res.text();
+    return htmlToText(html).slice(0, 8000);
+  } catch {
+    return "";
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Extract up to 5 services from plain text (menu/site copy) using Claude Haiku. */
+export async function extractServicesFromText(
+  text: string,
+): Promise<ExtractedService[]> {
+  if (!text.trim()) return [];
+  const response = await getAnthropic().messages.create({
+    model: HAIKU,
+    max_tokens: 1024,
+    messages: [
+      {
+        role: "user",
+        content: `From the following business website/menu text, extract up to ${MENU_CAP} services or menu items. Return a JSON array only, no other text. Each item: {"name":string,"description":string,"price_cents":number|null,"duration_minutes":number|null}. If nothing looks like a service, return [].\n\nTEXT:\n${text}`,
+      },
+    ],
+  });
+  return capServices(parseServicesFromResponse(response));
+}
+
+/** Fetch a business website and extract up to 5 services; [] on timeout/failure. */
+export async function extractServicesFromUrl(
+  url: string,
+): Promise<ExtractedService[]> {
+  const text = await fetchWebsiteText(url);
+  if (!text) return [];
+  return extractServicesFromText(text);
+}
+
 function parseServicesFromResponse(response: {
   content: Anthropic.Messages.ContentBlock[];
 }): ExtractedService[] {

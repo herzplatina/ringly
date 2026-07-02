@@ -342,75 +342,17 @@ async function mockInternalApis(page: Page) {
 // F1.1 — Signup and Login
 // ---------------------------------------------------------------------------
 test.describe("F1.1 — Account creation and login", () => {
-  test("signup page renders correctly", async ({ page }) => {
-    await page.goto("/signup");
+  test("login page offers Google sign-in (email/password removed)", async ({
+    page,
+  }) => {
+    await page.goto("/login");
     await expect(page.getByRole("heading", { name: "Ringly" })).toBeVisible();
-    await expect(page.getByText("Create your account")).toBeVisible();
-    await expect(page.getByLabel("Email")).toBeVisible();
-    await expect(page.getByLabel("Password")).toBeVisible();
     await expect(
-      page.getByRole("button", { name: "Create account" }),
+      page.getByRole("button", { name: "Continue with Google" }),
     ).toBeVisible();
-    await expect(page.getByText("Sign in")).toBeVisible();
-  });
-
-  test("signup form validates required fields", async ({ page }) => {
-    await page.goto("/signup");
-    const btn = page.getByRole("button", { name: "Create account" });
-    await expect(btn).toBeVisible();
-    // Email and password are required — browser native validation
-    const emailInput = page.getByLabel("Email");
-    await expect(emailInput).toHaveAttribute("required");
-    const passInput = page.getByLabel("Password");
-    await expect(passInput).toHaveAttribute("required");
-    await expect(passInput).toHaveAttribute("minlength", "8");
-  });
-
-  test("signup with Supabase error shows error message", async ({ page }) => {
-    await page.route("**/auth/v1/signup", async (route) => {
-      await route.fulfill({
-        status: 422,
-        contentType: "application/json",
-        body: JSON.stringify({
-          error: "invalid_request",
-          msg: "Email already registered",
-        }),
-      });
-    });
-    await page.goto("/signup");
-    await page.getByLabel("Email").fill("existing@example.com");
-    await page.getByLabel("Password").fill("password123");
-    await page.getByRole("button", { name: "Create account" }).click();
-    // Error message surfaces
-    await expect(page.locator(".bg-red-50")).toBeVisible({ timeout: 5000 });
-  });
-
-  test("login page renders correctly", async ({ page }) => {
-    await page.goto("/login");
-    await expect(page.getByRole("heading", { name: "Ringly" })).toBeVisible();
-    await expect(page.getByText("Sign in to your account")).toBeVisible();
-    await expect(page.getByLabel("Email")).toBeVisible();
-    await expect(page.getByLabel("Password")).toBeVisible();
-    await expect(page.getByRole("button", { name: "Sign in" })).toBeVisible();
-    await expect(page.getByText("Sign up")).toBeVisible();
-  });
-
-  test("login error shows message from Supabase", async ({ page }) => {
-    await page.route("**/auth/v1/token**", async (route) => {
-      await route.fulfill({
-        status: 400,
-        contentType: "application/json",
-        body: JSON.stringify({
-          error: "invalid_grant",
-          error_description: "Invalid login credentials",
-        }),
-      });
-    });
-    await page.goto("/login");
-    await page.getByLabel("Email").fill("wrong@example.com");
-    await page.getByLabel("Password").fill("wrongpass");
-    await page.getByRole("button", { name: "Sign in" }).click();
-    await expect(page.locator(".bg-red-50")).toBeVisible({ timeout: 5000 });
+    // v2: Google is the sole identity provider.
+    await expect(page.getByLabel("Email")).toHaveCount(0);
+    await expect(page.getByLabel("Password")).toHaveCount(0);
   });
 
   test("F1.1 — auth guard: proxy.ts protects /dashboard and /onboarding (E2E bypass active in dev)", async ({
@@ -424,7 +366,9 @@ test.describe("F1.1 — Account creation and login", () => {
     expect(response?.status()).toBe(200);
     // The login page is always reachable and shows sign-in form
     await page.goto("/login");
-    await expect(page.getByRole("button", { name: "Sign in" })).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Continue with Google" }),
+    ).toBeVisible();
   });
 });
 
@@ -463,7 +407,7 @@ test.describe("F1.2–F1.7 — Onboarding wizard", () => {
   test("F1.2 — Step 1: Business Profile renders all fields", async ({
     page,
   }) => {
-    await page.goto("/onboarding");
+    await page.goto("/onboarding/legacy");
     await expect(page.getByRole("heading", { name: "Ringly" })).toBeVisible();
     await expect(page.getByText("Business Profile")).toBeVisible();
     await expect(page.getByText("Step 1 of 7")).toBeVisible();
@@ -478,7 +422,7 @@ test.describe("F1.2–F1.7 — Onboarding wizard", () => {
   test("F1.2 — Step 1: Filling business name enables Continue", async ({
     page,
   }) => {
-    await page.goto("/onboarding");
+    await page.goto("/onboarding/legacy");
     await page.getByLabel("Business name").fill("Glamour Studio");
     await expect(
       page.getByRole("button", { name: "Continue" }),
@@ -488,7 +432,7 @@ test.describe("F1.2–F1.7 — Onboarding wizard", () => {
   test("F1.2 — Step 1: Submitting profile advances to step 2 (F1.3)", async ({
     page,
   }) => {
-    await page.goto("/onboarding");
+    await page.goto("/onboarding/legacy");
     await page.getByLabel("Business name").fill("Glamour Studio");
     await page.getByRole("button", { name: "Continue" }).click();
     // After API call, should show step 2
@@ -499,7 +443,7 @@ test.describe("F1.2–F1.7 — Onboarding wizard", () => {
   });
 
   test("F1.3 — Step 2: Phone number provisioning", async ({ page }) => {
-    await page.goto("/onboarding");
+    await page.goto("/onboarding/legacy");
     // Navigate to step 2 by filling step 1
     await page.getByLabel("Business name").fill("Test Business");
     await page.getByRole("button", { name: "Continue" }).click();
@@ -529,7 +473,7 @@ test.describe("F1.2–F1.7 — Onboarding wizard", () => {
         body: JSON.stringify({ ...MOCK_BIZ, onboarding_step: 2 }),
       });
     });
-    await page.goto("/onboarding");
+    await page.goto("/onboarding/legacy");
     // onboarding_step=2 → setStep(1) → phone number step shows existing number
     await expect(
       page.getByText("Claim your AI receptionist number"),
@@ -572,7 +516,7 @@ test.describe("F1.2–F1.7 — Onboarding wizard", () => {
         });
       }
     });
-    await page.goto("/onboarding");
+    await page.goto("/onboarding/legacy");
     await expect(page.getByText("Upload your service menu")).toBeVisible({
       timeout: 5000,
     });
@@ -586,7 +530,7 @@ test.describe("F1.2–F1.7 — Onboarding wizard", () => {
   });
 
   test("F1.5 — Step 4: Business hours with day toggles", async ({ page }) => {
-    await page.goto("/onboarding");
+    await page.goto("/onboarding/legacy");
     await page.route("/api/business", async (route) => {
       if (route.request().method() === "GET") {
         await route.fulfill({
@@ -630,7 +574,7 @@ test.describe("F1.2–F1.7 — Onboarding wizard", () => {
   });
 
   test("F1.6 — Step 5: Google Calendar connection prompt", async ({ page }) => {
-    await page.goto("/onboarding");
+    await page.goto("/onboarding/legacy");
     await page.route("/api/business", async (route) => {
       if (route.request().method() === "GET") {
         await route.fulfill({
@@ -687,7 +631,7 @@ test.describe("F1.2–F1.7 — Onboarding wizard", () => {
         });
       }
     });
-    await page.goto("/onboarding");
+    await page.goto("/onboarding/legacy");
     await expect(page.getByText("Set up WhatsApp messaging")).toBeVisible({
       timeout: 5000,
     });
@@ -715,7 +659,7 @@ test.describe("F1.2–F1.7 — Onboarding wizard", () => {
   test("F1.8 — Step 7: Go Live screen shows AI receptionist number", async ({
     page,
   }) => {
-    await page.goto("/onboarding");
+    await page.goto("/onboarding/legacy");
     await page.route("/api/business", async (route) => {
       if (route.request().method() === "GET") {
         await route.fulfill({
