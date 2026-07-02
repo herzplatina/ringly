@@ -58,49 +58,55 @@ export default function AppointmentsPage() {
             No {filter} appointments
           </p>
         ) : (
-          <table className="w-full text-sm">
-            <thead className="border-b border-gray-100">
-              <tr className="text-left">
-                <th className="px-5 py-3 font-medium text-gray-500">
-                  Customer
-                </th>
-                <th className="px-5 py-3 font-medium text-gray-500">Service</th>
-                <th className="px-5 py-3 font-medium text-gray-500">
-                  Date & Time
-                </th>
-                <th className="px-5 py-3 font-medium text-gray-500">Price</th>
-                <th className="px-5 py-3 font-medium text-gray-500">Status</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-50">
-              {appointments.map((a) => (
-                <tr key={a.id} className="hover:bg-gray-50">
-                  <td className="px-5 py-3 font-medium text-gray-900">
-                    {(a as any).customers?.name ?? "—"}
-                    <div className="text-xs text-gray-400 font-normal">
-                      {(a as any).customers?.phone_number}
-                    </div>
-                  </td>
-                  <td className="px-5 py-3 text-gray-700">
-                    {(a as any).services?.name ?? "—"}
-                  </td>
-                  <td className="px-5 py-3 text-gray-700">
-                    {formatDate(a.starts_at)}
-                  </td>
-                  <td className="px-5 py-3 text-gray-700">
-                    {formatCents((a as any).services?.price_cents)}
-                  </td>
-                  <td className="px-5 py-3">
-                    <span
-                      className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium border ${STATUS_COLORS[a.status] ?? ""}`}
-                    >
-                      {a.status}
-                    </span>
-                  </td>
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[560px] text-sm">
+              <thead className="border-b border-gray-100">
+                <tr className="text-left">
+                  <th className="px-5 py-3 font-medium text-gray-500">
+                    Customer
+                  </th>
+                  <th className="px-5 py-3 font-medium text-gray-500">
+                    Service
+                  </th>
+                  <th className="px-5 py-3 font-medium text-gray-500">
+                    Date & Time
+                  </th>
+                  <th className="px-5 py-3 font-medium text-gray-500">Price</th>
+                  <th className="px-5 py-3 font-medium text-gray-500">
+                    Status
+                  </th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody className="divide-y divide-gray-50">
+                {appointments.map((a) => (
+                  <tr key={a.id} className="hover:bg-gray-50">
+                    <td className="px-5 py-3 font-medium text-gray-900">
+                      {(a as any).customers?.name ?? "—"}
+                      <div className="text-xs text-gray-400 font-normal">
+                        {(a as any).customers?.phone_number}
+                      </div>
+                    </td>
+                    <td className="px-5 py-3 text-gray-700">
+                      {(a as any).services?.name ?? "—"}
+                    </td>
+                    <td className="px-5 py-3 text-gray-700">
+                      {formatDate(a.starts_at)}
+                    </td>
+                    <td className="px-5 py-3 text-gray-700">
+                      {formatCents((a as any).services?.price_cents)}
+                    </td>
+                    <td className="px-5 py-3">
+                      <span
+                        className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium border ${STATUS_COLORS[a.status] ?? ""}`}
+                      >
+                        {a.status}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </div>
     </div>

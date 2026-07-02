@@ -2,6 +2,7 @@
 export const dynamic = "force-dynamic";
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { loadDraft, clearDraft } from "@/lib/draft";
 
 type Phase = "claiming" | "provisioning" | "done" | "error";
 
@@ -25,11 +26,10 @@ export default function FinishPage() {
     (async () => {
       try {
         // 1. Claim: bind the pre-auth draft to this Google account.
-        const draft = sessionStorage.getItem("ringly_draft");
         const claimRes = await fetch("/api/business/claim", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: draft ?? "{}",
+          body: loadDraft() ?? "{}",
         });
         const claim = await claimRes.json();
         if (!claimRes.ok) {
@@ -37,7 +37,7 @@ export default function FinishPage() {
           setPhase("error");
           return;
         }
-        sessionStorage.removeItem("ringly_draft");
+        clearDraft();
 
         // 2. Provision Retell (buys number, creates agent) in the background.
         setPhase("provisioning");

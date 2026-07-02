@@ -60,57 +60,63 @@ export default function CustomersPage() {
             No customers yet — they&apos;ll appear here after their first call.
           </p>
         ) : (
-          <table className="w-full text-sm">
-            <thead className="border-b border-gray-100">
-              <tr className="text-left">
-                <th className="px-5 py-3 font-medium text-gray-500">Name</th>
-                <th className="px-5 py-3 font-medium text-gray-500">Phone</th>
-                <th className="px-5 py-3 font-medium text-gray-500">
-                  WhatsApp consent
-                </th>
-                <th className="px-5 py-3 font-medium text-gray-500">
-                  Consent date
-                </th>
-                <th className="px-5 py-3 font-medium text-gray-500">Actions</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-50">
-              {customers.map((c) => (
-                <tr key={c.id} className="hover:bg-gray-50">
-                  <td className="px-5 py-3 font-medium text-gray-900">
-                    {c.name ?? "—"}
-                  </td>
-                  <td className="px-5 py-3 text-gray-700">{c.phone_number}</td>
-                  <td className="px-5 py-3">
-                    <span
-                      className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium border ${CONSENT_STYLES[c.whatsapp_consent_status]}`}
-                    >
-                      {c.whatsapp_consent_status.replace("_", " ")}
-                    </span>
-                  </td>
-                  <td className="px-5 py-3 text-gray-500 text-xs">
-                    {c.whatsapp_consent_at
-                      ? formatDate(c.whatsapp_consent_at)
-                      : "—"}
-                  </td>
-                  <td className="px-5 py-3">
-                    {c.whatsapp_consent_status !== "not_asked" && (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        loading={updating === c.id}
-                        onClick={() => toggleConsent(c)}
-                      >
-                        {c.whatsapp_consent_status === "granted"
-                          ? "Revoke consent"
-                          : "Grant consent"}
-                      </Button>
-                    )}
-                  </td>
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[560px] text-sm">
+              <thead className="border-b border-gray-100">
+                <tr className="text-left">
+                  <th className="px-5 py-3 font-medium text-gray-500">Name</th>
+                  <th className="px-5 py-3 font-medium text-gray-500">Phone</th>
+                  <th className="px-5 py-3 font-medium text-gray-500">
+                    WhatsApp consent
+                  </th>
+                  <th className="px-5 py-3 font-medium text-gray-500">
+                    Consent date
+                  </th>
+                  <th className="px-5 py-3 font-medium text-gray-500">
+                    Actions
+                  </th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody className="divide-y divide-gray-50">
+                {customers.map((c) => (
+                  <tr key={c.id} className="hover:bg-gray-50">
+                    <td className="px-5 py-3 font-medium text-gray-900">
+                      {c.name ?? "—"}
+                    </td>
+                    <td className="px-5 py-3 text-gray-700">
+                      {c.phone_number}
+                    </td>
+                    <td className="px-5 py-3">
+                      <span
+                        className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium border ${CONSENT_STYLES[c.whatsapp_consent_status]}`}
+                      >
+                        {c.whatsapp_consent_status.replace("_", " ")}
+                      </span>
+                    </td>
+                    <td className="px-5 py-3 text-gray-500 text-xs">
+                      {c.whatsapp_consent_at
+                        ? formatDate(c.whatsapp_consent_at)
+                        : "—"}
+                    </td>
+                    <td className="px-5 py-3">
+                      {c.whatsapp_consent_status !== "not_asked" && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          loading={updating === c.id}
+                          onClick={() => toggleConsent(c)}
+                        >
+                          {c.whatsapp_consent_status === "granted"
+                            ? "Revoke consent"
+                            : "Grant consent"}
+                        </Button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </div>
     </div>

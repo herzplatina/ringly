@@ -5,8 +5,11 @@ import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { DAY_NAMES } from "@/lib/utils";
+import { saveDraft } from "@/lib/draft";
 
-const PROMPT = "Tell me the name and address of your business.";
+const SPOKEN_PROMPT =
+  "Hey there! Why don't you tell me the name and rough address of your business to set up your AI receptionist?";
+const PLACEHOLDER = "e.g. Glamour Studio, 123 Main St, Austin";
 
 type Service = {
   name: string;
@@ -42,16 +45,74 @@ export default function IntakePage() {
   const [services, setServices] = useState<Service[]>([]);
   const spokenRef = useRef(false);
 
-  // Voice output: speak the prompt once on mount (feature-detected).
+  // Voice output: greet the visitor in a lively female voice. Voices load
+  // async (getVoices() is often empty at first → wait for voiceschanged), and
+  // browsers block speech until the first user gesture → also retry on interaction.
   useEffect(() => {
-    if (spokenRef.current || !speakerOn) return;
     if (typeof window === "undefined" || !("speechSynthesis" in window)) return;
-    spokenRef.current = true;
-    try {
-      window.speechSynthesis.speak(new SpeechSynthesisUtterance(PROMPT));
-    } catch {
-      /* ignore */
+    const synth = window.speechSynthesis;
+
+    // Prefer a known lively female English voice; fall back sensibly.
+    function pickVoice(voices: SpeechSynthesisVoice[]) {
+      const preferred = [
+        "Google US English",
+        "Samantha",
+        "Ava",
+        "Allison",
+        "Susan",
+        "Karen",
+        "Victoria",
+        "Google UK English Female",
+        "Microsoft Zira",
+      ];
+      const byName = preferred
+        .map((n) => voices.find((v) => v.name === n || v.name.includes(n)))
+        .find(Boolean);
+      if (byName) return byName;
+      const female = voices.find(
+        (v) =>
+          /^en/i.test(v.lang) &&
+          /female|samantha|victoria|karen|zira|susan|allison|ava|moira|tessa/i.test(
+            v.name,
+          ),
+      );
+      return female ?? voices.find((v) => /^en/i.test(v.lang)) ?? voices[0];
     }
+
+    function speak() {
+      if (spokenRef.current || !speakerOn) return;
+      const voices = synth.getVoices();
+      if (voices.length === 0) return; // wait for voiceschanged
+      try {
+        const u = new SpeechSynthesisUtterance(SPOKEN_PROMPT);
+        const v = pickVoice(voices);
+        if (v) u.voice = v;
+        u.pitch = 1.2; // livelier
+        u.rate = 1.05;
+        u.onstart = () => {
+          spokenRef.current = true; // only mark spoken once it actually starts
+        };
+        synth.cancel();
+        synth.speak(u);
+      } catch {
+        /* ignore */
+      }
+    }
+
+    speak();
+    synth.onvoiceschanged = () => speak(); // voices arrived after mount
+    const onGesture = () => {
+      speak();
+      window.removeEventListener("pointerdown", onGesture);
+      window.removeEventListener("keydown", onGesture);
+    };
+    window.addEventListener("pointerdown", onGesture);
+    window.addEventListener("keydown", onGesture);
+    return () => {
+      synth.onvoiceschanged = null;
+      window.removeEventListener("pointerdown", onGesture);
+      window.removeEventListener("keydown", onGesture);
+    };
   }, [speakerOn]);
 
   async function enrich(payload: { text?: string; place_id?: string }) {
@@ -89,10 +150,8 @@ export default function IntakePage() {
 
   async function handleSetup() {
     if (!business) return;
-    sessionStorage.setItem(
-      "ringly_draft",
-      JSON.stringify({ business, hours, services }),
-    );
+    // Persist so the draft survives the Google OAuth redirect.
+    saveDraft({ business, hours, services });
     const supabase = createClient();
     await supabase.auth.signInWithOAuth({
       provider: "google",
@@ -125,7 +184,7 @@ export default function IntakePage() {
           <textarea
             aria-label="Business name and address"
             className="w-full h-32 rounded-2xl border border-gray-300 p-4 text-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-            placeholder={PROMPT}
+            placeholder={PLACEHOLDER}
             value={text}
             onChange={(e) => setText(e.target.value)}
           />

@@ -7,6 +7,7 @@ import {
   bindAgentToNumber,
   buildAgentPrompt,
   purchasePhoneNumber,
+  listPhoneNumbers,
 } from "@/lib/retell";
 
 export async function POST(req: NextRequest) {
@@ -46,20 +47,27 @@ export async function POST(req: NextRequest) {
     hours: business.business_hours ?? [],
   });
 
-  // Auto-buy a dedicated Retell number if the business doesn't have one yet.
-  let phoneNumber: string | null = business.retell_phone_number;
-  if (!phoneNumber) {
-    const purchased = await purchasePhoneNumber();
-    phoneNumber = purchased.phone_number;
-  }
-
   // Sequential: LLM must exist before agent can reference it
   const llm = await createRetellLLM(prompt);
   const agent = await createAgent(llm.llm_id, business.name);
 
+  // Buy the number AFTER the agent exists so a failed LLM/agent create never
+  // purchases a (billable) number. Reuse an existing unbound number on the
+  // account (e.g. from an earlier failed run) before buying a new one.
+  let phoneNumber: string | null = business.retell_phone_number;
+  if (!phoneNumber) {
+    const existing = await listPhoneNumbers();
+    const unbound = existing.find(
+      (n) => !n.inbound_agents || n.inbound_agents.length === 0,
+    );
+    phoneNumber = unbound
+      ? unbound.phone_number
+      : (await purchasePhoneNumber()).phone_number;
+  }
+
   // Bind agent to the (now guaranteed) phone number
   if (phoneNumber) {
-    await bindAgentToNumber(phoneNumber, agent.agent_id);
+    await bindAgentToNumber(phoneNumber, agent.agent_id, agent.version);
   }
 
   const { error: updateError } = await db

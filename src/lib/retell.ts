@@ -24,9 +24,13 @@ async function retellFetch(path: string, options: RequestInit = {}) {
 }
 
 export async function purchasePhoneNumber(areaCode?: string) {
-  return retellFetch("/buy-phone-number", {
+  // Retell API (New) endpoint is /create-phone-number; area_code is an optional
+  // integer — omit it to get any available US number.
+  const body: { area_code?: number } = {};
+  if (areaCode && /^\d{3}$/.test(areaCode)) body.area_code = Number(areaCode);
+  return retellFetch("/create-phone-number", {
     method: "POST",
-    body: JSON.stringify({ area_code: areaCode }),
+    body: JSON.stringify(body),
   });
 }
 
@@ -36,7 +40,7 @@ export async function createAgent(llmId: string, businessName: string) {
     body: JSON.stringify({
       agent_name: businessName,
       response_engine: { type: "retell-llm", llm_id: llmId },
-      voice_id: "eleven_turbo_v2",
+      voice_id: "11labs-Dorothy",
       language: "en-US",
       // Agent-level webhook receives call lifecycle events (call_started /
       // call_ended / call_analyzed → transcript). In-call function execution is
@@ -198,17 +202,33 @@ export async function updateRetellLLM(llmId: string, systemPrompt: string) {
   });
 }
 
-export async function bindAgentToNumber(phoneNumber: string, agentId: string) {
+export async function bindAgentToNumber(
+  phoneNumber: string,
+  agentId: string,
+  agentVersion?: number,
+) {
+  // Retell deprecated the single inbound_agent_id field (2026-03-31) in favor of
+  // a weighted inbound_agents list.
+  const agent =
+    agentVersion != null
+      ? { agent_id: agentId, agent_version: agentVersion, weight: 1 }
+      : { agent_id: agentId, weight: 1 };
   return retellFetch(
     `/update-phone-number/${encodeURIComponent(phoneNumber)}`,
     {
       method: "PATCH",
       body: JSON.stringify({
-        inbound_agent_id: agentId,
+        inbound_agents: [agent],
         inbound_webhook_url: `${env.NEXT_PUBLIC_APP_URL}/api/webhooks/retell/dynamic-variables`,
       }),
     },
   );
+}
+
+export async function listPhoneNumbers(): Promise<
+  Array<{ phone_number: string; inbound_agents?: unknown[] | null }>
+> {
+  return retellFetch("/list-phone-numbers");
 }
 
 export async function getCall(retellCallId: string) {

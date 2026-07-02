@@ -1,13 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient, createServiceClient } from "@/lib/supabase/server";
 import { encrypt } from "@/lib/encrypt";
+import { env } from "@/lib/env";
 
 // Google is Ringly's identity provider. Supabase runs the OAuth (PKCE); this
 // callback exchanges the code for a session and captures the offline
 // provider_refresh_token so we can call Google Calendar server-side later.
 export async function GET(req: NextRequest) {
   const code = req.nextUrl.searchParams.get("code");
-  const origin = req.nextUrl.origin;
+  // Redirect off the configured public URL, not req.nextUrl.origin — behind a
+  // proxy/tunnel (ngrok) the request origin can resolve to https://localhost.
+  const origin = env.NEXT_PUBLIC_APP_URL;
   if (!code) {
     return NextResponse.redirect(new URL("/login?error=no_code", origin));
   }
