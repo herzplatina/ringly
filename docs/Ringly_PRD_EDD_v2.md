@@ -64,15 +64,16 @@ configuration project.
 ## 1.5 Functional requirements
 
 - **FR1** Intake accepts free-form text; no structured fields required.
-- **FR2** Voice input (speech→text) and voice output (text→speech) via the
-  browser; graceful fallback to typing if unsupported/denied.
+- **FR2** Voice **output** (text→speech) speaks the prompt via the browser;
+  **typed input** in v1. (Voice **input** / speech→text is deferred to v2.)
 - **FR3** Enrichment resolves: legal/display name, formatted address, public
   phone, regular opening hours, IANA timezone, website — from Google Places.
 - **FR4** Menu/services (name, description, price) auto-extracted from the
-  resolved website via Claude; fallback to image/PDF upload or manual entry.
+  resolved website via **Claude Haiku**, **capped at 5 items**, with a bounded
+  crawl timeout. Image/PDF upload or manual entry remain a first-class fallback.
 - **FR5** All enriched fields are inline-editable before commit.
-- **FR6** Enrichment streams incrementally (user sees fields appear, not a
-  spinner-then-dump).
+- **FR6** Enrichment resolves in a single request and reveals fields on return
+  (non-streaming in v1). (Incremental **SSE streaming** is deferred to v2.)
 - **FR7** Single Google OAuth grants Ringly session **and** offline
   `calendar.events` access; the account is keyed to the Google identity.
 - **FR8** After confirm + auth, the user is told their Google login is now their
@@ -105,9 +106,12 @@ Unchanged core stack (Next.js 15 App Router on Vercel, Supabase Postgres/Auth,
 Retell voice, Google Calendar, Claude for extraction). New in v2:
 
 - **Google Places API (New)** — business discovery + details.
-- **Supabase Auth Google provider** — replaces email/password as the identity.
-- **Streaming enrichment endpoint** — Server-Sent Events for incremental fill.
-- **Website menu extraction** — fetch `websiteUri` → Claude text extraction.
+- **Supabase Auth Google provider** — replaces email/password as the identity
+  (email/password pages are deleted).
+- **Enrichment endpoint** — single non-streaming request in v1 (SSE streaming
+  deferred to v2).
+- **Website menu extraction** — fetch `websiteUri` (bounded timeout) → **Claude
+  Haiku** structures ≤5 items.
 
 ## 2.2 Verified vendor capabilities (confirmed 2026-07-01)
 
@@ -133,13 +137,14 @@ Retell voice, Google Calendar, Claude for extraction). New in v2:
 
 ### Frontend
 
-- **`/` (public intake)** — textarea + shadow prompt; Web Speech API
-  `SpeechRecognition` (input) and `SpeechSynthesis` (output); mic + speaker
-  toggles; feature-detect and fall back to typing. Holds enrichment result in
-  client state + `sessionStorage` (survives the OAuth round-trip).
-- **Enrichment card** — subscribes to the SSE stream; renders each field as it
-  arrives; every field is an inline-editable control; menu list supports
-  add/remove/edit and an upload fallback.
+- **`/` (public intake)** — textarea + shadow prompt; **voice output**
+  (`SpeechSynthesis`) speaks the prompt with a speaker toggle; **typed input**
+  in v1 (SpeechRecognition input deferred to v2, behind feature-detect). Holds
+  enrichment result in client state + `sessionStorage` (survives the OAuth
+  round-trip).
+- **Enrichment card** — renders the fields returned by the single enrich call
+  (reveal-on-return animation); every field is an inline-editable control; menu
+  list supports add/remove/edit and an upload fallback.
 - **Provisioning/benefits screen** — polls provision status; shows benefits;
   then the identity confirmation + success + Go Live.
 - **Removed:** email/password `signup`/`login` pages (replaced by "Continue with
@@ -147,12 +152,13 @@ Retell voice, Google Calendar, Claude for extraction). New in v2:
 
 ### Backend (API routes)
 
-- **`POST /api/enrich` (SSE)** — body: `{ text }`. Steps, each emitted as an
-  event: (1) Places **Text Search** to resolve the place → `emit welcome`;
-  (2) Place **Details** (fields above) → `emit address/phone/hours/timezone`;
-  (3) if `websiteUri`, fetch page → Claude extraction → `emit menu` items as
-  parsed. Maps Places `regularOpeningHours` → `business_hours` schema; maps
-  `timeZone` → `businesses.timezone`.
+- **`POST /api/enrich`** — body: `{ text }`. Single non-streaming response:
+  (1) Places **Text Search** resolves the place (multiple hits → return
+  `candidates`); (2) Place **Details** (fields above); (3) if `websiteUri`,
+  fetch the page under a **bounded timeout** and structure **≤5** menu items via
+  **Claude Haiku** (skipped/empty on timeout or no site). Maps Places
+  `regularOpeningHours` → `business_hours` schema; maps `timeZone` →
+  `businesses.timezone`. (SSE streaming of these stages is a v2 upgrade.)
 - **`POST /api/business/claim`** — after Google auth: creates the `businesses`
   row owned by the new user from the client-held enriched draft (idempotent).
 - **`GET /api/auth/google/callback`** — reworked: Supabase PKCE code exchange;
@@ -160,8 +166,9 @@ Retell voice, Google Calendar, Claude for extraction). New in v2:
   for server-side calendar use (reuses existing `encrypt.ts`).
 - **`POST /api/retell/provision`** — unchanged logic, now invoked
   programmatically post-claim (background), not a UI step.
-- **Retained:** `menu-extract` (now also accepts a URL/text, not just image),
-  the three Retell webhooks, calendar helpers.
+- **Retained:** `menu-extract` (now also accepts a URL/text, not just image;
+  uses **Claude Haiku** for the text/URL path), the three Retell webhooks,
+  calendar helpers.
 
 ## 2.4 Data model changes (migration 003)
 
@@ -187,11 +194,12 @@ redirectTo: <callback> })`.
 ## 2.6 Sequence (happy path)
 
 ```
-User → /                : type/speak "Glamour Studio, Austin"
-Browser → /api/enrich   : SSE
-  Places TextSearch     → welcome(name)
-  Places Details        → address, phone, hours, timezone
-  fetch(websiteUri)+Claude → menu[]         (edits allowed throughout)
+User → /                : type "Glamour Studio, Austin" (prompt spoken aloud)
+Browser → /api/enrich   : single request
+  Places TextSearch     → resolve place (or candidates)
+  Places Details        → name, address, phone, hours, timezone, websiteUri
+  fetch(websiteUri)+Haiku → ≤5 menu items (bounded timeout)
+  → returns full draft   (all fields inline-editable)
 User clicks "Set up…"   : signInWithOAuth(google, calendar.events, offline)
 Google → /callback      : PKCE exchange → session + encrypted refresh token
 Browser → /claim        : create business (owner=user) from draft
@@ -203,9 +211,10 @@ Browser → /provision    : buy number, create LLM+agent, bind  (background)
 
 - **Places can't resolve the business** → show top candidates to disambiguate;
   allow full manual entry.
-- **No website / unparseable menu** → upload (Claude vision) or manual services.
-- **Web Speech API support/permissions** (Safari/Firefox partial) → feature
-  detect; typing always available; voice is enhancement, never required.
+- **No website / unparseable menu / crawl timeout** → upload (Claude vision) or
+  manual services; menu is capped at 5 items regardless.
+- **Voice output support** (`SpeechSynthesis`) is broad but feature-detect and
+  degrade silently; input is typed in v1, so voice is never on the critical path.
 - **Places SKU cost** → cache by `place_id`; request only needed field masks;
   debounce enrichment to fire once on submit, not per keystroke.
 - **Refresh-token capture** — Google only returns it with `prompt=consent`;
@@ -225,5 +234,12 @@ Browser → /provision    : buy number, create LLM+agent, bind  (background)
 ## 2.9 Rollout
 
 Ship behind a route swap: new `/` intake for logged-out users; existing
-dashboard untouched. Keep the old wizard reachable at `/onboarding/legacy`
-until the new flow is validated end-to-end, then delete.
+dashboard untouched. **Preserve the old 7-step wizard at `/onboarding/legacy`**
+for side-by-side comparison — keep it after v2 ships (do not delete) so the two
+flows can be evaluated against each other.
+
+## 2.10 Deferred to v2 (explicitly out of this build)
+
+- **SSE streaming** of enrichment (v1 is a single non-streaming request).
+- **Voice input** (SpeechRecognition speech→text); v1 ships voice output only.
+- WhatsApp reminder dispatcher (unchanged from v1 scope).
