@@ -3,6 +3,7 @@ import { createServiceClient } from "@/lib/supabase/server";
 import { verifyRetellSignature, parseRetellCall } from "@/lib/retell";
 import { format } from "date-fns";
 import { toZonedTime } from "date-fns-tz";
+import { normalizeTimezone } from "@/lib/utils";
 
 export async function POST(req: NextRequest) {
   const body = await req.text();
@@ -29,6 +30,18 @@ export async function POST(req: NextRequest) {
     return dynamicVariables({});
   }
 
+  // Ground the agent in the real current date/time (in the business timezone) so
+  // it never guesses the day of week for relative dates like "next Monday".
+  // Normalize defensively: a legacy-stored invalid zone would throw in toZonedTime.
+  const tz = normalizeTimezone(business.timezone);
+  const now = toZonedTime(new Date(), tz);
+  const dateVars = {
+    current_date: format(now, "EEEE, MMMM d, yyyy"),
+    current_time: format(now, "h:mm a"),
+    current_year: format(now, "yyyy"),
+    business_timezone: tz,
+  };
+
   // Look up customer by phone number scoped to this business
   const { data: customer } = await db
     .from("customers")
@@ -38,7 +51,7 @@ export async function POST(req: NextRequest) {
     .single();
 
   if (!customer) {
-    return dynamicVariables({ is_new_customer: "true" });
+    return dynamicVariables({ ...dateVars, is_new_customer: "true" });
   }
 
   const [{ data: nextAppt }, { data: lastAppt }] = await Promise.all([
@@ -64,19 +77,20 @@ export async function POST(req: NextRequest) {
   ]);
 
   const variables: Record<string, string> = {
+    ...dateVars,
     customer_name: customer.name ?? "",
     whatsapp_consent_status: customer.whatsapp_consent_status,
     is_new_customer: "false",
   };
 
   if (nextAppt) {
-    const local = toZonedTime(new Date(nextAppt.starts_at), business.timezone);
+    const local = toZonedTime(new Date(nextAppt.starts_at), tz);
     variables.next_appointment = format(local, "EEEE, MMMM do 'at' h:mm a");
     variables.next_appointment_service = (nextAppt as any).services?.name ?? "";
   }
 
   if (lastAppt) {
-    const local = toZonedTime(new Date(lastAppt.starts_at), business.timezone);
+    const local = toZonedTime(new Date(lastAppt.starts_at), tz);
     variables.last_visit = format(local, "MMMM do");
     variables.last_service = (lastAppt as any).services?.name ?? "";
   }

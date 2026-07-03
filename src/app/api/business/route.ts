@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { syncRetellPrompt } from "@/lib/retell";
-import { pickAllowed } from "@/lib/utils";
+import { pickAllowed, normalizeTimezone } from "@/lib/utils";
 
 export async function GET(req: NextRequest) {
   const supabase = await createClient();
@@ -42,6 +42,8 @@ export async function POST(req: NextRequest) {
 
   const body = await req.json();
   const allowed = pickAllowed(MUTABLE_FIELDS, body);
+  if ("timezone" in allowed)
+    allowed.timezone = normalizeTimezone(allowed.timezone as string);
   const { data, error } = await supabase
     .from("businesses")
     .insert({ ...allowed, owner_user_id: user.id })
@@ -63,6 +65,8 @@ export async function PATCH(req: NextRequest) {
 
   const body = await req.json();
   const allowed = pickAllowed(MUTABLE_FIELDS, body);
+  if ("timezone" in allowed)
+    allowed.timezone = normalizeTimezone(allowed.timezone as string);
 
   const { data: business, error } = await supabase
     .from("businesses")

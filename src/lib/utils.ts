@@ -44,6 +44,29 @@ export function phonesMatch(a: string, b: string): boolean {
   return na.length > 0 && na === nb;
 }
 
+/** True if `tz` is a valid IANA timezone that Intl (and date-fns-tz) accepts. */
+export function isValidTimezone(tz: string): boolean {
+  if (!tz) return false;
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: tz });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Return `tz` if it's a valid IANA zone, else `fallback`. Use at every write so
+ * a bad value never persists (an invalid zone throws in toZonedTime/fromZonedTime,
+ * which would 500 the call webhooks and availability).
+ */
+export function normalizeTimezone(
+  tz: string | null | undefined,
+  fallback = "America/New_York",
+): string {
+  return tz && isValidTimezone(tz) ? tz : fallback;
+}
+
 /** Filter a request body to only the listed allowed keys. */
 export function pickAllowed<T extends string>(
   fields: readonly T[],

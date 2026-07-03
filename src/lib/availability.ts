@@ -9,8 +9,12 @@ export function computeAvailableSlots(
   hours: BusinessHours[],
   existingAppointments: Array<{ starts_at: string; ends_at: string }>,
 ): TimeSlot[] {
-  const localDate = toZonedTime(parseISO(date), timezone);
-  const dayOfWeek = localDate.getDay();
+  // Accept YYYY-MM-DD (tolerate a trailing time component from the caller).
+  const dateOnly = date.slice(0, 10);
+  // Day-of-week of a calendar date is fixed regardless of timezone; deriving it
+  // via a UTC round-trip avoids the midnight/DST off-by-one that toZonedTime hit.
+  const [year, month, day] = dateOnly.split("-").map(Number);
+  const dayOfWeek = new Date(Date.UTC(year, month - 1, day)).getUTCDay();
 
   const dayHours = hours.find((h) => h.day_of_week === dayOfWeek);
   if (!dayHours || dayHours.is_closed || dayHours.hours_ranges.length === 0)
@@ -24,16 +28,10 @@ export function computeAvailableSlots(
   const slots: TimeSlot[] = [];
 
   for (const range of dayHours.hours_ranges) {
-    const [openH, openM] = range.open.split(":").map(Number);
-    const [closeH, closeM] = range.close.split(":").map(Number);
-
-    const localOpen = new Date(localDate);
-    localOpen.setHours(openH, openM, 0, 0);
-    const localClose = new Date(localDate);
-    localClose.setHours(closeH, closeM, 0, 0);
-
-    const openUtc = fromZonedTime(localOpen, timezone);
-    const closeUtc = fromZonedTime(localClose, timezone);
+    // Build the open/close instants directly from the local date + time in the
+    // business timezone (fromZonedTime handles the UTC offset / DST correctly).
+    const openUtc = fromZonedTime(`${dateOnly}T${range.open}:00`, timezone);
+    const closeUtc = fromZonedTime(`${dateOnly}T${range.close}:00`, timezone);
 
     let cursor = openUtc;
     while (addMinutes(cursor, durationMinutes) <= closeUtc) {

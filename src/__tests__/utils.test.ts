@@ -1,4 +1,9 @@
-import { normalizePhone, phonesMatch } from "@/lib/utils";
+import {
+  normalizePhone,
+  phonesMatch,
+  isValidTimezone,
+  normalizeTimezone,
+} from "@/lib/utils";
 
 describe("normalizePhone", () => {
   test("strips non-digits", () => {
@@ -26,5 +31,24 @@ describe("phonesMatch", () => {
 
   test("different numbers do not match", () => {
     expect(phonesMatch("+14155551234", "+14155559999")).toBe(false);
+  });
+});
+
+describe("timezone validation", () => {
+  test("accepts zones ICU recognizes, rejects malformed strings", () => {
+    expect(isValidTimezone("America/Los_Angeles")).toBe(true);
+    expect(isValidTimezone("UTC")).toBe(true);
+    // Only genuinely malformed strings throw in Intl/date-fns-tz (the 500 risk).
+    expect(isValidTimezone("garbage")).toBe(false);
+    expect(isValidTimezone("Not/AZone")).toBe(false);
+    expect(isValidTimezone("")).toBe(false);
+  });
+
+  test("normalizeTimezone falls back for invalid/empty input", () => {
+    expect(normalizeTimezone("America/Chicago")).toBe("America/Chicago");
+    expect(normalizeTimezone("garbage")).toBe("America/New_York");
+    expect(normalizeTimezone("")).toBe("America/New_York");
+    expect(normalizeTimezone(null)).toBe("America/New_York");
+    expect(normalizeTimezone("nonsense", "UTC")).toBe("UTC");
   });
 });

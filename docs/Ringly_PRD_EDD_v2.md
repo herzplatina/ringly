@@ -221,6 +221,11 @@ Browser → /provision    : buy number, create LLM+agent, bind  (background)
   always force consent on first link; handle re-consent if missing.
 - **Draft loss across OAuth redirect** → persist draft in `sessionStorage` +
   a short-lived server draft keyed by a nonce as backup.
+- **Public `/api/enrich` abuse / cost** — the endpoint is unauthenticated (the
+  intake is pre-auth) and calls the paid Places API + Claude, so it's a
+  cost-abuse / DoS vector. **v1 ships without throttling**; rate-limiting is a
+  v2 TODO (see §2.10). Interim mitigations already in place: single-call
+  (fire on submit, not per keystroke) and bounded work per request.
 
 ## 2.8 Prerequisites / config
 
@@ -242,4 +247,8 @@ flows can be evaluated against each other.
 
 - **SSE streaming** of enrichment (v1 is a single non-streaming request).
 - **Voice input** (SpeechRecognition speech→text); v1 ships voice output only.
+- **Rate-limiting `/api/enrich`** — per-IP throttle (e.g. Upstash/Redis or an
+  edge middleware limiter) and/or a lightweight bot check (hCaptcha/Turnstile)
+  before enrichment, to cap Places + Claude spend on the unauthenticated
+  endpoint. See the risk note in §2.7.
 - WhatsApp reminder dispatcher (unchanged from v1 scope).

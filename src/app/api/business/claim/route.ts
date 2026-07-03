@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient, createServiceClient } from "@/lib/supabase/server";
 import { decrypt } from "@/lib/encrypt";
+import { normalizeTimezone } from "@/lib/utils";
 import type { BusinessHoursRow, EnrichedBusiness } from "@/lib/places";
 import type { ExtractedService } from "@/lib/menu-extraction";
 
@@ -75,7 +76,7 @@ export async function POST(req: NextRequest) {
       public_phone: b.public_phone || null,
       website_url: b.website_url || null,
       google_place_id: b.google_place_id || null,
-      timezone: b.timezone || "America/New_York",
+      timezone: normalizeTimezone(b.timezone),
       latitude: b.latitude,
       longitude: b.longitude,
       google_refresh_token: googleRefreshToken,

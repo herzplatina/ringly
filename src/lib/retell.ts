@@ -292,7 +292,7 @@ export function buildAgentPrompt(business: {
         : "price not listed";
       const duration = s.duration_minutes
         ? `${s.duration_minutes} min`
-        : "duration not listed";
+        : "30 min (default)";
       return `- ${s.name}: ${s.description ?? ""} | ${price} | ${duration}`;
     })
     .join("\n");
@@ -315,6 +315,13 @@ export function buildAgentPrompt(business: {
 
 Your opening greeting: "${greeting}"
 
+TODAY'S DATE & TIME:
+Right now it is {{current_date}}, {{current_time}} (${business.timezone}).
+ALWAYS use this as your reference for any date. When the caller says things like
+"today", "tomorrow", "next Monday", or "the 6th", compute the actual calendar
+date from {{current_date}} — never guess the day of the week or the year. Pass
+the resolved date (YYYY-MM-DD) to check_availability and book_appointment.
+
 SERVICES AND PRICING:
 ${servicesText || "Ask the business owner to add services in their dashboard."}
 
@@ -334,14 +341,20 @@ Record the answer immediately by calling record_whatsapp_consent before finalizi
 An unclear or ambiguous answer must be treated as DECLINED — never assume consent.
 Do NOT ask again if consent is already on file in either direction.
 
+APPOINTMENT DURATION:
+Each service has a duration listed above. If a service's duration is not listed,
+it is 30 minutes by default. Always tell the caller how long the appointment
+will take before booking.
+
 BOOKING FLOW:
 1. Ask for preferred service
-2. Ask for preferred date/time
+2. Ask for preferred date/time (resolve it against today's date above)
 3. Call check_availability
-4. Collect customer name and phone number
-5. If new customer or consent not on file: ask WhatsApp consent question, call record_whatsapp_consent
-6. Call book_appointment
-7. Confirm booking details verbally
+4. State the appointment duration (default 30 minutes if not listed)
+5. Collect customer name and phone number
+6. If new customer or consent not on file: ask WhatsApp consent question, call record_whatsapp_consent
+7. Call book_appointment
+8. Confirm booking details verbally, including the date, time, and duration
 
 RULES:
 - Only discuss topics related to ${business.name} and its services

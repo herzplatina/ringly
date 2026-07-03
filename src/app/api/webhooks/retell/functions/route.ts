@@ -10,7 +10,7 @@ import {
 import { sendWhatsApp } from "@/lib/twilio";
 import { addHours } from "date-fns";
 import { fromZonedTime } from "date-fns-tz";
-import { normalizePhone } from "@/lib/utils";
+import { normalizePhone, phonesMatch } from "@/lib/utils";
 
 export async function POST(req: NextRequest) {
   const body = await req.text();
@@ -88,7 +88,7 @@ async function handleCheckAvailability(
     .eq("business_id", business.id)
     .single();
 
-  const duration = service?.duration_minutes ?? 60;
+  const duration = service?.duration_minutes ?? 30;
 
   const { data: hours } = await db
     .from("business_hours")
@@ -194,7 +194,7 @@ async function handleBookAppointment(
     .eq("business_id", business.id)
     .single();
 
-  const duration = service?.duration_minutes ?? 60;
+  const duration = service?.duration_minutes ?? 30;
   const endsAt = addHours(new Date(startsAt), duration / 60).toISOString();
 
   // Upsert customer
@@ -386,18 +386,15 @@ async function handleReschedule(
     return NextResponse.json({ result: "Appointment not found." });
   }
 
-  // Verify the caller owns this appointment (normalize before comparing — Retell
-  // delivers E.164 with "+", but stored numbers may lack the prefix)
-  if (
-    normalizePhone((appt as any).customers?.phone_number ?? "") !==
-    normalizePhone(callerPhone)
-  ) {
+  // Verify the caller owns this appointment. phonesMatch requires both numbers
+  // to be non-empty, so a suppressed caller ID never passes the ownership check.
+  if (!phonesMatch((appt as any).customers?.phone_number ?? "", callerPhone)) {
     return NextResponse.json({
       result: "You can only reschedule your own appointments.",
     });
   }
 
-  const duration = (appt as any).services?.duration_minutes ?? 60;
+  const duration = (appt as any).services?.duration_minutes ?? 30;
   const newEndsAt = addHours(
     new Date(newStartsAt),
     duration / 60,
@@ -499,11 +496,8 @@ async function handleCancel(
     return NextResponse.json({ result: "Appointment not found." });
   }
 
-  // Verify the caller owns this appointment (normalize before comparing)
-  if (
-    normalizePhone((appt as any).customers?.phone_number ?? "") !==
-    normalizePhone(callerPhone)
-  ) {
+  // Verify the caller owns this appointment (phonesMatch rejects empty numbers).
+  if (!phonesMatch((appt as any).customers?.phone_number ?? "", callerPhone)) {
     return NextResponse.json({
       result: "You can only cancel your own appointments.",
     });
