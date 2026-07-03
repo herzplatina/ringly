@@ -11,6 +11,7 @@ import {
   buildAgentPrompt,
   verifyRetellSignature,
   parseRetellCall,
+  selectReusableNumber,
 } from "@/lib/retell";
 
 // Build a signature the way Retell does: HMAC-SHA256(body + timestamp, apiKey),
@@ -196,5 +197,39 @@ describe("parseRetellCall", () => {
       fromNumber: "",
       toNumber: "",
     });
+  });
+});
+
+describe("selectReusableNumber", () => {
+  test("reuses an orphaned number (no agent, not in DB)", () => {
+    const existing = [
+      { phone_number: "+1999", inbound_agents: [{ agent_id: "a" }] },
+      { phone_number: "+1888", inbound_agents: [] },
+    ];
+    expect(selectReusableNumber(existing, [])).toBe("+1888");
+  });
+
+  test("treats null/undefined inbound_agents as unbound", () => {
+    expect(selectReusableNumber([{ phone_number: "+1777" }], [])).toBe("+1777");
+    expect(
+      selectReusableNumber(
+        [{ phone_number: "+1777", inbound_agents: null }],
+        [],
+      ),
+    ).toBe("+1777");
+  });
+
+  test("skips a number that is unbound in Retell but still owned in our DB", () => {
+    // A live business's number was manually unbound in Retell — must NOT be stolen.
+    const existing = [{ phone_number: "+1888", inbound_agents: [] }];
+    expect(selectReusableNumber(existing, ["+1888"])).toBeNull();
+  });
+
+  test("returns null when nothing is reusable (caller should purchase)", () => {
+    const existing = [
+      { phone_number: "+1999", inbound_agents: [{ agent_id: "a" }] },
+    ];
+    expect(selectReusableNumber(existing, [])).toBeNull();
+    expect(selectReusableNumber([], [])).toBeNull();
   });
 });

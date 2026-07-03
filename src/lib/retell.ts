@@ -231,6 +231,26 @@ export async function listPhoneNumbers(): Promise<
   return retellFetch("/list-phone-numbers");
 }
 
+/**
+ * Pick a genuinely orphaned number to reuse before buying a new one. A number
+ * qualifies only if it has no inbound agent bound in Retell AND is not already
+ * recorded against a business in our DB (`takenNumbers`) — so a live business's
+ * number that was merely unbound in Retell is never reassigned. Returns the
+ * phone number to reuse, or null if the caller should purchase a fresh one.
+ */
+export function selectReusableNumber(
+  existing: Array<{ phone_number: string; inbound_agents?: unknown[] | null }>,
+  takenNumbers: Iterable<string>,
+): string | null {
+  const taken = new Set(takenNumbers);
+  const match = existing.find(
+    (n) =>
+      (!n.inbound_agents || n.inbound_agents.length === 0) &&
+      !taken.has(n.phone_number),
+  );
+  return match?.phone_number ?? null;
+}
+
 export async function getCall(retellCallId: string) {
   return retellFetch(`/get-call/${retellCallId}`);
 }
