@@ -1,4 +1,9 @@
-import { computeAvailableSlots } from "@/lib/availability";
+import {
+  computeAvailableSlots,
+  formatSlotsForSpeech,
+  hasConflict,
+  suggestAdjacentSlots,
+} from "@/lib/availability";
 
 const MONDAY_2026 = "2026-07-06"; // a Monday
 const TZ = "America/New_York";
@@ -145,5 +150,151 @@ describe("computeAvailableSlots", () => {
       // Slot starting at 12 would run 12–13 which crosses the gap
       expect(Number(etHour)).not.toBe(12);
     }
+  });
+});
+
+// Helper: an ET wall-clock time on Monday 2026-07-06 as a UTC ISO instant.
+const et = (hhmm: string) =>
+  new Date(`${MONDAY_2026}T${hhmm}:00-04:00`).toISOString();
+
+describe("hasConflict", () => {
+  const busy = [{ starts_at: et("10:00"), ends_at: et("11:00") }];
+
+  test("detects an exact overlap", () => {
+    expect(hasConflict(et("10:00"), et("11:00"), busy)).toBe(true);
+  });
+
+  test("detects a partial overlap on either edge", () => {
+    expect(hasConflict(et("09:30"), et("10:30"), busy)).toBe(true);
+    expect(hasConflict(et("10:30"), et("11:30"), busy)).toBe(true);
+  });
+
+  test("detects a requested window that swallows a busy block", () => {
+    expect(hasConflict(et("09:00"), et("12:00"), busy)).toBe(true);
+  });
+
+  test("detects a requested window contained inside a busy block", () => {
+    expect(hasConflict(et("10:15"), et("10:45"), busy)).toBe(true);
+  });
+
+  test("back-to-back appointments do not conflict", () => {
+    expect(hasConflict(et("09:00"), et("10:00"), busy)).toBe(false);
+    expect(hasConflict(et("11:00"), et("12:00"), busy)).toBe(false);
+  });
+
+  test("no conflict against an empty calendar", () => {
+    expect(hasConflict(et("10:00"), et("11:00"), [])).toBe(false);
+  });
+
+  test("ignores unparseable busy entries rather than blocking the booking", () => {
+    expect(
+      hasConflict(et("10:00"), et("11:00"), [
+        { starts_at: "not-a-date", ends_at: "also-not-a-date" },
+      ]),
+    ).toBe(false);
+  });
+
+  test("an unparseable request window reports no conflict", () => {
+    expect(hasConflict("garbage", "garbage", busy)).toBe(false);
+  });
+});
+
+describe("suggestAdjacentSlots", () => {
+  // 60-min slots on an open 9–5 Monday with 10:00–11:00 taken.
+  const openSlots = computeAvailableSlots(MONDAY_2026, 60, TZ, OPEN_HOURS, [
+    { starts_at: et("10:00"), ends_at: et("11:00") },
+  ]);
+
+  test("offers times on both sides of the requested slot", () => {
+    const alts = suggestAdjacentSlots(et("10:00"), openSlots);
+    const starts = alts.map((s) => s.starts_at);
+    expect(starts).toContain(et("09:00")); // the slot just before
+    expect(starts).toContain(et("11:00")); // the slot just after
+  });
+
+  test("returns at most the requested number of alternatives", () => {
+    expect(suggestAdjacentSlots(et("10:00"), openSlots)).toHaveLength(3);
+    expect(
+      suggestAdjacentSlots(et("10:00"), openSlots, undefined, 2),
+    ).toHaveLength(2);
+  });
+
+  test("never offers a slot that has already passed", () => {
+    // It is 12:30 on the day in question: 9:00 and 11:00 are unbookable.
+    const alts = suggestAdjacentSlots(
+      et("10:00"),
+      openSlots,
+      new Date(et("12:30")),
+    );
+    const starts = alts.map((s) => s.starts_at);
+
+    expect(starts).not.toContain(et("09:00"));
+    expect(starts).not.toContain(et("11:00"));
+    expect(starts.every((s) => s >= et("12:30"))).toBe(true);
+  });
+
+  test("a slot starting exactly now is still offered", () => {
+    const alts = suggestAdjacentSlots(
+      et("10:00"),
+      openSlots,
+      new Date(et("13:00")),
+    );
+    expect(alts.map((s) => s.starts_at)).toContain(et("13:00"));
+  });
+
+  test("offers nothing when every open slot is in the past", () => {
+    expect(
+      suggestAdjacentSlots(et("10:00"), openSlots, new Date(et("23:00"))),
+    ).toEqual([]);
+  });
+
+  test("prefers the nearest times and returns them chronologically", () => {
+    const alts = suggestAdjacentSlots(et("10:00"), openSlots);
+    expect(alts.map((s) => s.starts_at)).toEqual([
+      et("09:00"),
+      et("11:00"),
+      et("11:30"),
+    ]);
+  });
+
+  test("never offers back the exact slot that was requested", () => {
+    const alts = suggestAdjacentSlots(et("13:00"), openSlots);
+    expect(alts.map((s) => s.starts_at)).not.toContain(et("13:00"));
+  });
+
+  test("returns nothing when the day has no open slots", () => {
+    expect(suggestAdjacentSlots(et("10:00"), [])).toEqual([]);
+  });
+
+  test("falls back to the earliest slots when the request is unparseable", () => {
+    const alts = suggestAdjacentSlots("garbage", openSlots);
+    expect(alts).toEqual(openSlots.slice(0, 3));
+  });
+});
+
+describe("formatSlotsForSpeech", () => {
+  const slot = (hhmm: string) => ({
+    starts_at: et(hhmm),
+    ends_at: et(hhmm),
+  });
+
+  test("joins three slots with commas and a trailing 'or'", () => {
+    const text = formatSlotsForSpeech(
+      [slot("09:00"), slot("11:00"), slot("11:30")],
+      TZ,
+    );
+    expect(text).toBe(
+      "Monday, July 6th at 9:00 AM, Monday, July 6th at 11:00 AM or Monday, July 6th at 11:30 AM",
+    );
+  });
+
+  test("renders a single slot with no connector", () => {
+    expect(formatSlotsForSpeech([slot("09:00")], TZ)).toBe(
+      "Monday, July 6th at 9:00 AM",
+    );
+  });
+
+  test("renders an empty list as an empty string", () => {
+    expect(formatSlotsForSpeech([], TZ)).toBe("");
   });
 });

@@ -3,6 +3,8 @@ import { google } from "googleapis";
 import { decrypt, encrypt } from "./encrypt";
 import { createServiceClient } from "./supabase/server";
 import { env } from "./env";
+import { fromZonedTime } from "date-fns-tz";
+import type { TimeSlot } from "@/types";
 
 function oauthClient() {
   return new google.auth.OAuth2(
@@ -32,7 +34,7 @@ async function calendarClient(businessId: string) {
   const db = createServiceClient();
   const { data: biz } = await db
     .from("businesses")
-    .select("google_refresh_token, google_calendar_id")
+    .select("google_refresh_token, google_calendar_id, timezone")
     .eq("id", businessId)
     .single();
 
@@ -44,7 +46,76 @@ async function calendarClient(businessId: string) {
   return {
     calendar: google.calendar({ version: "v3", auth: client }),
     calendarId: biz.google_calendar_id ?? "primary",
+    timezone: biz.timezone ?? "UTC",
   };
+}
+
+/**
+ * Time already occupied on the business's Google Calendar between two instants.
+ *
+ * Uses events.list rather than freebusy because freebusy reports anonymous
+ * ranges: without event ids, an appointment being rescheduled would collide
+ * with its own calendar event and the move would be refused. `excludeEventId`
+ * drops exactly that event. `singleEvents` expands recurring series into their
+ * individual occurrences so a weekly block is honoured.
+ *
+ * Returns `[]` when the business has not connected Google, or when Google is
+ * unreachable: an outage must not take the phone line down, and our own
+ * appointments table is still checked for conflicts either way. Failures are
+ * logged here because the caller gets no signal that the check degraded.
+ */
+export async function getCalendarBusyIntervals(
+  businessId: string,
+  timeMin: string,
+  timeMax: string,
+  excludeEventId?: string,
+): Promise<TimeSlot[]> {
+  try {
+    const { calendar, calendarId, timezone } = await calendarClient(businessId);
+    const res = await calendar.events.list({
+      calendarId,
+      timeMin,
+      timeMax,
+      singleEvents: true,
+      showDeleted: false,
+      maxResults: 2500,
+    });
+
+    return (res.data.items ?? []).flatMap((event) => {
+      // The appointment's own event must not block its own reschedule.
+      if (excludeEventId && event.id === excludeEventId) return [];
+      // "transparent" is Google's flag for "show me as available".
+      if (event.status === "cancelled" || event.transparency === "transparent")
+        return [];
+
+      const start = toInstant(event.start, timezone);
+      const end = toInstant(event.end, timezone);
+      return start && end ? [{ starts_at: start, ends_at: end }] : [];
+    });
+  } catch (err) {
+    console.error("Calendar busy lookup failed:", err);
+    return [];
+  }
+}
+
+/**
+ * Normalize a Google event boundary to a UTC instant. Timed events carry
+ * `dateTime` (already offset-qualified); all-day events carry a bare `date`,
+ * which means midnight in the business's own timezone — not UTC.
+ */
+function toInstant(
+  boundary: { dateTime?: string | null; date?: string | null } | undefined,
+  timezone: string,
+): string | null {
+  if (boundary?.dateTime) {
+    const parsed = new Date(boundary.dateTime);
+    return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
+  }
+  if (boundary?.date) {
+    const parsed = fromZonedTime(`${boundary.date}T00:00:00`, timezone);
+    return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
+  }
+  return null;
 }
 
 export async function createCalendarEvent(

@@ -1,16 +1,24 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServiceClient } from "@/lib/supabase/server";
 import { verifyRetellSignature, parseRetellCall } from "@/lib/retell";
-import { computeAvailableSlots, formatSlotForSpeech } from "@/lib/availability";
+import {
+  computeAvailableSlots,
+  formatSlotForSpeech,
+  formatSlotsForSpeech,
+  hasConflict,
+  suggestAdjacentSlots,
+} from "@/lib/availability";
 import {
   createCalendarEvent,
   updateCalendarEvent,
   deleteCalendarEvent,
+  getCalendarBusyIntervals,
 } from "@/lib/google-calendar";
 import { sendWhatsApp } from "@/lib/twilio";
-import { addHours } from "date-fns";
-import { fromZonedTime } from "date-fns-tz";
+import { addHours, addMinutes } from "date-fns";
+import { formatInTimeZone, fromZonedTime } from "date-fns-tz";
 import { normalizePhone, phonesMatch } from "@/lib/utils";
+import type { TimeSlot } from "@/types";
 
 export async function POST(req: NextRequest) {
   const body = await req.text();
@@ -72,6 +80,167 @@ export async function POST(req: NextRequest) {
   }
 }
 
+// ── conflict detection ──────────────────────────────────────────────────────
+
+/**
+ * The appointment currently being rescheduled, which must not be treated as an
+ * obstacle to its own move — in our table, and on Google Calendar.
+ */
+type ExcludedAppointment = {
+  appointmentId: string;
+  calendarEventId: string | null;
+};
+
+/**
+ * The UTC instants bounding a local calendar day. Accepts either a YYYY-MM-DD
+ * string (what the agent sends) or an instant to read the local date from.
+ */
+function dayBounds(day: string | Date, timezone: string) {
+  const localDate =
+    typeof day === "string"
+      ? day.slice(0, 10)
+      : formatInTimeZone(day, timezone, "yyyy-MM-dd");
+  return {
+    localDate,
+    dayStart: fromZonedTime(`${localDate}T00:00:00`, timezone).toISOString(),
+    dayEnd: fromZonedTime(`${localDate}T23:59:59.999`, timezone).toISOString(),
+  };
+}
+
+/**
+ * Everything occupying the business's time between two instants: appointments
+ * we booked plus busy blocks on the owner's Google Calendar (so an event they
+ * created directly in Google — a dentist visit, a blocked-off lunch — is
+ * respected too).
+ *
+ * The DB half is authoritative and always runs; the calendar half degrades to
+ * empty if Google is unreachable. `exclude` drops the appointment being
+ * rescheduled — both our row and its Google event — so it never conflicts with
+ * itself when the caller only shifts it a little.
+ */
+async function collectBusyIntervals(
+  db: ReturnType<typeof createServiceClient>,
+  businessId: string,
+  windowStart: string,
+  windowEnd: string,
+  exclude?: ExcludedAppointment,
+): Promise<TimeSlot[]> {
+  let query = db
+    .from("appointments")
+    .select("id, starts_at, ends_at")
+    .eq("business_id", businessId)
+    .in("status", ["booked", "rescheduled"])
+    // Overlap test: an appointment is relevant if it starts before the window
+    // ends and ends after the window starts.
+    .lt("starts_at", windowEnd)
+    .gt("ends_at", windowStart);
+
+  if (exclude) query = query.neq("id", exclude.appointmentId);
+
+  const [{ data: appointments }, calendarBusy] = await Promise.all([
+    query,
+    getCalendarBusyIntervals(
+      businessId,
+      windowStart,
+      windowEnd,
+      exclude?.calendarEventId ?? undefined,
+    ),
+  ]);
+
+  const booked = (appointments ?? []).map((a) => ({
+    starts_at: a.starts_at,
+    ends_at: a.ends_at,
+  }));
+
+  return [...booked, ...calendarBusy];
+}
+
+/**
+ * Free slots on the same local day as `startsAt`, honouring business hours and
+ * every busy interval. Used to counter-offer when a requested time is taken.
+ */
+async function openSlotsOnSameDay(
+  db: ReturnType<typeof createServiceClient>,
+  businessId: string,
+  timezone: string,
+  startsAt: Date,
+  durationMinutes: number,
+  exclude?: ExcludedAppointment,
+): Promise<TimeSlot[]> {
+  const { localDate, dayStart, dayEnd } = dayBounds(startsAt, timezone);
+
+  const [{ data: hours }, busy] = await Promise.all([
+    db.from("business_hours").select("*").eq("business_id", businessId),
+    collectBusyIntervals(db, businessId, dayStart, dayEnd, exclude),
+  ]);
+
+  return computeAvailableSlots(
+    localDate,
+    durationMinutes,
+    timezone,
+    hours ?? [],
+    busy,
+  );
+}
+
+/**
+ * Refuse a taken slot, offering the nearest open times either side of it. The
+ * spoken `result` is what the agent reads out; `alternatives` carries the exact
+ * ISO timestamps back so a follow-up book_appointment call can reuse one.
+ */
+async function refuseWithAlternatives(
+  db: ReturnType<typeof createServiceClient>,
+  business: { id: string; timezone: string },
+  startsAt: Date,
+  durationMinutes: number,
+  exclude?: ExcludedAppointment,
+) {
+  const openSlots = await openSlotsOnSameDay(
+    db,
+    business.id,
+    business.timezone,
+    startsAt,
+    durationMinutes,
+    exclude,
+  );
+  // Never counter-offer a time that has already passed — the requested slot may
+  // be earlier today, and every earlier slot on that day is then unbookable.
+  const alternatives = suggestAdjacentSlots(
+    startsAt.toISOString(),
+    openSlots,
+    new Date(),
+  );
+  const requested = formatSlotForSpeech(
+    { starts_at: startsAt.toISOString(), ends_at: startsAt.toISOString() },
+    business.timezone,
+  );
+
+  if (alternatives.length === 0) {
+    return NextResponse.json({
+      result: `${requested} is already taken, and there is nothing else open that day. Ask the customer for a different date.`,
+      conflict: true,
+      alternatives: [],
+    });
+  }
+
+  return NextResponse.json({
+    result: `${requested} is already taken. Offer these open times instead: ${formatSlotsForSpeech(alternatives, business.timezone)}. Do not book until the customer picks one.`,
+    conflict: true,
+    alternatives,
+  });
+}
+
+/**
+ * Parse an agent-supplied ISO start time, or null if it is unusable. The shape
+ * is checked before parsing because Date() happily turns loose input like "10"
+ * into a real but wrong date, which would book someone months away.
+ */
+function parseStart(value: string): Date | null {
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(value)) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
 // ── check_availability ──────────────────────────────────────────────────────
 async function handleCheckAvailability(
   db: ReturnType<typeof createServiceClient>,
@@ -95,29 +264,18 @@ async function handleCheckAvailability(
     .select("*")
     .eq("business_id", business.id);
 
-  const dayStart = fromZonedTime(
-    `${date}T00:00:00`,
-    business.timezone,
-  ).toISOString();
-  const dayEnd = fromZonedTime(
-    `${date}T23:59:59`,
-    business.timezone,
-  ).toISOString();
+  const { dayStart, dayEnd } = dayBounds(date, business.timezone);
 
-  const { data: existing } = await db
-    .from("appointments")
-    .select("starts_at, ends_at")
-    .eq("business_id", business.id)
-    .gte("starts_at", dayStart)
-    .lte("starts_at", dayEnd)
-    .in("status", ["booked", "rescheduled"]);
+  // Offered times must match what book_appointment will accept, so the same
+  // busy set (our appointments + Google Calendar) filters both.
+  const busy = await collectBusyIntervals(db, business.id, dayStart, dayEnd);
 
   const slots = computeAvailableSlots(
     date,
     duration,
     business.timezone,
     hours ?? [],
-    existing ?? [],
+    busy,
   );
 
   if (slots.length === 0) {
@@ -184,8 +342,6 @@ async function handleBookAppointment(
   const customerName = String(args.customer_name ?? "");
   const phoneNumber = normalizePhone(String(args.phone_number ?? ""));
   const serviceId = String(args.service_id ?? "");
-  const startsAt = String(args.starts_at ?? "");
-
   // Fetch service for duration
   const { data: service } = await db
     .from("services")
@@ -195,7 +351,25 @@ async function handleBookAppointment(
     .single();
 
   const duration = service?.duration_minutes ?? 30;
-  const endsAt = addHours(new Date(startsAt), duration / 60).toISOString();
+
+  const start = parseStart(String(args.starts_at ?? ""));
+  if (!start) {
+    return NextResponse.json({
+      result:
+        "That start time could not be understood. Re-confirm the date and time with the customer and pass an exact time from check_availability.",
+    });
+  }
+  // Normalize to UTC ISO so the stored row, the conflict check and the calendar
+  // event all describe the same instant in the same format.
+  const startsAt = start.toISOString();
+  const endsAt = addMinutes(start, duration).toISOString();
+
+  // Never double-book: the slot must be clear in our own appointments AND on
+  // the owner's Google Calendar before anything is written.
+  const busy = await collectBusyIntervals(db, business.id, startsAt, endsAt);
+  if (hasConflict(startsAt, endsAt, busy)) {
+    return refuseWithAlternatives(db, business, start, duration);
+  }
 
   // Upsert customer
   const { data: customer } = await db
@@ -283,7 +457,7 @@ async function handleBookAppointment(
   });
 
   return NextResponse.json({
-    result: `Appointment booked for ${customerName} on ${startsAt}. A confirmation will be sent if consent was granted.`,
+    result: `Appointment booked for ${customerName} on ${formatSlotForSpeech({ starts_at: startsAt, ends_at: endsAt }, business.timezone)}. A confirmation will be sent if consent was granted.`,
     appointment_id: appointment.id,
   });
 }
@@ -395,15 +569,39 @@ async function handleReschedule(
   }
 
   const duration = (appt as any).services?.duration_minutes ?? 30;
-  const newEndsAt = addHours(
-    new Date(newStartsAt),
-    duration / 60,
-  ).toISOString();
+
+  const newStart = parseStart(newStartsAt);
+  if (!newStart) {
+    return NextResponse.json({
+      result:
+        "That new start time could not be understood. Re-confirm the date and time with the customer.",
+    });
+  }
+  const newStartsAtIso = newStart.toISOString();
+  const newEndsAt = addMinutes(newStart, duration).toISOString();
+
+  // Moving into an occupied slot double-books just as badly as a fresh
+  // booking, so the same check applies — minus this appointment, which would
+  // otherwise conflict with itself when the caller keeps a similar time.
+  const self: ExcludedAppointment = {
+    appointmentId,
+    calendarEventId: appt.google_calendar_event_id,
+  };
+  const busy = await collectBusyIntervals(
+    db,
+    business.id,
+    newStartsAtIso,
+    newEndsAt,
+    self,
+  );
+  if (hasConflict(newStartsAtIso, newEndsAt, busy)) {
+    return refuseWithAlternatives(db, business, newStart, duration, self);
+  }
 
   await db
     .from("appointments")
     .update({
-      starts_at: newStartsAt,
+      starts_at: newStartsAtIso,
       ends_at: newEndsAt,
       status: "rescheduled",
     })
@@ -423,7 +621,7 @@ async function handleReschedule(
     business.whatsapp_sender_status === "approved" &&
     business.whatsapp_number
   ) {
-    const apptTime = new Date(newStartsAt);
+    const apptTime = newStart;
     await db.from("reminders").insert([
       {
         appointment_id: appointmentId,
@@ -460,7 +658,7 @@ async function handleReschedule(
     try {
       if (appt.google_calendar_event_id) {
         await updateCalendarEvent(business.id, appt.google_calendar_event_id, {
-          starts_at: newStartsAt,
+          starts_at: newStartsAtIso,
           ends_at: newEndsAt,
           customer_name: customer?.name ?? "",
           service_name: (appt as any).services?.name ?? "Appointment",
@@ -472,7 +670,7 @@ async function handleReschedule(
   })();
 
   return NextResponse.json({
-    result: `Appointment rescheduled to ${newStartsAt}.`,
+    result: `Appointment rescheduled to ${formatSlotForSpeech({ starts_at: newStartsAtIso, ends_at: newEndsAt }, business.timezone)}.`,
   });
 }
 

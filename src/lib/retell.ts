@@ -105,7 +105,7 @@ function bookingTools() {
     ),
     bookingTool(
       "book_appointment",
-      "Book a new appointment. Use the exact starts_at value returned by check_availability.",
+      "Book a new appointment. Use the exact starts_at value returned by check_availability. If the response has conflict=true the slot was taken and nothing was booked — offer the returned alternatives and call this again with the time the customer picks.",
       {
         customer_name: {
           type: "string",
@@ -128,7 +128,7 @@ function bookingTools() {
     ),
     bookingTool(
       "reschedule_appointment",
-      "Move an existing appointment to a new time. The caller may only reschedule their own appointments.",
+      "Move an existing appointment to a new time. The caller may only reschedule their own appointments. If the response has conflict=true the new time was taken and nothing changed — offer the returned alternatives and call this again with the time the customer picks.",
       {
         appointment_id: {
           type: "string",
@@ -375,6 +375,15 @@ BOOKING FLOW:
 6. If new customer or consent not on file: ask WhatsApp consent question, call record_whatsapp_consent
 7. Call book_appointment
 8. Confirm booking details verbally, including the date, time, and duration
+
+DOUBLE-BOOKING:
+Every requested time is checked against ${business.name}'s calendar before it is
+booked. If book_appointment or reschedule_appointment comes back with
+conflict=true, NOTHING was booked — never tell the caller it was. Apologize
+briefly, read out the alternative times in the response, and let the customer
+choose one before calling the function again with their choice. If no
+alternatives came back, that day is full — ask for a different date and call
+check_availability for it.
 
 RULES:
 - Only discuss topics related to ${business.name} and its services
