@@ -1,15 +1,22 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServiceClient } from "@/lib/supabase/server";
 import { verifyRetellSignature, parseRetellCall } from "@/lib/retell";
-import { computeAvailableSlots, formatSlotForSpeech } from "@/lib/availability";
+import {
+  computeAvailableSlots,
+  filterFutureSlots,
+  findAlternativeSlots,
+  formatSlotForSpeech,
+  hasConflict,
+} from "@/lib/availability";
 import {
   createCalendarEvent,
   updateCalendarEvent,
   deleteCalendarEvent,
+  listCalendarEvents,
 } from "@/lib/google-calendar";
 import { sendWhatsApp } from "@/lib/twilio";
-import { addHours } from "date-fns";
-import { fromZonedTime } from "date-fns-tz";
+import { addHours, format } from "date-fns";
+import { fromZonedTime, toZonedTime } from "date-fns-tz";
 import { normalizePhone, phonesMatch } from "@/lib/utils";
 
 export async function POST(req: NextRequest) {
@@ -72,6 +79,118 @@ export async function POST(req: NextRequest) {
   }
 }
 
+type BusyInterval = { starts_at: string; ends_at: string };
+
+/**
+ * Every interval that blocks booking over [fromIso, toIso): our own active
+ * appointments plus events on the owner's Google Calendar. The calendar lookup
+ * is best-effort — a disconnected or expired calendar must not break booking,
+ * so on failure we fall back to the appointments table alone.
+ * `excludeAppointmentId` / `excludeCalendarEventId` let a reschedule ignore the
+ * appointment being moved (both our row and its copy on the calendar).
+ */
+async function getBusyIntervals(
+  db: ReturnType<typeof createServiceClient>,
+  businessId: string,
+  fromIso: string,
+  toIso: string,
+  excludeAppointmentId?: string,
+  excludeCalendarEventId?: string,
+): Promise<BusyInterval[]> {
+  let query = db
+    .from("appointments")
+    .select("starts_at, ends_at")
+    .eq("business_id", businessId)
+    .lt("starts_at", toIso)
+    .gt("ends_at", fromIso)
+    .in("status", ["booked", "rescheduled"]);
+  if (excludeAppointmentId) query = query.neq("id", excludeAppointmentId);
+  const { data: appointments } = await query;
+
+  const busy: BusyInterval[] = [...(appointments ?? [])];
+
+  try {
+    const events = await listCalendarEvents(businessId, fromIso, toIso);
+    for (const event of events ?? []) {
+      if (excludeCalendarEventId && event.id === excludeCalendarEventId)
+        continue;
+      busy.push({ starts_at: event.starts_at, ends_at: event.ends_at });
+    }
+  } catch (err) {
+    console.error("Google Calendar conflict check failed:", err);
+  }
+
+  return busy;
+}
+
+/** Local calendar date (YYYY-MM-DD) of an instant in the business timezone. */
+function localDateString(iso: string, timezone: string): string {
+  return format(toZonedTime(new Date(iso), timezone), "yyyy-MM-dd");
+}
+
+/**
+ * The whole local day containing `startIso`, widened if needed so the full
+ * [startIso, endIso) window is covered (an appointment may run past midnight).
+ */
+function dayWindow(startIso: string, endIso: string, timezone: string) {
+  const date = localDateString(startIso, timezone);
+  const dayStart = fromZonedTime(`${date}T00:00:00`, timezone);
+  const dayEnd = fromZonedTime(`${date}T23:59:59`, timezone);
+  const start = new Date(startIso);
+  const end = new Date(endIso);
+  return {
+    date,
+    from: (dayStart < start ? dayStart : start).toISOString(),
+    to: (dayEnd > end ? dayEnd : end).toISOString(),
+  };
+}
+
+/**
+ * Refuse a booking/reschedule and offer the nearest open times on either side
+ * of the requested window. Alternatives are computed against the same busy
+ * intervals the conflict check used, so every offered time would be accepted,
+ * and slots already in the past are never offered.
+ */
+async function conflictResponse(
+  db: ReturnType<typeof createServiceClient>,
+  business: { id: string; timezone: string },
+  date: string,
+  durationMinutes: number,
+  busy: BusyInterval[],
+  startsAt: string,
+  endsAt: string,
+) {
+  const { data: hours } = await db
+    .from("business_hours")
+    .select("*")
+    .eq("business_id", business.id);
+
+  const alternatives = findAlternativeSlots(
+    date,
+    durationMinutes,
+    business.timezone,
+    hours ?? [],
+    busy,
+    startsAt,
+  );
+
+  const requested = formatSlotForSpeech(
+    { starts_at: startsAt, ends_at: endsAt },
+    business.timezone,
+  );
+  const suggestion =
+    alternatives.length > 0
+      ? `The nearest available times are ${alternatives
+          .map((s) => formatSlotForSpeech(s, business.timezone))
+          .join(", ")}.`
+      : "There are no other openings that day. Please suggest another date.";
+
+  return NextResponse.json({
+    result: `Sorry, ${requested} is already taken. ${suggestion}`,
+    alternatives,
+  });
+}
+
 // ── check_availability ──────────────────────────────────────────────────────
 async function handleCheckAvailability(
   db: ReturnType<typeof createServiceClient>,
@@ -104,20 +223,13 @@ async function handleCheckAvailability(
     business.timezone,
   ).toISOString();
 
-  const { data: existing } = await db
-    .from("appointments")
-    .select("starts_at, ends_at")
-    .eq("business_id", business.id)
-    .gte("starts_at", dayStart)
-    .lte("starts_at", dayEnd)
-    .in("status", ["booked", "rescheduled"]);
+  // Offer only slots booking would actually accept: the window must be free
+  // across both our appointments and the owner's Google Calendar, and slots
+  // already in the past are never bookable.
+  const busy = await getBusyIntervals(db, business.id, dayStart, dayEnd);
 
-  const slots = computeAvailableSlots(
-    date,
-    duration,
-    business.timezone,
-    hours ?? [],
-    existing ?? [],
+  const slots = filterFutureSlots(
+    computeAvailableSlots(date, duration, business.timezone, hours ?? [], busy),
   );
 
   if (slots.length === 0) {
@@ -194,8 +306,30 @@ async function handleBookAppointment(
     .eq("business_id", business.id)
     .single();
 
+  if (isNaN(new Date(startsAt).getTime())) {
+    return NextResponse.json({
+      result: "Invalid starts_at time. Please use an ISO 8601 timestamp.",
+    });
+  }
+
   const duration = service?.duration_minutes ?? 30;
   const endsAt = addHours(new Date(startsAt), duration / 60).toISOString();
+
+  // Never double-book: verify the requested window is free across both our
+  // appointments table and the owner's Google Calendar before writing anything.
+  const window = dayWindow(startsAt, endsAt, business.timezone);
+  const busy = await getBusyIntervals(db, business.id, window.from, window.to);
+  if (hasConflict(busy, startsAt, endsAt)) {
+    return conflictResponse(
+      db,
+      business,
+      window.date,
+      duration,
+      busy,
+      startsAt,
+      endsAt,
+    );
+  }
 
   // Upsert customer
   const { data: customer } = await db
@@ -394,11 +528,42 @@ async function handleReschedule(
     });
   }
 
+  if (isNaN(new Date(newStartsAt).getTime())) {
+    return NextResponse.json({
+      result: "Invalid new_starts_at time. Please use an ISO 8601 timestamp.",
+    });
+  }
+
   const duration = (appt as any).services?.duration_minutes ?? 30;
   const newEndsAt = addHours(
     new Date(newStartsAt),
     duration / 60,
   ).toISOString();
+
+  // Never double-book: the new window must be free across both our
+  // appointments table and the owner's Google Calendar — ignoring the
+  // appointment being moved, which is not a conflict with itself (neither our
+  // row nor its calendar event).
+  const window = dayWindow(newStartsAt, newEndsAt, business.timezone);
+  const busy = await getBusyIntervals(
+    db,
+    business.id,
+    window.from,
+    window.to,
+    appointmentId,
+    appt.google_calendar_event_id ?? undefined,
+  );
+  if (hasConflict(busy, newStartsAt, newEndsAt)) {
+    return conflictResponse(
+      db,
+      business,
+      window.date,
+      duration,
+      busy,
+      newStartsAt,
+      newEndsAt,
+    );
+  }
 
   await db
     .from("appointments")

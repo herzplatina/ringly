@@ -14,7 +14,7 @@ Ringly currently only works for businesses that meet **all** of the following cr
 
 ## Roadmap / To-Do
 
-- [ ] **Check Google Calendar for conflicts before booking.** Before creating a new appointment, first query Google Calendar for any conflicting appointments in the requested time slot and refuse/re-offer if the slot is already taken.
+- [x] **Check Google Calendar for conflicts before booking.** Before creating a new appointment, first query Google Calendar for any conflicting appointments in the requested time slot and refuse/re-offer if the slot is already taken.
 - [ ] **Enrich the calendar appointment description.** The calendar event description should include the customer's name, email, and the service they requested.
 
 ## Getting Started

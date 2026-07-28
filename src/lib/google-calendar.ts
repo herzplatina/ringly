@@ -93,6 +93,41 @@ export async function updateCalendarEvent(
   });
 }
 
+/**
+ * Busy events on the business's Google Calendar overlapping [timeMin, timeMax).
+ * Used to avoid double-booking over events the owner created outside Ringly.
+ * All-day (date-only) and "transparent" (shown as free) events don't block a
+ * time slot, so they are excluded.
+ */
+export async function listCalendarEvents(
+  businessId: string,
+  timeMin: string,
+  timeMax: string,
+): Promise<Array<{ id: string; starts_at: string; ends_at: string }>> {
+  const { calendar, calendarId } = await calendarClient(businessId);
+  const res = await calendar.events.list({
+    calendarId,
+    timeMin,
+    timeMax,
+    singleEvents: true,
+    orderBy: "startTime",
+    maxResults: 250,
+  });
+  return (res.data.items ?? [])
+    .filter(
+      (event) =>
+        event.status !== "cancelled" &&
+        event.transparency !== "transparent" &&
+        Boolean(event.start?.dateTime) &&
+        Boolean(event.end?.dateTime),
+    )
+    .map((event) => ({
+      id: event.id ?? "",
+      starts_at: event.start!.dateTime!,
+      ends_at: event.end!.dateTime!,
+    }));
+}
+
 export async function deleteCalendarEvent(businessId: string, eventId: string) {
   const { calendar, calendarId } = await calendarClient(businessId);
   await calendar.events.delete({ calendarId, eventId });
