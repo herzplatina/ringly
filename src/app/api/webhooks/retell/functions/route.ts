@@ -1,16 +1,26 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServiceClient } from "@/lib/supabase/server";
 import { verifyRetellSignature, parseRetellCall } from "@/lib/retell";
-import { computeAvailableSlots, formatSlotForSpeech } from "@/lib/availability";
+import {
+  computeAvailableSlots,
+  formatSlotForSpeech,
+  nearestAvailableSlots,
+  slotBlocker,
+  type BusyInterval,
+  type SlotBlocker,
+} from "@/lib/availability";
 import {
   createCalendarEvent,
   updateCalendarEvent,
   deleteCalendarEvent,
+  listCalendarBusyIntervals,
+  type CalendarBusyInterval,
 } from "@/lib/google-calendar";
 import { sendWhatsApp } from "@/lib/twilio";
-import { addHours } from "date-fns";
-import { fromZonedTime } from "date-fns-tz";
+import { addHours, addMinutes, format } from "date-fns";
+import { fromZonedTime, toZonedTime } from "date-fns-tz";
 import { normalizePhone, phonesMatch } from "@/lib/utils";
+import type { TimeSlot } from "@/types";
 
 export async function POST(req: NextRequest) {
   const body = await req.text();
@@ -72,6 +82,153 @@ export async function POST(req: NextRequest) {
   }
 }
 
+// ── shared availability helpers ─────────────────────────────────────────────
+
+/** UTC bounds of the local day containing `instant` in the business timezone. */
+function localDayBounds(instant: Date, timezone: string) {
+  const dateOnly = format(toZonedTime(instant, timezone), "yyyy-MM-dd");
+  return {
+    dayStart: fromZonedTime(`${dateOnly}T00:00:00`, timezone).toISOString(),
+    dayEnd: fromZonedTime(`${dateOnly}T23:59:59`, timezone).toISOString(),
+  };
+}
+
+/**
+ * Busy windows from the business's Google Calendar, or [] when the calendar is
+ * unreachable, not connected, or errors — an outage must not close the line
+ * and must not throw; our own appointments table still protects the business.
+ */
+async function calendarBusyOrEmpty(
+  businessId: string,
+  timeMin: string,
+  timeMax: string,
+  timezone: string,
+): Promise<CalendarBusyInterval[]> {
+  try {
+    const intervals = await listCalendarBusyIntervals(
+      businessId,
+      timeMin,
+      timeMax,
+      timezone,
+    );
+    return Array.isArray(intervals) ? intervals : [];
+  } catch (err) {
+    console.error("Calendar availability lookup failed:", err);
+    return [];
+  }
+}
+
+/**
+ * Everything that makes a local day busy: the opening hours, our own booked
+ * appointments, and the business's Google Calendar events.
+ */
+async function dayBusyContext(
+  db: ReturnType<typeof createServiceClient>,
+  business: { id: string; timezone: string },
+  instant: Date,
+) {
+  const { dayStart, dayEnd } = localDayBounds(instant, business.timezone);
+
+  const { data: hours } = await db
+    .from("business_hours")
+    .select("*")
+    .eq("business_id", business.id);
+
+  const { data: existing } = await db
+    .from("appointments")
+    .select("id, starts_at, ends_at")
+    .eq("business_id", business.id)
+    .gte("starts_at", dayStart)
+    .lte("starts_at", dayEnd)
+    .in("status", ["booked", "rescheduled"]);
+
+  const calendarBusy = await calendarBusyOrEmpty(
+    business.id,
+    dayStart,
+    dayEnd,
+    business.timezone,
+  );
+
+  return {
+    hours: hours ?? [],
+    appointments: existing ?? [],
+    calendarBusy,
+  };
+}
+
+/** Spoken refusal for an unbookable window, with real counter-offers. */
+function conflictResponse(
+  reason: SlotBlocker,
+  alternatives: TimeSlot[],
+  timezone: string,
+) {
+  const headline =
+    reason === "conflict"
+      ? "That time is already taken."
+      : reason === "outside_hours"
+        ? "That time is outside opening hours."
+        : "That time has already passed.";
+  const result =
+    alternatives.length > 0
+      ? `${headline} The nearest available times are ${alternatives
+          .map((s) => formatSlotForSpeech(s, timezone))
+          .join(", ")}.`
+      : `${headline} Please pick a different date.`;
+  return NextResponse.json({ result, conflict: true, alternatives });
+}
+
+/**
+ * Verify a requested window is actually free — considering BOTH our
+ * appointments table and the business's Google Calendar — before anything is
+ * written. Returns null when the slot is bookable; otherwise the refusal
+ * response (`conflict: true` plus real, bookable alternatives).
+ */
+async function refuseIfUnavailable(
+  db: ReturnType<typeof createServiceClient>,
+  business: { id: string; timezone: string },
+  startsAt: Date,
+  endsAt: Date,
+  durationMinutes: number,
+  options: {
+    excludeAppointmentId?: string;
+    excludeCalendarEventId?: string | null;
+  } = {},
+) {
+  const { hours, appointments, calendarBusy } = await dayBusyContext(
+    db,
+    business,
+    startsAt,
+  );
+
+  // A rescheduled appointment must not conflict with itself — neither its row
+  // in our table nor its own event on the business's calendar.
+  const busy: BusyInterval[] = [
+    ...appointments
+      .filter((a) => a.id !== options.excludeAppointmentId)
+      .map((a) => ({ starts_at: a.starts_at, ends_at: a.ends_at })),
+    ...calendarBusy.filter(
+      (b) =>
+        !options.excludeCalendarEventId ||
+        b.event_id !== options.excludeCalendarEventId,
+    ),
+  ];
+
+  const reason = slotBlocker(startsAt, endsAt, business.timezone, hours, busy);
+  if (!reason) return null;
+
+  // Offer the nearest open times on either side of the refused time. Every
+  // alternative is itself free of both appointment and calendar conflicts, in
+  // the future, and never the slot that was just refused.
+  const alternatives = nearestAvailableSlots(
+    startsAt,
+    durationMinutes,
+    business.timezone,
+    hours,
+    busy,
+  );
+  return conflictResponse(reason, alternatives, business.timezone);
+}
+
 // ── check_availability ──────────────────────────────────────────────────────
 async function handleCheckAvailability(
   db: ReturnType<typeof createServiceClient>,
@@ -95,12 +252,14 @@ async function handleCheckAvailability(
     .select("*")
     .eq("business_id", business.id);
 
+  // Accept YYYY-MM-DD and tolerate a trailing time component from the caller.
+  const dateOnly = date.slice(0, 10);
   const dayStart = fromZonedTime(
-    `${date}T00:00:00`,
+    `${dateOnly}T00:00:00`,
     business.timezone,
   ).toISOString();
   const dayEnd = fromZonedTime(
-    `${date}T23:59:59`,
+    `${dateOnly}T23:59:59`,
     business.timezone,
   ).toISOString();
 
@@ -112,28 +271,42 @@ async function handleCheckAvailability(
     .lte("starts_at", dayEnd)
     .in("status", ["booked", "rescheduled"]);
 
+  // Advertised slots must be ones booking would actually accept, so the
+  // business's Google Calendar counts as busy here too (best-effort: an
+  // outage still leaves our own appointments table in place).
+  const calendarBusy = await calendarBusyOrEmpty(
+    business.id,
+    dayStart,
+    dayEnd,
+    business.timezone,
+  );
+
   const slots = computeAvailableSlots(
     date,
     duration,
     business.timezone,
     hours ?? [],
-    existing ?? [],
+    [...(existing ?? []), ...calendarBusy],
+  );
+  // Never advertise a time that has already passed — booking would refuse it.
+  const futureSlots = slots.filter(
+    (s) => new Date(s.starts_at).getTime() > Date.now(),
   );
 
-  if (slots.length === 0) {
+  if (futureSlots.length === 0) {
     return NextResponse.json({
       result: `No availability on ${date}. Please suggest another date.`,
     });
   }
 
-  const slotList = slots
+  const slotList = futureSlots
     .slice(0, 5)
     .map((s) => formatSlotForSpeech(s, business.timezone))
     .join(", ");
 
   return NextResponse.json({
     result: `Available times on ${date}: ${slotList}`,
-    slots: slots.slice(0, 5),
+    slots: futureSlots.slice(0, 5),
   });
 }
 
@@ -195,7 +368,27 @@ async function handleBookAppointment(
     .single();
 
   const duration = service?.duration_minutes ?? 30;
-  const endsAt = addHours(new Date(startsAt), duration / 60).toISOString();
+
+  // Reject an unparseable start time without writing anything.
+  const startDate = new Date(startsAt);
+  if (!startsAt || Number.isNaN(startDate.getTime())) {
+    return NextResponse.json({
+      result:
+        "The requested start time could not be understood. Please provide the appointment date and time again.",
+    });
+  }
+  const endsAt = addMinutes(startDate, duration).toISOString();
+
+  // The requested window must actually be free — considering BOTH our own
+  // appointments table and the business's Google Calendar — before writing.
+  const refusal = await refuseIfUnavailable(
+    db,
+    business,
+    startDate,
+    new Date(endsAt),
+    duration,
+  );
+  if (refusal) return refusal;
 
   // Upsert customer
   const { data: customer } = await db
@@ -282,8 +475,15 @@ async function handleBookAppointment(
     consentStatus: customer.whatsapp_consent_status,
   });
 
+  // Spoken back in the business's local wall-clock terms, the way the
+  // customer asked for it — not a raw timestamp.
+  const spokenTime = formatSlotForSpeech(
+    { starts_at: startDate.toISOString(), ends_at: endsAt },
+    business.timezone,
+  );
+
   return NextResponse.json({
-    result: `Appointment booked for ${customerName} on ${startsAt}. A confirmation will be sent if consent was granted.`,
+    result: `Appointment booked for ${customerName} on ${spokenTime}. A confirmation will be sent if consent was granted.`,
     appointment_id: appointment.id,
   });
 }
@@ -395,10 +595,34 @@ async function handleReschedule(
   }
 
   const duration = (appt as any).services?.duration_minutes ?? 30;
-  const newEndsAt = addHours(
-    new Date(newStartsAt),
-    duration / 60,
-  ).toISOString();
+
+  // Reject an unparseable start time without writing anything.
+  const newStartDate = new Date(newStartsAt);
+  if (!newStartsAt || Number.isNaN(newStartDate.getTime())) {
+    return NextResponse.json({
+      result:
+        "The requested start time could not be understood. Please provide the new appointment date and time again.",
+    });
+  }
+  const newEndsAt = addMinutes(newStartDate, duration).toISOString();
+
+  // The new window must actually be free — against our appointments table and
+  // the business's Google Calendar — ignoring this appointment's own row and
+  // its own calendar event, so it never conflicts with itself. Moving onto a
+  // time blocked by the owner's calendar or another customer's appointment is
+  // refused.
+  const refusal = await refuseIfUnavailable(
+    db,
+    business,
+    newStartDate,
+    new Date(newEndsAt),
+    duration,
+    {
+      excludeAppointmentId: appointmentId,
+      excludeCalendarEventId: appt.google_calendar_event_id,
+    },
+  );
+  if (refusal) return refusal;
 
   await db
     .from("appointments")
@@ -472,7 +696,10 @@ async function handleReschedule(
   })();
 
   return NextResponse.json({
-    result: `Appointment rescheduled to ${newStartsAt}.`,
+    result: `Appointment rescheduled to ${formatSlotForSpeech(
+      { starts_at: newStartDate.toISOString(), ends_at: newEndsAt },
+      business.timezone,
+    )}.`,
   });
 }
 
