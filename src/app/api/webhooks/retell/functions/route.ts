@@ -1,14 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServiceClient } from "@/lib/supabase/server";
 import { verifyRetellSignature, parseRetellCall } from "@/lib/retell";
-import { computeAvailableSlots, formatSlotForSpeech } from "@/lib/availability";
+import { computeAvailableSlots, formatSlotForSpeech, isSlotFree, nearestAlternatives } from "@/lib/availability";
 import {
   createCalendarEvent,
   updateCalendarEvent,
   deleteCalendarEvent,
+  listCalendarEvents,
 } from "@/lib/google-calendar";
 import { sendWhatsApp } from "@/lib/twilio";
-import { addHours } from "date-fns";
+import { addHours, addMinutes, parseISO } from "date-fns";
 import { fromZonedTime } from "date-fns-tz";
 import { normalizePhone, phonesMatch } from "@/lib/utils";
 
@@ -72,6 +73,50 @@ export async function POST(req: NextRequest) {
   }
 }
 
+// ── Shared helper: fetch all blocking intervals for a day ────────────────
+async function fetchBlockingIntervals(
+  db: ReturnType<typeof createServiceClient>,
+  businessId: string,
+  timezone: string,
+  date: string,
+  excludeAppointmentId?: string,
+): Promise<Array<{ starts_at: string; ends_at: string }>> {
+  const dayStart = fromZonedTime(
+    `${date}T00:00:00`,
+    timezone,
+  ).toISOString();
+  const dayEnd = fromZonedTime(
+    `${date}T23:59:59`,
+    timezone,
+  ).toISOString();
+
+  // 1. Existing appointments from the DB
+  let query = db
+    .from("appointments")
+    .select("starts_at, ends_at")
+    .eq("business_id", businessId)
+    .gte("starts_at", dayStart)
+    .lte("starts_at", dayEnd)
+    .in("status", ["booked", "rescheduled"]);
+
+  if (excludeAppointmentId) {
+    query = query.neq("id", excludeAppointmentId);
+  }
+
+  const { data: existing } = await query;
+
+  // 2. Google Calendar events
+  let calendarEvents: Array<{ starts_at: string; ends_at: string }> = [];
+  try {
+    calendarEvents = await listCalendarEvents(businessId, dayStart, dayEnd);
+  } catch (err) {
+    // Calendar fetch is best-effort; if it fails we still have DB appointments.
+    console.error("Google Calendar fetch failed:", err);
+  }
+
+  return [...(existing ?? []), ...calendarEvents];
+}
+
 // ── check_availability ──────────────────────────────────────────────────────
 async function handleCheckAvailability(
   db: ReturnType<typeof createServiceClient>,
@@ -95,29 +140,19 @@ async function handleCheckAvailability(
     .select("*")
     .eq("business_id", business.id);
 
-  const dayStart = fromZonedTime(
-    `${date}T00:00:00`,
+  const blocked = await fetchBlockingIntervals(
+    db,
+    business.id,
     business.timezone,
-  ).toISOString();
-  const dayEnd = fromZonedTime(
-    `${date}T23:59:59`,
-    business.timezone,
-  ).toISOString();
-
-  const { data: existing } = await db
-    .from("appointments")
-    .select("starts_at, ends_at")
-    .eq("business_id", business.id)
-    .gte("starts_at", dayStart)
-    .lte("starts_at", dayEnd)
-    .in("status", ["booked", "rescheduled"]);
+    date,
+  );
 
   const slots = computeAvailableSlots(
     date,
     duration,
     business.timezone,
     hours ?? [],
-    existing ?? [],
+    blocked,
   );
 
   if (slots.length === 0) {
@@ -195,7 +230,41 @@ async function handleBookAppointment(
     .single();
 
   const duration = service?.duration_minutes ?? 30;
-  const endsAt = addHours(new Date(startsAt), duration / 60).toISOString();
+  const endsAt = addMinutes(new Date(startsAt), duration).toISOString();
+
+  // ── Conflict check ────────────────────────────────────────────────────────
+  const dateOnly = startsAt.slice(0, 10);
+
+  const blocked = await fetchBlockingIntervals(
+    db,
+    business.id,
+    business.timezone,
+    dateOnly,
+  );
+
+  if (!isSlotFree(startsAt, endsAt, blocked)) {
+    // Slot is taken — find nearest alternatives
+    const { data: hours } = await db
+      .from("business_hours")
+      .select("*")
+      .eq("business_id", business.id);
+
+    const alternatives = nearestAlternatives(
+      startsAt,
+      duration,
+      business.timezone,
+      hours ?? [],
+      blocked,
+    );
+
+    const altList = alternatives
+      .map((s) => formatSlotForSpeech(s, business.timezone))
+      .join(", ");
+
+    return NextResponse.json({
+      result: `That time is not available. ${altList ? `Nearest open times: ${altList}` : "No other openings on this date. Please try another day."}`,
+    });
+  }
 
   // Upsert customer
   const { data: customer } = await db
@@ -395,10 +464,45 @@ async function handleReschedule(
   }
 
   const duration = (appt as any).services?.duration_minutes ?? 30;
-  const newEndsAt = addHours(
+  const newEndsAt = addMinutes(
     new Date(newStartsAt),
-    duration / 60,
+    duration,
   ).toISOString();
+
+  // ── Conflict check (exclude this appointment from conflicts) ──────────
+  const dateOnly = newStartsAt.slice(0, 10);
+
+  const blocked = await fetchBlockingIntervals(
+    db,
+    business.id,
+    business.timezone,
+    dateOnly,
+    appointmentId,
+  );
+
+  if (!isSlotFree(newStartsAt, newEndsAt, blocked)) {
+    // Slot is taken — find nearest alternatives (exclude past times)
+    const { data: hours } = await db
+      .from("business_hours")
+      .select("*")
+      .eq("business_id", business.id);
+
+    const alternatives = nearestAlternatives(
+      newStartsAt,
+      duration,
+      business.timezone,
+      hours ?? [],
+      blocked,
+    );
+
+    const altList = alternatives
+      .map((s) => formatSlotForSpeech(s, business.timezone))
+      .join(", ");
+
+    return NextResponse.json({
+      result: `That time is not available. ${altList ? `Nearest open times: ${altList}` : "No other openings on this date. Please try another day."}`,
+    });
+  }
 
   await db
     .from("appointments")

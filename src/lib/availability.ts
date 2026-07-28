@@ -56,3 +56,59 @@ export function formatSlotForSpeech(slot: TimeSlot, timezone: string): string {
   const local = toZonedTime(parseISO(slot.starts_at), timezone);
   return format(local, "EEEE, MMMM do 'at' h:mm a");
 }
+
+
+/**
+ * Given a specific requested slot, check whether it conflicts with any of the
+ * provided booked intervals.  Returns true when the slot is free.
+ */
+export function isSlotFree(
+  startsAt: string,
+  endsAt: string,
+  bookedIntervals: Array<{ starts_at: string; ends_at: string }>,
+): boolean {
+  const start = parseISO(startsAt);
+  const end = parseISO(endsAt);
+  return !bookedIntervals.some((b) => {
+    const bStart = parseISO(b.starts_at);
+    const bEnd = parseISO(b.ends_at);
+    return start < bEnd && end > bStart;
+  });
+}
+
+/**
+ * Return the closest free slots around `requestedStart` (before and after).
+ * Slots that are in the past (relative to `now`) are excluded.
+ */
+export function nearestAlternatives(
+  requestedStart: string,
+  durationMinutes: number,
+  timezone: string,
+  hours: BusinessHours[],
+  bookedIntervals: Array<{ starts_at: string; ends_at: string }>,
+  now: Date = new Date(),
+  maxAlternatives: number = 3,
+): TimeSlot[] {
+  // Compute slots for the requested date
+  const dateOnly = requestedStart.slice(0, 10);
+  const allSlots = computeAvailableSlots(
+    dateOnly,
+    durationMinutes,
+    timezone,
+    hours,
+    bookedIntervals,
+  );
+
+  // Filter out slots in the past
+  const futureSlots = allSlots.filter((s) => parseISO(s.starts_at) > now);
+
+  // Sort by absolute distance from the requested start
+  const target = parseISO(requestedStart).getTime();
+  futureSlots.sort(
+    (a, b) =>
+      Math.abs(parseISO(a.starts_at).getTime() - target) -
+      Math.abs(parseISO(b.starts_at).getTime() - target),
+  );
+
+  return futureSlots.slice(0, maxAlternatives);
+}

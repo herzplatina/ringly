@@ -98,6 +98,36 @@ export async function deleteCalendarEvent(businessId: string, eventId: string) {
   await calendar.events.delete({ calendarId, eventId });
 }
 
+
+export async function listCalendarEvents(
+  businessId: string,
+  timeMin: string,
+  timeMax: string,
+): Promise<Array<{ starts_at: string; ends_at: string }>> {
+  let client;
+  try {
+    client = await calendarClient(businessId);
+  } catch {
+    // No Google token configured — nothing to block.
+    return [];
+  }
+  const { calendar, calendarId } = client;
+  const res = await calendar.events.list({
+    calendarId,
+    timeMin,
+    timeMax,
+    singleEvents: true,
+    orderBy: "startTime",
+  });
+
+  return (res.data.items ?? [])
+    .filter((e) => e.start?.dateTime && e.end?.dateTime && e.status !== "cancelled")
+    .map((e) => ({
+      starts_at: e.start!.dateTime!,
+      ends_at: e.end!.dateTime!,
+    }));
+}
+
 export async function storeGoogleTokens(
   businessId: string,
   tokens: { refresh_token?: string | null; access_token?: string | null },
