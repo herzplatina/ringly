@@ -1,15 +1,23 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServiceClient } from "@/lib/supabase/server";
 import { verifyRetellSignature, parseRetellCall } from "@/lib/retell";
-import { computeAvailableSlots, formatSlotForSpeech } from "@/lib/availability";
+import {
+  computeAvailableSlots,
+  formatSlotForSpeech,
+  hasConflict,
+  isWithinBusinessHours,
+  findAlternatives,
+} from "@/lib/availability";
 import {
   createCalendarEvent,
   updateCalendarEvent,
   deleteCalendarEvent,
+  fetchCalendarBusySlots,
 } from "@/lib/google-calendar";
 import { sendWhatsApp } from "@/lib/twilio";
 import { addHours } from "date-fns";
-import { fromZonedTime } from "date-fns-tz";
+import { fromZonedTime, toZonedTime } from "date-fns-tz";
+import { format as fmtDate } from "date-fns";
 import { normalizePhone, phonesMatch } from "@/lib/utils";
 
 export async function POST(req: NextRequest) {
@@ -72,6 +80,86 @@ export async function POST(req: NextRequest) {
   }
 }
 
+// ── helpers ─────────────────────────────────────────────────────────────────
+
+/**
+ * Parse an ISO timestamp string.  Returns `null` when the string is missing,
+ * empty, or results in an invalid Date.
+ */
+function safeParse(iso: string): Date | null {
+  if (!iso || !iso.trim()) return null;
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return null;
+  return d;
+}
+
+/**
+ * Extract the local YYYY-MM-DD date for a UTC instant in a given timezone.
+ */
+function localDateStr(utcDate: Date, timezone: string): string {
+  const local = toZonedTime(utcDate, timezone);
+  return fmtDate(local, "yyyy-MM-dd");
+}
+
+/**
+ * Format a UTC instant as a friendly wall-clock string in the business timezone.
+ */
+function formatWallClock(iso: string, timezone: string): string {
+  return formatSlotForSpeech({ starts_at: iso, ends_at: iso }, timezone);
+}
+
+/**
+ * Gather all busy intervals for a date window from both the appointments
+ * table and Google Calendar.  Calendar failures are silently swallowed
+ * (returns DB rows only) so bookings are never blocked by an outage.
+ */
+async function gatherBusyIntervals(
+  db: ReturnType<typeof createServiceClient>,
+  businessId: string,
+  timezone: string,
+  dateOnly: string,
+  opts?: {
+    excludeAppointmentId?: string;
+    excludeCalendarEventIds?: string[];
+  },
+): Promise<Array<{ starts_at: string; ends_at: string }>> {
+  const dayStart = fromZonedTime(
+    `${dateOnly}T00:00:00`,
+    timezone,
+  ).toISOString();
+  const dayEnd = fromZonedTime(
+    `${dateOnly}T23:59:59`,
+    timezone,
+  ).toISOString();
+
+  // DB appointments
+  let query = db
+    .from("appointments")
+    .select("id, starts_at, ends_at")
+    .eq("business_id", businessId)
+    .gte("starts_at", dayStart)
+    .lte("starts_at", dayEnd)
+    .in("status", ["booked", "rescheduled"]);
+
+  const { data: rawAppts } = await query;
+  let dbAppts: Array<{ starts_at: string; ends_at: string }> = (
+    rawAppts ?? []
+  ).filter(
+    (a: { id: string }) => a.id !== opts?.excludeAppointmentId,
+  );
+
+  // Google Calendar events (best-effort)
+  const calSlots = await fetchCalendarBusySlots(
+    businessId,
+    dayStart,
+    dayEnd,
+    timezone,
+    opts?.excludeCalendarEventIds,
+  );
+
+  return [...dbAppts, ...calSlots];
+}
+
 // ── check_availability ──────────────────────────────────────────────────────
 async function handleCheckAvailability(
   db: ReturnType<typeof createServiceClient>,
@@ -95,45 +183,43 @@ async function handleCheckAvailability(
     .select("*")
     .eq("business_id", business.id);
 
-  const dayStart = fromZonedTime(
-    `${date}T00:00:00`,
+  // Gather ALL busy intervals (DB + Google Calendar)
+  const dateOnly = date.slice(0, 10);
+  const busy = await gatherBusyIntervals(
+    db,
+    business.id,
     business.timezone,
-  ).toISOString();
-  const dayEnd = fromZonedTime(
-    `${date}T23:59:59`,
-    business.timezone,
-  ).toISOString();
-
-  const { data: existing } = await db
-    .from("appointments")
-    .select("starts_at, ends_at")
-    .eq("business_id", business.id)
-    .gte("starts_at", dayStart)
-    .lte("starts_at", dayEnd)
-    .in("status", ["booked", "rescheduled"]);
+    dateOnly,
+  );
 
   const slots = computeAvailableSlots(
     date,
     duration,
     business.timezone,
     hours ?? [],
-    existing ?? [],
+    busy,
   );
 
-  if (slots.length === 0) {
+  // Also filter out past slots
+  const now = new Date();
+  const futureSlots = slots.filter(
+    (s) => new Date(s.starts_at).getTime() > now.getTime(),
+  );
+
+  if (futureSlots.length === 0) {
     return NextResponse.json({
       result: `No availability on ${date}. Please suggest another date.`,
     });
   }
 
-  const slotList = slots
+  const slotList = futureSlots
     .slice(0, 5)
     .map((s) => formatSlotForSpeech(s, business.timezone))
     .join(", ");
 
   return NextResponse.json({
     result: `Available times on ${date}: ${slotList}`,
-    slots: slots.slice(0, 5),
+    slots: futureSlots.slice(0, 5),
   });
 }
 
@@ -184,9 +270,20 @@ async function handleBookAppointment(
   const customerName = String(args.customer_name ?? "");
   const phoneNumber = normalizePhone(String(args.phone_number ?? ""));
   const serviceId = String(args.service_id ?? "");
-  const startsAt = String(args.starts_at ?? "");
+  const startsAtRaw = String(args.starts_at ?? "");
 
-  // Fetch service for duration
+  // ── 1. Parse start time ───────────────────────────────────────────────
+  const startsAtDate = safeParse(startsAtRaw);
+  if (!startsAtDate) {
+    return NextResponse.json({
+      result:
+        "Sorry, the requested time could not be understood. Please provide a valid date and time.",
+      conflict: true,
+      alternatives: [],
+    });
+  }
+
+  // ── 2. Resolve service & duration ─────────────────────────────────────
   const { data: service } = await db
     .from("services")
     .select("id, name, duration_minutes")
@@ -195,9 +292,75 @@ async function handleBookAppointment(
     .single();
 
   const duration = service?.duration_minutes ?? 30;
-  const endsAt = addHours(new Date(startsAt), duration / 60).toISOString();
+  const endsAtDate = new Date(
+    startsAtDate.getTime() + duration * 60 * 1000,
+  );
+  const startsAt = startsAtDate.toISOString();
+  const endsAt = endsAtDate.toISOString();
 
-  // Upsert customer
+  // ── 3. Determine local date for business-hour / conflict lookups ──────
+  const dateOnly = localDateStr(startsAtDate, business.timezone);
+
+  // ── 4. Fetch business hours ───────────────────────────────────────────
+  const { data: hours } = await db
+    .from("business_hours")
+    .select("*")
+    .eq("business_id", business.id);
+
+  // ── 5. Gather busy intervals (DB + calendar) ─────────────────────────
+  const busy = await gatherBusyIntervals(
+    db,
+    business.id,
+    business.timezone,
+    dateOnly,
+  );
+
+  // ── 6. Check conflicts ────────────────────────────────────────────────
+  const outsideHours = !isWithinBusinessHours(
+    startsAtDate,
+    endsAtDate,
+    hours ?? [],
+    business.timezone,
+    dateOnly,
+  );
+
+  const conflict = outsideHours || hasConflict(startsAtDate, endsAtDate, busy);
+
+  if (conflict) {
+    // Compute alternatives from the same day
+    const allSlots = computeAvailableSlots(
+      dateOnly,
+      duration,
+      business.timezone,
+      hours ?? [],
+      busy,
+    );
+    const alts = findAlternatives(startsAtDate, allSlots);
+
+    if (alts.length === 0) {
+      return NextResponse.json({
+        result:
+          "That time is already taken and there is no remaining availability today. Could you pick a different date?",
+        conflict: true,
+        alternatives: [],
+      });
+    }
+
+    const altList = alts
+      .map((s) => formatSlotForSpeech(s, business.timezone))
+      .join(", ");
+
+    return NextResponse.json({
+      result: `That time is already taken. How about one of these: ${altList}?`,
+      conflict: true,
+      alternatives: alts.map((s) => ({
+        starts_at: s.starts_at,
+        ends_at: s.ends_at,
+      })),
+    });
+  }
+
+  // ── 7. Upsert customer ───────────────────────────────────────────────
   const { data: customer } = await db
     .from("customers")
     .upsert(
@@ -215,7 +378,7 @@ async function handleBookAppointment(
     return NextResponse.json({ result: "Could not create customer record." });
   }
 
-  // Insert appointment
+  // ── 8. Insert appointment ─────────────────────────────────────────────
   const { data: appointment } = await db
     .from("appointments")
     .insert({
@@ -234,7 +397,7 @@ async function handleBookAppointment(
     return NextResponse.json({ result: "Could not create appointment." });
   }
 
-  // Insert reminder rows synchronously so they survive a cold serverless kill
+  // ── 9. Insert reminder rows synchronously ─────────────────────────────
   if (
     customer.whatsapp_consent_status === "granted" &&
     business.whatsapp_sender_status === "approved" &&
@@ -272,7 +435,7 @@ async function handleBookAppointment(
     ]);
   }
 
-  // Fire-and-forget: external API calls only (calendar + WhatsApp send)
+  // ── 10. Fire-and-forget: external API calls ───────────────────────────
   void syncAfterBooking(db, business, appointment.id, {
     customerName,
     phoneNumber,
@@ -282,8 +445,10 @@ async function handleBookAppointment(
     consentStatus: customer.whatsapp_consent_status,
   });
 
+  const spokenTime = formatWallClock(startsAt, business.timezone);
+
   return NextResponse.json({
-    result: `Appointment booked for ${customerName} on ${startsAt}. A confirmation will be sent if consent was granted.`,
+    result: `Appointment booked for ${customerName} on ${spokenTime}.`,
     appointment_id: appointment.id,
   });
 }
@@ -371,7 +536,7 @@ async function handleReschedule(
   callerPhone: string,
 ) {
   const appointmentId = String(args.appointment_id ?? "");
-  const newStartsAt = String(args.new_starts_at ?? "");
+  const newStartsAtRaw = String(args.new_starts_at ?? "");
 
   const { data: appt } = await db
     .from("appointments")
@@ -394,12 +559,95 @@ async function handleReschedule(
     });
   }
 
-  const duration = (appt as any).services?.duration_minutes ?? 30;
-  const newEndsAt = addHours(
-    new Date(newStartsAt),
-    duration / 60,
-  ).toISOString();
+  // ── 1. Parse the new start time ───────────────────────────────────────
+  const newStartsAtDate = safeParse(newStartsAtRaw);
+  if (!newStartsAtDate) {
+    return NextResponse.json({
+      result:
+        "Sorry, the requested time could not be understood. Please provide a valid date and time.",
+      conflict: true,
+      alternatives: [],
+    });
+  }
 
+  const duration = (appt as any).services?.duration_minutes ?? 30;
+  const newEndsAtDate = new Date(
+    newStartsAtDate.getTime() + duration * 60 * 1000,
+  );
+  const newStartsAt = newStartsAtDate.toISOString();
+  const newEndsAt = newEndsAtDate.toISOString();
+
+  // ── 2. Determine local date ───────────────────────────────────────────
+  const dateOnly = localDateStr(newStartsAtDate, business.timezone);
+
+  // ── 3. Fetch business hours ───────────────────────────────────────────
+  const { data: hours } = await db
+    .from("business_hours")
+    .select("*")
+    .eq("business_id", business.id);
+
+  // ── 4. Gather busy intervals, excluding the appointment being moved ──
+  const excludeCalEventIds = appt.google_calendar_event_id
+    ? [appt.google_calendar_event_id]
+    : [];
+
+  const busy = await gatherBusyIntervals(
+    db,
+    business.id,
+    business.timezone,
+    dateOnly,
+    {
+      excludeAppointmentId: appointmentId,
+      excludeCalendarEventIds: excludeCalEventIds,
+    },
+  );
+
+  // ── 5. Check conflicts ────────────────────────────────────────────────
+  const outsideHours = !isWithinBusinessHours(
+    newStartsAtDate,
+    newEndsAtDate,
+    hours ?? [],
+    business.timezone,
+    dateOnly,
+  );
+
+  const conflict =
+    outsideHours || hasConflict(newStartsAtDate, newEndsAtDate, busy);
+
+  if (conflict) {
+    const allSlots = computeAvailableSlots(
+      dateOnly,
+      duration,
+      business.timezone,
+      hours ?? [],
+      busy,
+    );
+    const alts = findAlternatives(newStartsAtDate, allSlots);
+
+    if (alts.length === 0) {
+      return NextResponse.json({
+        result:
+          "That time is already taken and there is no remaining availability today. Could you pick a different date?",
+        conflict: true,
+        alternatives: [],
+      });
+    }
+
+    const altList = alts
+      .map((s) => formatSlotForSpeech(s, business.timezone))
+      .join(", ");
+
+    return NextResponse.json({
+      result: `That time is already taken. How about one of these: ${altList}?`,
+      conflict: true,
+      alternatives: alts.map((s) => ({
+        starts_at: s.starts_at,
+        ends_at: s.ends_at,
+      })),
+    });
+  }
+
+  // ── 6. Write the reschedule ───────────────────────────────────────────
   await db
     .from("appointments")
     .update({
@@ -471,8 +719,10 @@ async function handleReschedule(
     }
   })();
 
+  const spokenTime = formatWallClock(newStartsAt, business.timezone);
+
   return NextResponse.json({
-    result: `Appointment rescheduled to ${newStartsAt}.`,
+    result: `Appointment rescheduled to ${spokenTime}.`,
   });
 }
 
