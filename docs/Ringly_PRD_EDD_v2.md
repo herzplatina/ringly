@@ -1,5 +1,9 @@
 # Ringly — PRD + EDD (v2.0)
 
+> **Superseded by [`Ringly_PRD_EDD_v3.md`](./Ringly_PRD_EDD_v3.md) (2026-07-30).**
+> Retained for history. The v2 onboarding requirements live on as F1.1–F1.10 in
+> v3; everything else here is either carried forward or explicitly revised there.
+
 _Supersedes `Ringly_PRD_EDD.docx` (v1.0, 2026-06-29). Revised 2026-07-01 for the
 conversational, auto-enriched onboarding redesign and Google-as-identity auth._
 
