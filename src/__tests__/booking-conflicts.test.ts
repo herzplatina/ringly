@@ -320,6 +320,106 @@ describe("book_appointment — appointments already in our database", () => {
   });
 });
 
+// ── exact-duplicate bookings ────────────────────────────────────────────────
+//
+// The degenerate case: the requested window is not merely overlapping but
+// identical to something already on the books. It gets its own block because it
+// is the one a caller hits most often — the agent reads a time out, the customer
+// says yes, and meanwhile the slot went to somebody else — and because an
+// off-by-one in an overlap test can pass every partial-overlap case while
+// failing on exactly equal bounds.
+describe("book_appointment — the requested window is already taken exactly", () => {
+  const START = "10:00";
+  const END = "11:00"; // the 60-minute service occupies precisely this window
+
+  test("an identical existing appointment blocks the booking", async () => {
+    currentDb = seedDb({
+      appointments: [appointment("appt-1", START, END)],
+    });
+
+    const res = await book(et(START));
+
+    expect(res.conflict).toBe(true);
+    expect(res.result).toMatch(/already taken/i);
+    expect(appointmentsInserted()).toHaveLength(0);
+  });
+
+  test("an identical calendar event blocks the booking", async () => {
+    (getCalendarBusyIntervals as jest.Mock).mockResolvedValue([
+      { starts_at: et(START), ends_at: et(END) },
+    ]);
+
+    const res = await book(et(START));
+
+    expect(res.conflict).toBe(true);
+    expect(res.result).toMatch(/already taken/i);
+    expect(appointmentsInserted()).toHaveLength(0);
+  });
+
+  test("either source alone is enough — both together change nothing", async () => {
+    currentDb = seedDb({
+      appointments: [appointment("appt-1", START, END)],
+    });
+    (getCalendarBusyIntervals as jest.Mock).mockResolvedValue([
+      { starts_at: et(START), ends_at: et(END) },
+    ]);
+
+    const res = await book(et(START));
+
+    expect(res.conflict).toBe(true);
+    expect(appointmentsInserted()).toHaveLength(0);
+  });
+
+  test("the duplicated window is not offered back as an alternative", async () => {
+    currentDb = seedDb({
+      appointments: [appointment("appt-1", START, END)],
+    });
+
+    const res = await book(et(START));
+    const offered = (res.alternatives ?? []).map((a) => a.starts_at);
+
+    expect(offered.length).toBeGreaterThan(0);
+    expect(offered).not.toContain(et(START));
+  });
+
+  test("booking the same slot twice in a row is refused the second time", async () => {
+    const first = await book(et(START));
+    const second = await book(et(START));
+
+    expect(first.conflict).toBeUndefined();
+    expect(first.appointment_id).toBeDefined();
+    expect(second.conflict).toBe(true);
+    // Exactly one write, from the first request.
+    expect(appointmentsInserted()).toHaveLength(1);
+  });
+
+  test("an identical window is free again once the appointment is cancelled", async () => {
+    currentDb = seedDb({
+      appointments: [
+        appointment("appt-1", START, END, { status: "cancelled" }),
+      ],
+    });
+
+    const res = await book(et(START));
+
+    expect(res.conflict).toBeUndefined();
+    expect(appointmentsInserted()).toHaveLength(1);
+  });
+
+  test("sharing only a boundary is not a duplicate", async () => {
+    // The neighbour ends exactly when the request starts. Identical bounds must
+    // clash; touching bounds must not.
+    currentDb = seedDb({
+      appointments: [appointment("appt-1", "09:00", START)],
+    });
+
+    const res = await book(et(START));
+
+    expect(res.conflict).toBeUndefined();
+    expect(appointmentsInserted()).toHaveLength(1);
+  });
+});
+
 describe("check_availability", () => {
   test("does not offer slots that are busy on Google Calendar", async () => {
     (getCalendarBusyIntervals as jest.Mock).mockResolvedValue([
