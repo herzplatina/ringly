@@ -40,8 +40,9 @@ manage their own operation without talking to us.
 
 ## 1.3 Personas
 
-- **Business owner (primary).** Non-technical. Salon, clinic, tax office. Wants a
-  receptionist, not a configuration project. Checks a dashboard occasionally and
+- **Business owner (primary).** Non-technical. Salon, tax office, trades, and
+  similar appointment-driven businesses. Wants a receptionist, not a
+  configuration project. Checks a dashboard occasionally and
   an email monthly. Cares about missed calls and money.
 - **Calling customer (secondary).** Wants an appointment at a time that suits
   them, in one call, without being told to hold. Never sees Ringly's UI.
@@ -54,6 +55,12 @@ manage their own operation without talking to us.
 
 **Explicit non-goals for v3:**
 
+- **Healthcare businesses of any kind, including clinics.** Callers to a clinic
+  disclose health information, which makes the call PHI. Retell can carry PHI
+  only under a signed Business Associate Agreement, which Ringly does not hold,
+  and holding one imposes obligations across the whole stack. Clinics are
+  therefore **out of scope until a BAA is in place** — a commercial decision, not
+  a technical limitation. `business_type` must not offer a healthcare option.
 - Multi-location businesses (one location per business row).
 - Multi-staff / resource-level scheduling (one implicit calendar per business).
 - Non-US phone numbers and non-English calls.
@@ -210,8 +217,10 @@ period _n+1_ begins 30 days after period _n_.
 - **F7.6** A call is **productive** — and therefore billable — if it resulted in
   any of: a new booking; a reschedule that produced a booked appointment; or a
   cancellation of a real existing appointment. **Not billable:** general enquiry
-  calls, wrong numbers, dropped calls, test calls, and any call that changed
-  nothing for the business.
+  calls, wrong numbers, dropped calls, pre-activation test calls, and any call
+  that changed nothing for the business. **Who is calling is irrelevant** — the
+  owner, a customer, or Ringly's own developer are billed identically. The
+  outcome is the only test.
 - **F7.7** The **whole call** is billable, not only the minutes up to the
   booking. Once a business is activated, **no caller is exempt** — Ringly does
   not try to decide whether a call came from a genuine customer, the owner, or
@@ -245,9 +254,22 @@ period _n+1_ begins 30 days after period _n_.
 - **F7.14** Every charge, refund, and failure is recorded immutably against the
   business for reconciliation.
 
-> **Deliberately deferred.** Charging for _all_ connected minutes (booked or not)
-> is the expected next pricing model. F7.6 is written as a predicate over call
-> outcome so widening it later is a configuration change, not a redesign.
+- **F7.15** **The commercial terms are expected to change** once real usage is
+  observed. The fixed fee, the cap, the per-unit rates, and **the definition of a
+  billable call** must all be changeable without a schema migration or a
+  redesign. What does **not** change: 30-day billing periods, 30-day data
+  retention, and the two-phase 7-day-then-30-day suspension and revocation
+  timeline (F10.3).
+- **F7.16** A change to commercial terms **never rewrites history**. Each billing
+  period is settled under the terms in force when it ran, so past invoices remain
+  reproducible.
+
+> **Architectural consequence.** Pricing is **policy data, not code**: rates, the
+> cap, the fixed fee, and the set of outcomes that count as billable all live in
+> a versioned `pricing_policy` record with an effective date, and each
+> `billing_periods` row records which version it was settled under (EDD §2.9).
+> Widening billing to all connected minutes — the expected next model — becomes a
+> new policy row, not a deploy.
 
 ### F8 — Email notifications
 
@@ -315,9 +337,16 @@ period _n+1_ begins 30 days after period _n_.
 - **F10.5** Deletion at day 30 must remove data held **by our processors too**,
   not only our own database — including transcripts and recordings retained by
   the telephony provider.
-- **F10.6** **Call transcripts are retained; call recordings are not stored by
-  Ringly.** Recordings remain with the telephony provider and are fetched by
-  signed URL on demand.
+- **F10.6** **Ringly stores neither transcripts nor recordings.** Both remain
+  with the telephony provider and are fetched on demand when needed. Retention is
+  configured **on every provisioned agent**, never inherited from a default:
+  - **Recordings: 30 days.** Deliberately generous for now so early calls can be
+    reviewed while the product is being proven; to be reduced once recordings are
+    shown to behave.
+  - **Transcripts: at least 30 days**, and never shorter than recordings.
+- **F10.7** Because retention lives with the provider, **call history older than
+  the retention window is not retrievable** — by the business or by Ringly. Any
+  requirement that depends on older calls (F6.4) must be read against this limit.
 
 ---
 
@@ -579,13 +608,17 @@ Migrations `005`–`010`, in dependency order.
 - `businesses.contact_email`, `stripe_customer_id`, `stripe_subscription_id`,
   `billing_status` (`unbilled | active | grace | suspended | capped | cancelled`),
   `activated_at`, `suspended_at`, `purge_after`, `cap_cents` (default 50000).
-- `billing_periods(id, business_id, seq, starts_at, ends_at, timezone, cap_cents, fixed_fee_cents, fixed_fee_charged_at, usage_settled_at, status)` —
+- `billing_periods(id, business_id, seq, starts_at, ends_at, timezone, pricing_policy_id, cap_cents, fixed_fee_cents, fixed_fee_charged_at, usage_settled_at, status)` —
+  `pricing_policy_id` pins the terms the period was settled under (F7.16), so a
+  later change to the fee or cap cannot retroactively alter a closed invoice.
   **authoritative** period boundaries (§2.9). Explicit rows, not arithmetic over
   `activated_at`, because cancellation, reactivation and payment failure all
   break that arithmetic and periods must be immutable for reconciliation.
-- `pricing_config(id, key unique, cents, effective_from)` — the per-minute and
-  per-reminder rates (F7.8). Rates are data, not constants, so they can be set
-  without a deploy while they remain TBD (§1.8 Q1).
+- `pricing_policy(id, version, effective_from, fixed_fee_cents, cap_cents, per_minute_cents, per_reminder_cents, billable_outcomes text[])` —
+  the complete commercial terms as one versioned row (F7.8, F7.15). Superseding
+  terms insert a new version; existing rows are never edited.
+  `billable_outcomes` holds the F7.6 predicate as data, so widening billing to
+  every connected minute becomes a new row rather than a deploy.
 - `billing_events(id, business_id, stripe_event_id unique, kind, amount_cents, fee_cents, occurred_at, payload)` —
   immutable ledger (F7.14); `stripe_event_id` unique for webhook idempotency;
   `fee_cents` from the Stripe balance transaction so revenue is net (F9.2).
@@ -716,28 +749,25 @@ by tenant size, not platform size (N2.2).
 and was ended by the caller. This requires the post-call webhook to record
 `ended_at` and an end reason, which it does not do today.
 
-## 2.8a Transcripts, recordings and deletion (F10.5, F10.6)
+## 2.8a Transcripts, recordings and deletion (F10.5-F10.7)
 
-Today Ringly stores **neither** — `calls` holds only `retell_call_id`, and the
-transcript route fetches from Retell on demand. That is right for recordings and
-wrong for transcripts.
+**Ringly stores neither.** `calls` keeps `retell_call_id`; transcripts and
+recordings are fetched from Retell on demand, which is what
+`calls/[callId]/transcript/route.ts` already does. Consequences to build around:
 
-- **Transcripts are mirrored** into our own database at the post-call webhook.
-  At the §1.7 scale that is roughly 10 GB/month, a few dollars — and it buys
-  independence from Retell's retention setting (R10), makes outcome derivation
-  and analytics possible without an API round trip per call, and puts the day-30
-  deletion entirely within our control.
-- **Recordings are never mirrored.** They stay with Retell and are fetched by
-  **signed URL on demand**, as the transcript route already does. Signed URLs
-  expire, so a stored `recording_url` column would rot — the URL must be
-  requested at view time, never persisted. This also keeps sensitive audio off
-  Ringly infrastructure entirely, which matters for the clinic persona (R11).
-- **Retention must be set explicitly on every agent we provision** (R10). It is
-  per-agent and configurable from 1 day to 2 years; inheriting a default would
-  make our retention promise accidental.
-- **Deletion at day 30 is a two-sided operation** (F10.5): purge our rows _and_
-  delete the Retell-side call data. A deletion that leaves transcripts sitting
-  with a processor has not happened.
+- **Never persist a recording URL.** Retell's URLs are signed and expire; a
+  stored column would rot silently. Request it at view time, every time.
+- **Retention is set explicitly at agent provisioning** - 30 days for recordings,
+  at least 30 days for transcripts - and never left to a default (R10).
+- **Outcome derivation does not depend on storage.** The post-call webhook
+  carries the transcript in its payload, so `outcome`, `end_reason` and
+  `is_billable` are derived and persisted at that moment. Only the transcript
+  _text_ is transient.
+- **Deletion at day 30 is two-sided** (F10.5): purge our rows _and_ delete the
+  Retell-side call data. Retell's own 30-day retention aligns by construction,
+  but the delete must still be issued, not assumed.
+- **What this costs:** transcript _search_ (F6.4) is impossible over data we do
+  not hold, and no call history older than 30 days is available to anyone.
 
 ## 2.9 Billing (F7)
 
@@ -752,7 +782,8 @@ meters.** Verified capabilities in §2.15.
 | F7.4 usage in arrears               | Metered price on the same subscription, invoiced at period end                                                                                                 |
 | F7.5 two usage units                | Two Stripe **meters**: `connected_minutes` and `reminders_sent`                                                                                                |
 | F7.6 productive calls only          | Our own predicate over call outcome, evaluated post-call; only productive calls emit a usage record                                                            |
-| F7.8 rates configurable             | Rates live in `pricing_config`, not in code                                                                                                                    |
+| F7.8, F7.15 terms configurable      | A versioned `pricing_policy` row holds the fixed fee, cap, per-unit rates **and the set of billable outcomes**. Changing terms inserts a new version.          |
+| F7.16 history reproducible          | `billing_periods.pricing_policy_id` pins each period to the terms it was settled under                                                                         |
 | F7.9 cap                            | Enforced **by us** before emitting usage, not by Stripe. On reaching: stop accruing, keep serving, alert operator                                              |
 | F7.11 failed charge                 | `invoice.payment_failed` webhook → notify (F8.2) → Stripe retry schedule                                                                                       |
 | F7.12 cancellation                  | **Ringly computes** the refund and the final usage total, clamps to the cap, then executes both through Stripe. Stripe's own proration is deliberately unused. |
