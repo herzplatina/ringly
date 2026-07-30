@@ -156,52 +156,69 @@ async function collectBusyIntervals(
 }
 
 /**
- * Free slots on the same local day as `startsAt`, honouring business hours and
- * every busy interval. Used to counter-offer when a requested time is taken.
+ * Everything blocking the business around a requested slot.
+ *
+ * The window spans the slot's whole local day rather than just the slot, so
+ * that one lookup answers both questions we have: is this slot taken, and what
+ * else is open if it is. The caller is on the phone, so a second round trip to
+ * Google to build the counter-offer is worth avoiding.
+ *
+ * It is the union of the day and the slot, not simply the day: a late-night
+ * booking can run past its own midnight, and scoping to the day alone would
+ * miss a clash sitting on the other side of it.
  */
-async function openSlotsOnSameDay(
+async function loadDay(
   db: ReturnType<typeof createServiceClient>,
   businessId: string,
   timezone: string,
-  startsAt: Date,
-  durationMinutes: number,
+  slotStart: Date,
+  slotEnd: Date,
   exclude?: ExcludedAppointment,
-): Promise<TimeSlot[]> {
-  const { localDate, dayStart, dayEnd } = dayBounds(startsAt, timezone);
+): Promise<{ localDate: string; busy: TimeSlot[] }> {
+  const { localDate, dayStart, dayEnd } = dayBounds(slotStart, timezone);
+  const windowStart = new Date(
+    Math.min(new Date(dayStart).getTime(), slotStart.getTime()),
+  ).toISOString();
+  const windowEnd = new Date(
+    Math.max(new Date(dayEnd).getTime(), slotEnd.getTime()),
+  ).toISOString();
 
-  const [{ data: hours }, busy] = await Promise.all([
-    db.from("business_hours").select("*").eq("business_id", businessId),
-    collectBusyIntervals(db, businessId, dayStart, dayEnd, exclude),
-  ]);
-
-  return computeAvailableSlots(
-    localDate,
-    durationMinutes,
-    timezone,
-    hours ?? [],
-    busy,
+  const busy = await collectBusyIntervals(
+    db,
+    businessId,
+    windowStart,
+    windowEnd,
+    exclude,
   );
+  return { localDate, busy };
 }
 
 /**
  * Refuse a taken slot, offering the nearest open times either side of it. The
  * spoken `result` is what the agent reads out; `alternatives` carries the exact
  * ISO timestamps back so a follow-up book_appointment call can reuse one.
+ *
+ * Takes the day's busy set from the caller — it was already fetched to detect
+ * the clash, and re-fetching it would double the Google latency mid-call.
  */
 async function refuseWithAlternatives(
   db: ReturnType<typeof createServiceClient>,
   business: { id: string; timezone: string },
   startsAt: Date,
   durationMinutes: number,
-  exclude?: ExcludedAppointment,
+  day: { localDate: string; busy: TimeSlot[] },
 ) {
-  const openSlots = await openSlotsOnSameDay(
-    db,
-    business.id,
-    business.timezone,
-    startsAt,
+  const { data: hours } = await db
+    .from("business_hours")
+    .select("*")
+    .eq("business_id", business.id);
+
+  const openSlots = computeAvailableSlots(
+    day.localDate,
     durationMinutes,
-    exclude,
+    business.timezone,
+    hours ?? [],
+    day.busy,
   );
   // Never counter-offer a time that has already passed — the requested slot may
   // be earlier today, and every earlier slot on that day is then unbookable.
@@ -259,16 +276,15 @@ async function handleCheckAvailability(
 
   const duration = service?.duration_minutes ?? 30;
 
-  const { data: hours } = await db
-    .from("business_hours")
-    .select("*")
-    .eq("business_id", business.id);
-
   const { dayStart, dayEnd } = dayBounds(date, business.timezone);
 
   // Offered times must match what book_appointment will accept, so the same
-  // busy set (our appointments + Google Calendar) filters both.
-  const busy = await collectBusyIntervals(db, business.id, dayStart, dayEnd);
+  // busy set (our appointments + Google Calendar) filters both. Both reads are
+  // always needed here, so they run together rather than back to back.
+  const [{ data: hours }, busy] = await Promise.all([
+    db.from("business_hours").select("*").eq("business_id", business.id),
+    collectBusyIntervals(db, business.id, dayStart, dayEnd),
+  ]);
 
   const slots = computeAvailableSlots(
     date,
@@ -366,9 +382,15 @@ async function handleBookAppointment(
 
   // Never double-book: the slot must be clear in our own appointments AND on
   // the owner's Google Calendar before anything is written.
-  const busy = await collectBusyIntervals(db, business.id, startsAt, endsAt);
-  if (hasConflict(startsAt, endsAt, busy)) {
-    return refuseWithAlternatives(db, business, start, duration);
+  const day = await loadDay(
+    db,
+    business.id,
+    business.timezone,
+    start,
+    new Date(endsAt),
+  );
+  if (hasConflict(startsAt, endsAt, day.busy)) {
+    return refuseWithAlternatives(db, business, start, duration, day);
   }
 
   // Upsert customer
@@ -587,15 +609,16 @@ async function handleReschedule(
     appointmentId,
     calendarEventId: appt.google_calendar_event_id,
   };
-  const busy = await collectBusyIntervals(
+  const day = await loadDay(
     db,
     business.id,
-    newStartsAtIso,
-    newEndsAt,
+    business.timezone,
+    newStart,
+    new Date(newEndsAt),
     self,
   );
-  if (hasConflict(newStartsAtIso, newEndsAt, busy)) {
-    return refuseWithAlternatives(db, business, newStart, duration, self);
+  if (hasConflict(newStartsAtIso, newEndsAt, day.busy)) {
+    return refuseWithAlternatives(db, business, newStart, duration, day);
   }
 
   await db

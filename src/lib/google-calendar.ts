@@ -51,6 +51,15 @@ async function calendarClient(businessId: string) {
 }
 
 /**
+ * How long the whole calendar lookup — token exchange included — may take
+ * before we give up on it. A caller is on the phone waiting for the agent to
+ * answer, so a slow Google has to be treated the same as a broken one.
+ */
+export const CALENDAR_LOOKUP_BUDGET_MS = 1500;
+
+const TIMED_OUT = Symbol("calendar-lookup-timed-out");
+
+/**
  * Time already occupied on the business's Google Calendar between two instants.
  *
  * Uses events.list rather than freebusy because freebusy reports anonymous
@@ -59,10 +68,13 @@ async function calendarClient(businessId: string) {
  * drops exactly that event. `singleEvents` expands recurring series into their
  * individual occurrences so a weekly block is honoured.
  *
- * Returns `[]` when the business has not connected Google, or when Google is
- * unreachable: an outage must not take the phone line down, and our own
- * appointments table is still checked for conflicts either way. Failures are
- * logged here because the caller gets no signal that the check degraded.
+ * Returns `[]` when the business has not connected Google, when Google is
+ * unreachable, and when it simply does not answer within
+ * CALENDAR_LOOKUP_BUDGET_MS. An outage — including a silent one — must not take
+ * the phone line down, and our own appointments table is still checked for
+ * conflicts either way. Every degraded path is logged, because the caller gets
+ * an empty list back and cannot tell the difference from a genuinely free
+ * calendar.
  */
 export async function getCalendarBusyIntervals(
   businessId: string,
@@ -70,32 +82,77 @@ export async function getCalendarBusyIntervals(
   timeMax: string,
   excludeEventId?: string,
 ): Promise<TimeSlot[]> {
+  const controller = new AbortController();
+  let expiry: ReturnType<typeof setTimeout> | undefined;
+
+  // Resolves rather than rejects, so a slow lookup and a failed one converge on
+  // the same fail-open path instead of one of them escaping as a rejection.
+  const budget = new Promise<typeof TIMED_OUT>((resolve) => {
+    expiry = setTimeout(() => {
+      controller.abort();
+      resolve(TIMED_OUT);
+    }, CALENDAR_LOOKUP_BUDGET_MS);
+  });
+
+  const lookup = fetchBusyIntervals(
+    businessId,
+    timeMin,
+    timeMax,
+    excludeEventId,
+    controller.signal,
+  ).catch((err) => {
+    console.error("Calendar busy lookup failed:", err);
+    return [] as TimeSlot[];
+  });
+
   try {
-    const { calendar, calendarId, timezone } = await calendarClient(businessId);
-    const res = await calendar.events.list({
+    const outcome = await Promise.race([lookup, budget]);
+    if (outcome === TIMED_OUT) {
+      console.error(
+        `Calendar busy lookup exceeded ${CALENDAR_LOOKUP_BUDGET_MS}ms; treating the calendar as clear`,
+      );
+      return [];
+    }
+    return outcome;
+  } finally {
+    clearTimeout(expiry);
+  }
+}
+
+/** The lookup itself. Rejects on failure; the caller decides what that means. */
+async function fetchBusyIntervals(
+  businessId: string,
+  timeMin: string,
+  timeMax: string,
+  excludeEventId: string | undefined,
+  signal: AbortSignal,
+): Promise<TimeSlot[]> {
+  const { calendar, calendarId, timezone } = await calendarClient(businessId);
+  const res = await calendar.events.list(
+    {
       calendarId,
       timeMin,
       timeMax,
       singleEvents: true,
       showDeleted: false,
       maxResults: 2500,
-    });
+    },
+    // Abort the in-flight request when the budget expires so an abandoned
+    // lookup does not keep the socket (or the function instance) alive.
+    { signal },
+  );
 
-    return (res.data.items ?? []).flatMap((event) => {
-      // The appointment's own event must not block its own reschedule.
-      if (excludeEventId && event.id === excludeEventId) return [];
-      // "transparent" is Google's flag for "show me as available".
-      if (event.status === "cancelled" || event.transparency === "transparent")
-        return [];
+  return (res.data.items ?? []).flatMap((event) => {
+    // The appointment's own event must not block its own reschedule.
+    if (excludeEventId && event.id === excludeEventId) return [];
+    // "transparent" is Google's flag for "show me as available".
+    if (event.status === "cancelled" || event.transparency === "transparent")
+      return [];
 
-      const start = toInstant(event.start, timezone);
-      const end = toInstant(event.end, timezone);
-      return start && end ? [{ starts_at: start, ends_at: end }] : [];
-    });
-  } catch (err) {
-    console.error("Calendar busy lookup failed:", err);
-    return [];
-  }
+    const start = toInstant(event.start, timezone);
+    const end = toInstant(event.end, timezone);
+    return start && end ? [{ starts_at: start, ends_at: end }] : [];
+  });
 }
 
 /**

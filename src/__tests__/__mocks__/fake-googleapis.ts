@@ -24,6 +24,19 @@ export type FakeCalendar = {
   events: FakeCalendarEvent[];
   /** Set to make every Calendar API call fail, simulating a Google outage. */
   failWith: Error | null;
+  /**
+   * Set to make every Calendar API call never answer, simulating Google hanging
+   * rather than erroring — the case a try/catch alone does not cover.
+   */
+  hang: boolean;
+  /** Aborts observed on hung requests, so tests can check we let go of them. */
+  aborted: number;
+  /**
+   * How many times the calendar was consulted, across either API. Each one is a
+   * network round trip the caller waits on, so this is the number that decides
+   * how long the agent takes to answer.
+   */
+  lookups: number;
   /** Events created through the API, for asserting a booking synced across. */
   created: Array<Record<string, unknown>>;
   updated: Array<Record<string, unknown>>;
@@ -51,6 +64,9 @@ export function createFakeGoogleapis(timezone = "UTC"): FakeCalendar {
   const state: FakeCalendar = {
     events: [],
     failWith: null,
+    hang: false,
+    aborted: 0,
+    lookups: 0,
     created: [],
     updated: [],
     deleted: [],
@@ -61,6 +77,18 @@ export function createFakeGoogleapis(timezone = "UTC"): FakeCalendar {
   const guard = () => {
     if (state.failWith) throw state.failWith;
   };
+
+  /**
+   * A request that never answers. Records the abort if the caller gives up on
+   * it, and stays pending forever either way — so a caller with no time budget
+   * of its own would hang here, which is exactly what the tests check for.
+   */
+  const neverAnswers = <T>(signal?: AbortSignal): Promise<T> =>
+    new Promise<T>(() => {
+      signal?.addEventListener("abort", () => {
+        state.aborted++;
+      });
+    });
 
   /** Events that are busy and overlap the window, as Google would report them. */
   const overlapping = (timeMin: string, timeMax: string, busyOnly: boolean) => {
@@ -78,14 +106,19 @@ export function createFakeGoogleapis(timezone = "UTC"): FakeCalendar {
 
   const calendar = {
     events: {
-      list: async ({
-        timeMin,
-        timeMax,
-      }: {
-        calendarId: string;
-        timeMin: string;
-        timeMax: string;
-      }) => {
+      list: async (
+        {
+          timeMin,
+          timeMax,
+        }: {
+          calendarId: string;
+          timeMin: string;
+          timeMax: string;
+        },
+        options?: { signal?: AbortSignal },
+      ) => {
+        state.lookups++;
+        if (state.hang) return neverAnswers<never>(options?.signal);
         guard();
         // Google returns events verbatim; filtering out cancelled/transparent
         // ones is the caller's job, so this deliberately does not do it.
@@ -136,15 +169,20 @@ export function createFakeGoogleapis(timezone = "UTC"): FakeCalendar {
     },
 
     freebusy: {
-      query: async ({
-        requestBody,
-      }: {
-        requestBody: {
-          timeMin: string;
-          timeMax: string;
-          items: Array<{ id: string }>;
-        };
-      }) => {
+      query: async (
+        {
+          requestBody,
+        }: {
+          requestBody: {
+            timeMin: string;
+            timeMax: string;
+            items: Array<{ id: string }>;
+          };
+        },
+        options?: { signal?: AbortSignal },
+      ) => {
+        state.lookups++;
+        if (state.hang) return neverAnswers<never>(options?.signal);
         guard();
         const { timeMin, timeMax, items } = requestBody;
         const busy = overlapping(timeMin, timeMax, true).map((event) => ({

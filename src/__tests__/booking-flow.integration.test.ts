@@ -48,6 +48,7 @@ jest.mock("@/lib/supabase/server", () => ({
 
 import crypto from "crypto";
 import { POST } from "@/app/api/webhooks/retell/functions/route";
+import { CALENDAR_LOOKUP_BUDGET_MS } from "@/lib/google-calendar";
 import { createFakeDb, type FakeDb } from "./__mocks__/fake-supabase";
 import {
   createFakeGoogleapis,
@@ -122,6 +123,32 @@ async function agentCalls(
   return { status: res.status, ...payload } as AgentReply;
 }
 
+/**
+ * Let a request finish while pushing fake time forward for it.
+ *
+ * The endpoint awaits several real promises before it ever reaches the timer
+ * that enforces the calendar budget, so a single advance can run before that
+ * timer exists. Stepping repeatedly until the request settles avoids depending
+ * on how many awaits happen to sit in front of it.
+ */
+async function completes<T>(pending: Promise<T>): Promise<T> {
+  let settled = false;
+  const done = pending.then(
+    (value) => {
+      settled = true;
+      return value;
+    },
+    (err) => {
+      settled = true;
+      throw err;
+    },
+  );
+  for (let step = 0; step < 200 && !settled; step++) {
+    await jest.advanceTimersByTimeAsync(50);
+  }
+  return done;
+}
+
 const booksAppointment = (
   startsAt: string,
   opts: { name?: string; phone?: string } = {},
@@ -144,6 +171,23 @@ const appointmentsOnBooks = () =>
   (database.tables.appointments as Array<Record<string, string>>)
     .filter((a) => !["cancelled", "no_show"].includes(a.status))
     .sort((a, b) => a.starts_at.localeCompare(b.starts_at));
+
+/**
+ * Attach the embedded service/customer rows Supabase returns on the reschedule
+ * lookup. The fake database does not synthesise joins, so a test that reschedules
+ * has to stand them up.
+ */
+function withEmbeddedRows(appointmentId: string) {
+  const row = (
+    database.tables.appointments as Array<Record<string, unknown>>
+  ).find((a) => a.id === appointmentId)!;
+  row.services = { name: "Women's Haircut", duration_minutes: 60 };
+  row.customers = {
+    name: "Ada Lovelace",
+    phone_number: CUSTOMER_NUMBER,
+    whatsapp_consent_status: "not_asked",
+  };
+}
 
 /** An event the owner put on their own Google Calendar. */
 const ownerIsBusy = (summary: string, fromHHMM: string, toHHMM: string) => {
@@ -361,6 +405,59 @@ describe("two customers want the same time", () => {
   });
 });
 
+describe("how much work a single answer costs", () => {
+  /**
+   * Every consultation of the calendar is a network round trip the caller waits
+   * on, so the count is what decides how long the agent takes to answer. The
+   * fake counts across both Calendar APIs, so these stay true regardless of
+   * which one the implementation uses.
+   */
+  test("a clear slot consults the calendar once", async () => {
+    const reply = await booksAppointment(at("13:00"));
+
+    expect(reply.conflict).toBeUndefined();
+    expect(calendarWorld.lookups).toBe(1);
+  });
+
+  test("a taken slot consults it once too, counter-offer included", async () => {
+    // Regression: the conflict path used to look the calendar up twice — once
+    // for the requested slot, then again for the whole day to build the
+    // alternatives — doubling the wait exactly when the caller is being told
+    // bad news.
+    ownerIsBusy("Dentist", "10:00", "11:00");
+
+    const reply = await booksAppointment(at("10:00"));
+
+    expect(reply.conflict).toBe(true);
+    expect(reply.alternatives?.length).toBeGreaterThan(0);
+    expect(calendarWorld.lookups).toBe(1);
+  });
+
+  test("a refused reschedule consults it once", async () => {
+    const booked = await booksAppointment(at("14:00"));
+    withEmbeddedRows(booked.appointment_id!);
+    ownerIsBusy("School run", "10:00", "11:00");
+    calendarWorld.lookups = 0; // ignore the booking that set the scene
+
+    const moved = await agentCalls("reschedule_appointment", {
+      appointment_id: booked.appointment_id!,
+      new_starts_at: at("10:00"),
+    });
+
+    expect(moved.conflict).toBe(true);
+    expect(calendarWorld.lookups).toBe(1);
+  });
+
+  test("checking availability consults it once", async () => {
+    await agentCalls("check_availability", {
+      date: MONDAY,
+      service_id: HAIRCUT,
+    });
+
+    expect(calendarWorld.lookups).toBe(1);
+  });
+});
+
 describe("the whole conversation, end to end", () => {
   test("asked times, hit a clash, took the next best slot", async () => {
     ownerIsBusy("Dentist", "10:00", "11:00");
@@ -408,21 +505,11 @@ describe("the whole conversation, end to end", () => {
 });
 
 describe("moving an existing appointment", () => {
-  /** Book an appointment and hand back its id. */
+  /** Book an appointment and hand back its id, ready to be rescheduled. */
   async function existingAppointmentAt(hhmm: string) {
     const reply = await booksAppointment(at(hhmm));
-    const id = reply.appointment_id!;
-    // Mirror the embedded rows Supabase returns for the reschedule lookup.
-    const row = (
-      database.tables.appointments as Array<Record<string, unknown>>
-    ).find((a) => a.id === id)!;
-    row.services = { name: "Women's Haircut", duration_minutes: 60 };
-    row.customers = {
-      name: "Ada Lovelace",
-      phone_number: CUSTOMER_NUMBER,
-      whatsapp_consent_status: "not_asked",
-    };
-    return id;
+    withEmbeddedRows(reply.appointment_id!);
+    return reply.appointment_id!;
   }
 
   const movesTo = (id: string, hhmm: string) =>
@@ -489,6 +576,85 @@ describe("moving an existing appointment", () => {
   });
 });
 
+describe("when Google Calendar never answers", () => {
+  test("the caller is not left waiting — the booking completes", async () => {
+    calendarWorld.hang = true;
+
+    const reply = await completes(booksAppointment(at("10:00")));
+
+    expect(reply.conflict).toBeUndefined();
+    expect(appointmentsOnBooks()).toHaveLength(1);
+  });
+
+  test("the answer arrives on the budget, not whenever Google feels like it", async () => {
+    calendarWorld.hang = true;
+
+    const startedAt = Date.now();
+    await completes(booksAppointment(at("10:00")));
+    const waited = Date.now() - startedAt;
+
+    // The budget has to have actually been waited out — an answer that arrived
+    // sooner would mean the calendar was never consulted at all.
+    expect(waited).toBeGreaterThanOrEqual(CALENDAR_LOOKUP_BUDGET_MS);
+    // And it must not run long. The bound is loose because `completes` steps
+    // fake time in fixed increments; the point is that one budget was spent,
+    // not two. Without the budget the request never settles and this times out.
+    expect(waited).toBeLessThan(CALENDAR_LOOKUP_BUDGET_MS * 2);
+  });
+
+  test("appointments already on our books are still protected", async () => {
+    await booksAppointment(at("10:00"), { name: "Ada" });
+    calendarWorld.hang = true;
+
+    const reply = await completes(
+      booksAppointment(at("10:00"), {
+        name: "Grace",
+        phone: OTHER_CUSTOMER,
+      }),
+    );
+
+    expect(reply.conflict).toBe(true);
+    expect(appointmentsOnBooks()).toHaveLength(1);
+  });
+
+  test("checking availability still returns times", async () => {
+    calendarWorld.hang = true;
+
+    const reply = await completes(
+      agentCalls("check_availability", {
+        date: MONDAY,
+        service_id: HAIRCUT,
+      }),
+    );
+
+    expect((reply.slots ?? []).length).toBeGreaterThan(0);
+  });
+
+  test("a reschedule still goes through", async () => {
+    const booked = await booksAppointment(at("14:00"));
+    withEmbeddedRows(booked.appointment_id!);
+    calendarWorld.hang = true;
+
+    const moved = await completes(
+      agentCalls("reschedule_appointment", {
+        appointment_id: booked.appointment_id!,
+        new_starts_at: at("11:00"),
+      }),
+    );
+
+    expect(moved.conflict).toBeUndefined();
+    expect(appointmentsOnBooks()[0].starts_at).toBe(at("11:00"));
+  });
+
+  test("the abandoned request is dropped, not left in flight", async () => {
+    calendarWorld.hang = true;
+
+    await completes(booksAppointment(at("10:00")));
+
+    expect(calendarWorld.aborted).toBeGreaterThan(0);
+  });
+});
+
 describe("when Google Calendar is unavailable", () => {
   test("the business can still take bookings", async () => {
     calendarWorld.failWith = new Error("503 backend error");
@@ -509,6 +675,46 @@ describe("when Google Calendar is unavailable", () => {
     });
 
     expect(reply.conflict).toBe(true);
+    expect(appointmentsOnBooks()).toHaveLength(1);
+  });
+});
+
+describe("a slot that runs past midnight", () => {
+  /** Reopen the business late, so a booking can cross into the next day. */
+  function openLate() {
+    (database.tables.business_hours as Array<Record<string, unknown>>).forEach(
+      (row) => {
+        row.is_closed = false;
+        row.hours_ranges = [{ open: "20:00", close: "23:59" }];
+      },
+    );
+  }
+
+  test("a clash on the far side of midnight is still caught", async () => {
+    // Regression: scoping the lookup to the requested slot's own local day made
+    // the tail of a late booking invisible, so it could be booked over.
+    openLate();
+    calendarWorld.events.push({
+      id: "after-midnight",
+      status: "confirmed",
+      summary: "Night shift",
+      start: { dateTime: new Date("2026-07-07T00:00:00-04:00").toISOString() },
+      end: { dateTime: new Date("2026-07-07T01:00:00-04:00").toISOString() },
+    });
+
+    // 23:30 for a 60-minute service runs to 00:30 the next day.
+    const reply = await booksAppointment(at("23:30"));
+
+    expect(reply.conflict).toBe(true);
+    expect(appointmentsOnBooks()).toHaveLength(0);
+  });
+
+  test("a late booking with a clear night goes through", async () => {
+    openLate();
+
+    const reply = await booksAppointment(at("23:30"));
+
+    expect(reply.conflict).toBeUndefined();
     expect(appointmentsOnBooks()).toHaveLength(1);
   });
 });

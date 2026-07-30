@@ -43,7 +43,10 @@ jest.mock("@/lib/supabase/server", () => ({
   }),
 }));
 
-import { getCalendarBusyIntervals } from "@/lib/google-calendar";
+import {
+  CALENDAR_LOOKUP_BUDGET_MS,
+  getCalendarBusyIntervals,
+} from "@/lib/google-calendar";
 
 const TZ = "America/New_York";
 // 10:00–11:00 ET on Monday 2026-07-06.
@@ -100,6 +103,8 @@ describe("getCalendarBusyIntervals", () => {
         // otherwise a weekly block would not be seen.
         singleEvents: true,
       }),
+      // Request options (abort signal for the time budget).
+      expect.anything(),
     );
   });
 
@@ -111,6 +116,7 @@ describe("getCalendarBusyIntervals", () => {
 
     expect(eventsList).toHaveBeenCalledWith(
       expect.objectContaining({ calendarId: "primary" }),
+      expect.anything(),
     );
   });
 
@@ -186,5 +192,69 @@ describe("getCalendarBusyIntervals", () => {
     eventsList.mockResolvedValue({ data: {} });
 
     await expect(busy()).resolves.toEqual([]);
+  });
+});
+
+describe("getCalendarBusyIntervals — time budget", () => {
+  beforeEach(() => {
+    jest.useFakeTimers();
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  test("gives up and reports a clear calendar when Google never answers", async () => {
+    eventsList.mockReturnValue(new Promise(() => {})); // hangs forever
+
+    const pending = busy();
+    await jest.advanceTimersByTimeAsync(CALENDAR_LOOKUP_BUDGET_MS + 1);
+
+    await expect(pending).resolves.toEqual([]);
+  });
+
+  test("waits for a slow-but-answering lookup inside the budget", async () => {
+    eventsList.mockReturnValue(
+      new Promise((resolve) =>
+        setTimeout(
+          () => resolve({ data: { items: [timedEvent()] } }),
+          CALENDAR_LOOKUP_BUDGET_MS - 100,
+        ),
+      ),
+    );
+
+    const pending = busy();
+    await jest.advanceTimersByTimeAsync(CALENDAR_LOOKUP_BUDGET_MS);
+
+    // Answered in time, so the event is honoured rather than discarded.
+    await expect(pending).resolves.toHaveLength(1);
+  });
+
+  test("aborts the abandoned request instead of leaving it in flight", async () => {
+    let observed: AbortSignal | undefined;
+    eventsList.mockImplementation(
+      (_params: unknown, options?: { signal?: AbortSignal }) => {
+        observed = options?.signal;
+        return new Promise(() => {});
+      },
+    );
+
+    const pending = busy();
+    await jest.advanceTimersByTimeAsync(CALENDAR_LOOKUP_BUDGET_MS + 1);
+    await pending;
+
+    expect(observed?.aborted).toBe(true);
+  });
+
+  test("logs when the budget is blown, since the caller cannot tell", async () => {
+    eventsList.mockReturnValue(new Promise(() => {}));
+
+    const pending = busy();
+    await jest.advanceTimersByTimeAsync(CALENDAR_LOOKUP_BUDGET_MS + 1);
+    await pending;
+
+    expect(console.error).toHaveBeenCalledWith(
+      expect.stringContaining(String(CALENDAR_LOOKUP_BUDGET_MS)),
+    );
   });
 });

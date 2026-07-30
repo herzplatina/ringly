@@ -195,15 +195,24 @@ describe("book_appointment — Google Calendar conflicts", () => {
     expect(starts).toContain(et("12:00"));
   });
 
-  test("queries the calendar for the exact window being booked", async () => {
+  test("asks the calendar about a window covering the requested slot, just once", async () => {
     await book(et("10:00"));
 
-    expect(getCalendarBusyIntervals).toHaveBeenCalledWith(
-      BUSINESS_ID,
-      et("10:00"),
-      et("11:00"),
-      undefined, // nothing to exclude on a fresh booking
+    // Deliberately not asserting the exact bounds: what matters is that the
+    // requested slot is inside whatever window we ask about, and that a clear
+    // booking costs a single round trip.
+    expect(getCalendarBusyIntervals).toHaveBeenCalledTimes(1);
+    const [businessId, from, to, exclude] = (
+      getCalendarBusyIntervals as jest.Mock
+    ).mock.calls[0];
+    expect(businessId).toBe(BUSINESS_ID);
+    expect(new Date(from).getTime()).toBeLessThanOrEqual(
+      new Date(et("10:00")).getTime(),
     );
+    expect(new Date(to).getTime()).toBeGreaterThanOrEqual(
+      new Date(et("11:00")).getTime(),
+    );
+    expect(exclude).toBeUndefined(); // nothing to exclude on a fresh booking
   });
 
   test("books when the calendar is clear", async () => {
@@ -432,12 +441,10 @@ describe("reschedule_appointment", () => {
 
     await reschedule(et("14:30"));
 
-    expect(getCalendarBusyIntervals).toHaveBeenCalledWith(
-      BUSINESS_ID,
-      et("14:30"),
-      et("15:30"),
-      "event-mine",
+    const excludedIds = (getCalendarBusyIntervals as jest.Mock).mock.calls.map(
+      ([, , , excludeId]) => excludeId,
     );
+    expect(excludedIds).toContain("event-mine");
   });
 
   test("a small shift is allowed even though the old event covers the new time", async () => {
