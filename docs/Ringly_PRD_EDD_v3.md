@@ -25,18 +25,18 @@ manage their own operation without talking to us.
 
 ## 1.2 What changed from v2
 
-| Area         | v2                                   | v3                                                             |
-| ------------ | ------------------------------------ | -------------------------------------------------------------- |
-| Tenancy      | Implicitly single-tenant assumptions | Explicit multi-tenant model, isolation and scale targets       |
-| Scheduling   | Google Calendar only                 | Provider abstraction; Google is one implementation of several  |
-| Appointments | One-off only                         | One-off **and** recurring series                               |
-| Reminders    | Deferred (`pg_cron` TODO)            | First-class, durable, batched dispatch at scale                |
-| Services     | Set at onboarding                    | Editable any time; changes reach the agent for the next caller |
-| Analytics    | None                                 | Per-business dashboard of call volume, duration, and outcomes  |
-| Money        | None                                 | $100 activation charge, card on file, usage billing with a cap |
-| Email        | None                                 | Billing and stats emails to the business                       |
-| Latency      | Not a stated requirement             | Explicit per-turn budget on the call path                      |
-| Cost         | Not a stated requirement             | Explicit per-tenant serving-cost target                        |
+| Area         | v2                                   | v3                                                                |
+| ------------ | ------------------------------------ | ----------------------------------------------------------------- |
+| Tenancy      | Implicitly single-tenant assumptions | Explicit multi-tenant model, isolation and scale targets          |
+| Scheduling   | Google Calendar only                 | Provider abstraction; Google is one implementation of several     |
+| Appointments | One-off only                         | One-off **and** recurring series                                  |
+| Reminders    | Deferred (`pg_cron` TODO)            | First-class, durable, batched dispatch at scale                   |
+| Services     | Set at onboarding                    | Editable any time; changes reach the agent for the next caller    |
+| Analytics    | None                                 | Per-business dashboard, plus an operator cost/revenue dashboard   |
+| Money        | None                                 | $100/30 days in advance, usage in arrears, $500 cap, card on file |
+| Email        | None                                 | Billing and stats emails to the business                          |
+| Latency      | Not a stated requirement             | Explicit per-turn budget on the call path                         |
+| Cost         | Not a stated requirement             | Explicit per-tenant serving-cost target                           |
 
 ## 1.3 Personas
 
@@ -171,33 +171,81 @@ _(Carried from v2; renumbered. v2 FR1–FR10 map to F1.1–F1.10.)_
 
 ### F7 — Billing and payments
 
-- **F7.1** Once a business has provisioned its number and completed a successful
-  test call (F1.12), it is prompted to pay a **$100 activation charge**.
-- **F7.2** At the same moment, the business's **card is stored for future use**
-  so later usage can be charged without them present.
+**Billing period.** A business's period is a **rolling 30 days from activation**,
+not a calendar month. Period 1 begins the moment the business activates (F1.12);
+period _n+1_ begins 30 days after period _n_.
+
+- **F7.1** A **$100 fixed fee** is charged **in advance** at the start of every
+  30-day period, irrespective of usage. The first such charge is the activation
+  payment — there is no separate one-off activation fee.
+- **F7.2** At activation the business's **card is stored for future off-session
+  use**, so later charges need no customer presence.
 - **F7.3** Ringly never stores, transmits, or logs raw card details. Card data is
   handled entirely by the payment provider; Ringly stores only provider
-  identifiers. _(This is a hard requirement, not a preference.)_
-- **F7.4** After activation, usage is billed **pay-as-you-go**, accrued
-  continuously and invoiced monthly.
-- **F7.5** Usage billing is subject to a **maximum monthly limit**. On reaching
-  it, the business is notified and service behaviour follows the cap policy in
-  §1.8 Q2.
-- **F7.6** Billing repeats monthly without further action from the business.
-- **F7.7** A failed charge notifies the business and enters a retry period before
-  any service change.
-- **F7.8** The dashboard shows current-period usage, the amount accrued, the cap,
-  and the next invoice date.
-- **F7.9** Every charge, success or failure, is recorded immutably against the
+  identifiers. _(Hard requirement, not a preference.)_
+- **F7.4** **Usage** accrues through the period and is charged **in arrears** at
+  period end, once the total is known.
+- **F7.5** Two billable usage units:
+  - **connected minutes on productive calls** (F7.6), whole call duration (F7.7);
+  - **reminders sent**, per message.
+- **F7.6** A call is **productive** — and therefore billable — if it resulted in
+  any of: a new booking; a reschedule that produced a booked appointment; or a
+  cancellation of a real existing appointment. **Not billable:** general enquiry
+  calls, wrong numbers, dropped calls, test calls, and any call that changed
+  nothing for the business.
+- **F7.7** The **whole call** is billable, not only the minutes up to the
+  booking.
+- **F7.8** Rates are **configuration, not constants in code**: per-connected-
+  minute rate and per-reminder rate. Both are **TBD** and must be settable
+  without a deploy. Working assumption for the reminder rate: **$0.05**.
+- **F7.9** A **$500 cap per period, inclusive of the $100 fixed fee** — so usage
+  tops out at $400. On reaching the cap Ringly **continues to serve the business
+  and absorbs the cost**, stops accruing further charges for that period, and
+  **alerts the operator** (F9.6).
+- **F7.10** Billing repeats every 30 days with no action from the business.
+- **F7.11** A failed charge notifies the business (F8.2) and enters a retry
+  period before any service change.
+- **F7.12** On **cancellation mid-period**: refund the unused portion of the $100
+  fixed fee, prorated at 1/30 per whole day remaining, and charge usage accrued
+  up to the cancellation date.
+- **F7.13** The business dashboard shows current-period usage, amount accrued,
+  the cap, and the next charge date.
+- **F7.14** Every charge, refund, and failure is recorded immutably against the
   business for reconciliation.
+
+> **Deliberately deferred.** Charging for _all_ connected minutes (booked or not)
+> is the expected next pricing model. F7.6 is written as a predicate over call
+> outcome so widening it later is a configuration change, not a redesign.
+
+### F9 — Operator dashboard (Ringly-internal)
+
+- **F9.1** Visible **only to the operator**. No business owner may reach it by
+  any route, with any credential. This is the single screen that reads across all
+  tenants and is therefore treated as a walled garden (EDD §2.9a, N1.1).
+- **F9.2** Per business, per period: **net revenue** (charges received, less
+  payment-processor fees), **cost incurred**, and the margin between them.
+- **F9.3** Payment reliability per business — paid on time, late, failed,
+  currently past due — so irregular payers are visible at a glance.
+- **F9.4** Platform totals: revenue, cost, and margin across all businesses.
+- **F9.5** **Cost model (v1): Retell only.** Retell is the sole recurring cost
+  attributed per business, covering the telephony number rental and all per-call
+  charges including LLM. Deliberately excluded: Supabase and Vercel (fixed
+  platform overhead, immaterial per tenant) and Google Places (one-off at
+  onboarding, considered covered by the first $100). **WhatsApp messaging cost is
+  added to this model when WhatsApp ships.**
+- **F9.6** **Operator alerts**: a business reaching its cap (F7.9), and payment
+  failures. Delivered by **email** initially. _TBD: move operator alerting to
+  Slack; pending implementation._
+- **F9.7** Refreshed **daily**, and available at all times. The current period is
+  computed live; history is served from pre-aggregated data.
 
 ### F8 — Email notifications
 
 - **F8.1** Email is sent to the business contact address (F1.11).
 - **F8.2** **Billing email**: activation receipt, upcoming charge notice, invoice
   issued, payment succeeded, payment failed, and approaching/at cap.
-- **F8.3** **Stats email**: a periodic digest of the F6.2 headline figures.
-  Default monthly, aligned to the billing period.
+- **F8.3** **Stats email**: a periodic digest of the F6.2 headline figures,
+  aligned to the business's 30-day billing period.
 - **F8.4** A business can unsubscribe from stats email. **Billing email is
   transactional and cannot be unsubscribed.**
 - **F8.5** Email sending is idempotent — a retry never sends a duplicate.
@@ -295,18 +343,32 @@ involves a backend call:
 | Dashboard load                        | p95 ≤ 500 ms           |
 | Monthly infra cost per business       | tracked, trending down |
 
-## 1.8 Open questions (blocking implementation)
+## 1.8 Decisions and open questions
 
-- **Q1 — Usage pricing.** What is billed, and at what rate? Per call, per connected
-  minute, per booking, or a bundle? The billing implementation cannot start
-  without this.
-- **Q2 — Cap behaviour.** What is the maximum monthly limit, and what happens at
-  it: keep serving and absorb the cost, keep serving and bill the overage, or
-  stop answering calls? These are materially different products.
-- **Q3 — Email provider.** Resend is the recommended default (see EDD §2.10);
-  confirm or name another.
-- **Q4 — Recurring reminder horizon.** How far ahead are occurrences of an
-  indefinite series materialised (proposed: rolling 90 days)?
+**Settled 2026-07-30:** pricing shape (F7), cap behaviour (F7.9), reminder
+metering (F7.5), email provider **Resend** (§2.10), 90-day recurrence horizon
+(§2.7), operator cost model (F9.5), net-of-fees revenue (F9.2).
+
+**Still open — each blocks the phase named:**
+
+- **Q1 — Rates (Phase 5).** Per-connected-minute rate is TBD; per-reminder rate
+  assumed $0.05. Both are configuration (F7.8), so Phase 5 can be built and
+  tested with placeholders, but cannot be switched on for real customers until
+  set.
+- **Q2 — Is the cap prorated on cancellation (Phase 5)?** A business that
+  cancels on day 12 has used 40% of its period. Is its cap still $500, or 12/30
+  of it? Affects F7.12.
+- **Q3 — Does a failed renewal keep the phone answered (Phase 5)?** F7.11 gives
+  a retry period; the behaviour _during_ it is unspecified. Proposed: keep
+  serving through the retry window, then suspend.
+- **Q4 — Which channel delivers reminders in v3 (Phase 6)?** F5.4–F5.7 require
+  reminders, but WhatsApp is explicitly out of v1 (F9.5). Either reminders ship
+  over SMS first, or F5 delivers recurrence and reminder _scheduling_ with
+  dispatch dark until a channel exists. **This is a scope conflict, not a
+  detail** — see Risk R7.
+- **Q5 — Double-charging optics (Phase 5).** Under F7.6, a caller who books and
+  later cancels produces two billable calls for a net-zero outcome. Accepted, or
+  suppress the second?
 
 ---
 
@@ -428,13 +490,31 @@ Migrations `005`–`010`, in dependency order.
 
 **010 — billing and email (F7, F8)**
 
-- `businesses.contact_email`, `stripe_customer_id`, `billing_status`
-  (`unbilled | active | past_due | capped | cancelled`), `monthly_cap_cents`.
-- `billing_events(id, business_id, stripe_event_id unique, kind, amount_cents, occurred_at, payload)` —
-  immutable ledger (F7.9), `stripe_event_id` unique for webhook idempotency.
-- `usage_records(id, business_id, occurred_at, kind, quantity, unit_cost_cents, call_id)` —
-  per-tenant attribution (N4.4).
+- `businesses.contact_email`, `stripe_customer_id`, `stripe_subscription_id`,
+  `billing_status` (`unbilled | active | past_due | capped | cancelled`),
+  `period_started_at`, `cap_cents` (default 50000).
+- `pricing_config(id, key unique, cents, effective_from)` — the per-minute and
+  per-reminder rates (F7.8). Rates are data, not constants, so they can be set
+  without a deploy while they remain TBD (§1.8 Q1).
+- `billing_events(id, business_id, stripe_event_id unique, kind, amount_cents, fee_cents, occurred_at, payload)` —
+  immutable ledger (F7.14); `stripe_event_id` unique for webhook idempotency;
+  `fee_cents` from the Stripe balance transaction so revenue is net (F9.2).
+- `usage_records(id, business_id, period_start, occurred_at, kind, quantity, unit_cents, amount_cents, call_id, reminder_id)` —
+  `kind` in (`connected_minutes`, `reminder`). Per-tenant attribution (N4.4) and
+  the input to the cap check (F7.9).
 - `email_log(id, business_id, kind, idempotency_key unique, sent_at, status)` — F8.5.
+
+**011 — operator dashboard (F9)**
+
+- `cost_records(id, business_id, occurred_at, source, kind, amount_cents, call_id)` —
+  `source` = `retell` in v1 (`whatsapp` when it ships). `kind` in
+  (`call`, `number_rental`). Populated from the post-call webhook and a monthly
+  rental job (F9.5).
+- `daily_business_economics(business_id, local_date, revenue_net_cents, cost_cents, calls, billable_calls)` —
+  primary key `(business_id, local_date)`; the daily refresh behind F9.7.
+- No RLS policy is added for these tables. They are reachable **only** through
+  the ops data module under a service role (§2.9a); tenant-facing code has no
+  path to them.
 
 ## 2.4 Scheduling provider abstraction (F4.2)
 
@@ -545,34 +625,78 @@ and was ended by the caller. This requires the post-call webhook to record
 
 ## 2.9 Billing (F7)
 
-**Stripe, using Customers + Setup Intents + usage-based Billing.** Verified
-capabilities in §2.15.
+**Stripe, using Customers + Setup Intents + a 30-day recurring price + usage
+meters.** Verified capabilities in §2.15.
 
-| Requirement            | Mechanism                                                                                                                                               |
-| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| F7.1 $100 activation   | One-off `PaymentIntent` at the end of onboarding                                                                                                        |
-| F7.2 card stored       | `SetupIntent` with `usage: off_session`, attached to the Customer                                                                                       |
-| F7.3 no card liability | Card data is entered into Stripe Elements and never reaches our servers; we store `stripe_customer_id` and `payment_method_id` only. Keeps us at SAQ-A. |
-| F7.4 pay-as-you-go     | Metered subscription price; usage reported to a Stripe **meter**                                                                                        |
-| F7.5 monthly cap       | Billing **thresholds** on accrued amount, plus our own `monthly_cap_cents` enforced before serving billable work                                        |
-| F7.6 monthly repeat    | Subscription billing cycle                                                                                                                              |
-| F7.7 failed charge     | `invoice.payment_failed` webhook → notify (F8.2) → Stripe retry schedule                                                                                |
-| F7.9 immutable record  | `billing_events`, keyed by `stripe_event_id` for idempotency                                                                                            |
+| Requirement                         | Mechanism                                                                                                                                    |
+| ----------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| F7.1 $100 in advance, every 30 days | Subscription with `interval: day, interval_count: 30`, billed at period start. **Not** `interval: month` — see the drift note below.         |
+| F7.2 card stored                    | `SetupIntent` with `usage: off_session`, attached to the Customer                                                                            |
+| F7.3 no card liability              | Card entered into Stripe Elements; never reaches our servers. We store `stripe_customer_id` and `payment_method_id` only. Keeps us at SAQ-A. |
+| F7.4 usage in arrears               | Metered price on the same subscription, invoiced at period end                                                                               |
+| F7.5 two usage units                | Two Stripe **meters**: `connected_minutes` and `reminders_sent`                                                                              |
+| F7.6 productive calls only          | Our own predicate over call outcome, evaluated post-call; only productive calls emit a usage record                                          |
+| F7.8 rates configurable             | Rates live in `pricing_config`, not in code                                                                                                  |
+| F7.9 cap                            | Enforced **by us** before emitting usage, not by Stripe. On reaching: stop accruing, keep serving, alert operator                            |
+| F7.11 failed charge                 | `invoice.payment_failed` webhook → notify (F8.2) → Stripe retry schedule                                                                     |
+| F7.12 cancellation                  | Credit note for unused fixed-fee days + final usage invoice                                                                                  |
+| F7.14 immutable record              | `billing_events`, keyed by `stripe_event_id` for idempotency                                                                                 |
 
-Usage is written locally to `usage_records` first (the source of truth for our own
-reporting and per-tenant economics, N4.4) and reported to Stripe's meter
+Usage is written locally to `usage_records` first — the source of truth for our
+own reporting and unit economics (N4.4) — and pushed to Stripe's meters
 asynchronously, so a Stripe outage never blocks a call.
 
-**The cap needs a product decision (§1.8 Q2)** before this can be built: Stripe's
-thresholds can trigger an early invoice, but "stop answering the phone" is a
-Ringly-side decision that thresholds alone do not express.
+**Three consequences worth stating plainly:**
+
+1. **The billing date drifts backwards through the calendar.** 30-day periods
+   give 12.17 periods a year, not 12, so a business signing up on 1 January is
+   billed 31 January, 2 March, 1 April… and pays **$1,216.67** a year rather than
+   $1,200. This is what was asked for and Stripe supports it directly; it is
+   recorded because it surprises customers, not because it is wrong. Switching to
+   `interval: month` anchored on the signup day would give calendar-stable dates
+   and exactly 12 charges.
+2. **The cap is enforced by Ringly, not Stripe.** Stripe's billing thresholds can
+   invoice early at a monetary threshold, but "stop charging and keep serving at
+   a loss" is a Ringly-side policy. We check the accrued total before writing
+   each usage record and stop at $400 of usage ($500 including the fixed fee).
+3. **Timezone position — resolves the N5.2 conflict.** Usage is metered and
+   displayed in the **business's** timezone; the invoice period is **Stripe's**.
+   The dashboard labels which it is showing. Any other combination produces
+   invoices that disagree with the dashboard.
+
+## 2.9a Operator dashboard (F9)
+
+A separate application surface, not a privileged view of the business dashboard:
+
+- **Route namespace `/ops/*`**, excluded from every tenant-facing layout.
+- **Its own data access module.** Tenant-facing code never imports it; it never
+  imports tenant-scoped helpers. The one place a cross-tenant query is legitimate
+  is the one place it is allowed to exist.
+- **Authorisation by operator allowlist** (env-configured user ids), checked in
+  the proxy _and_ in every `/ops` handler. Not a role column on a tenant table —
+  nothing a compromised business account could set.
+- **Tests assert** an authenticated business owner gets 404 from every `/ops`
+  route, and that no tenant-facing route can reach the ops data module.
+- **Cost attribution (F9.5):** per-call Retell cost captured at the post-call
+  webhook — preferring a cost field on the call object where Retell supplies one,
+  otherwise `duration × configured_rate`. Number rental is a monthly per-business
+  line. Both land in `cost_records`.
+- **Net revenue (F9.2)** from Stripe balance transactions, which carry the
+  processing fee, so margin is net rather than gross.
+- **Daily refresh (F9.7)** via the §2.8 rollup worker, writing
+  `daily_business_economics`.
 
 ## 2.10 Email (F8)
 
-**Recommended provider: Resend** — first-class Next.js/React support, simple
-transactional API, and adequate deliverability at this volume. Alternatives:
-Postmark (best transactional deliverability, no marketing features) or SendGrid
-(broadest, heaviest). This is §1.8 Q3.
+**Provider: Resend** (decided 2026-07-30). Chosen for React Email — templates
+live in this repo and are reviewed like any other code — a small API surface that
+keeps the abstraction thin, and price parity with the alternatives at this
+volume. Postmark was the runner-up on transactional deliverability; SES was
+rejected as 10–20× cheaper but materially more operational work (warmup, bounce
+and complaint handling) at a scale where the saving is noise.
+
+Operator alerting (F9.6) uses the same path initially. _TBD: move operator alerts
+to Slack; pending implementation._
 
 Design: one `sendEmail(kind, businessId, payload)` entry point writing an
 `email_log` row keyed by an idempotency key derived from `(kind, business, period)`
@@ -618,22 +742,66 @@ implementation, never hand-rolled.
   parity.
 - **R6 — Cost of correctness.** Live busy-checks on every turn are a real
   third-party spend. Accepted: a stale conflict check is worse than its cost.
+- **R7 — Reminders have no delivery channel in v3 (scope conflict).** F5.4–F5.7
+  require reminders, but WhatsApp is explicitly excluded from v1 (F9.5). Phase 6
+  can build recurrence, scheduling, and the dispatcher, but nothing will actually
+  send until a channel exists. Either SMS ships as the first channel or F5
+  delivers dark. **Unresolved — §1.8 Q4.**
+- **R8 — Unbooked calls are pure cost.** Only productive calls are billable
+  (F7.6) while every call costs Retell minutes. At Retell's $0.13–0.31/min
+  all-in, the $100 fixed fee covers roughly 320–770 minutes of unbilled calling
+  before a business is loss-making. Accepted for now; F9 exists partly to measure
+  exactly this, and the stated next pricing model (all connected minutes) is the
+  remedy.
 
 ## 2.14 Delivery plan
 
-Each phase is independently shippable and separately PR'd.
+Each phase is independently shippable. **Phase 1 is a prerequisite for
+everything and contains the one active defect (R1); phases 2–7 are independent of
+each other after it**, except where noted.
 
-| Phase                          | Scope                                                                                                                      | Depends on |
-| ------------------------------ | -------------------------------------------------------------------------------------------------------------------------- | ---------- |
-| **1 — Foundations**            | Migration 005; `tenantScoped` helper + isolation tests; fix R1 (surface degradation); call/duration/outcome capture for F6 | —          |
-| **2 — Catalogue + cache**      | Service versioning (006); config cache (§2.6); F3 end to end                                                               | 1          |
-| **3 — Provider abstraction**   | 007; extract `SchedulingProvider`; port Google; add `none`                                                                 | 1          |
-| **4 — Dashboard**              | 009; rollups; dashboard UI (F6)                                                                                            | 1          |
-| **5 — Billing + email**        | 010; Stripe activation, card on file, metered usage, cap; Resend; F7/F8                                                    | 1, 4       |
-| **6 — Recurrence + reminders** | 008; materialiser; dispatcher; F5                                                                                          | 1          |
+| Phase                          | Scope                                                                                                                                              | Depends on      | Flag    |
+| ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- | --------------- | ------- |
+| **1 — Foundations**            | Migration 005; `tenantScoped` helper + isolation tests; fix R1 (surface degradation); capture call duration, end reason, outcome and per-call cost | —               | no      |
+| **2 — Catalogue + cache**      | 006; config cache (§2.6); F3 end to end                                                                                                            | 1               | no      |
+| **3 — Provider abstraction**   | 007; extract `SchedulingProvider`; port Google; add `none`                                                                                         | 1               | no      |
+| **4 — Business dashboard**     | 009; rollups; F6 UI                                                                                                                                | 1               | no      |
+| **5 — Billing + email**        | 010; Stripe 30-day subscription, card on file, meters, cap; Resend; F7/F8                                                                          | 1, 4            | **yes** |
+| **6 — Recurrence + reminders** | 008; materialiser; dispatcher; reminder metering; F5                                                                                               | 1, 5 (metering) | **yes** |
+| **7 — Operator dashboard**     | 011; `/ops` walled garden; economics rollup; F9                                                                                                    | 1, 4, 5         | **yes** |
 
-Phase 1 is a prerequisite for everything and contains the one active defect (R1).
-Phases 2–6 are independent of each other after it.
+### How the work is split across branches and PRs
+
+The rule: **one PR is one reviewable idea that leaves `main` deployable.** A
+phase is not a PR. Phases split by _layer_, in this order, because each layer is
+independently reviewable and the earlier ones are safe to merge before the later
+ones exist:
+
+1. **Migration + types** — schema, generated types, no behaviour change. Merges
+   green and inert.
+2. **Backend** — services, repositories, jobs, webhooks, with unit and
+   integration tests.
+3. **UI** — the screens that consume it.
+4. **Enablement** — flip the feature flag on, once 1–3 are proven.
+
+Phase 1 is small enough to be a single PR. Phases 4, 5 and 7 are each three or
+four PRs on that pattern. Phase 5 additionally splits _by concern_ — Stripe
+subscription, usage metering and cap, then email — because "billing" as one PR
+would be unreviewable.
+
+### Feature flags
+
+Flags exist so incomplete work can live on `main` instead of a long-lived branch:
+
+- **Phase 5 `billing`** — the highest-stakes flag. Until it flips, no customer is
+  charged; the whole path can be exercised against Stripe test mode on `main`.
+- **Phase 6 `recurring_appointments`** — recurrence changes what the agent offers
+  callers, so it stays dark until the dispatcher is proven (and R7 is resolved).
+- **Phase 7 `ops_dashboard`** — additionally gated by the operator allowlist, so
+  the flag is defence in depth rather than the control.
+
+Phases 1–4 need no flags: each is either invisible to users or a strict
+improvement to an existing screen, and each is complete when merged.
 
 ## 2.15 Verified vendor capabilities (confirmed 2026-07-30)
 
