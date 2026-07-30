@@ -249,6 +249,17 @@ period _n+1_ begins 30 days after period _n_.
 > is the expected next pricing model. F7.6 is written as a predicate over call
 > outcome so widening it later is a configuration change, not a redesign.
 
+### F8 — Email notifications
+
+- **F8.1** Email is sent to the business contact address (F1.11).
+- **F8.2** **Billing email**: activation receipt, upcoming charge notice, invoice
+  issued, payment succeeded, payment failed, and approaching/at cap.
+- **F8.3** **Stats email**: a periodic digest of the F6.2 headline figures,
+  aligned to the business's 30-day billing period.
+- **F8.4** A business can unsubscribe from stats email. **Billing email is
+  transactional and cannot be unsubscribed.**
+- **F8.5** Email sending is idempotent — a retry never sends a duplicate.
+
 ### F9 — Operator dashboard (Ringly-internal)
 
 - **F9.1** Visible **only to the operator**. No business owner may reach it by
@@ -279,17 +290,6 @@ period _n+1_ begins 30 days after period _n_.
   businesses that never activated, are suspended, or are otherwise not paying the
   $100 minimum. Every such number is a standing cost with no revenue against it.
 
-### F8 — Email notifications
-
-- **F8.1** Email is sent to the business contact address (F1.11).
-- **F8.2** **Billing email**: activation receipt, upcoming charge notice, invoice
-  issued, payment succeeded, payment failed, and approaching/at cap.
-- **F8.3** **Stats email**: a periodic digest of the F6.2 headline figures,
-  aligned to the business's 30-day billing period.
-- **F8.4** A business can unsubscribe from stats email. **Billing email is
-  transactional and cannot be unsubscribed.**
-- **F8.5** Email sending is idempotent — a retry never sends a duplicate.
-
 ### F10 — Account lifecycle, suspension and data retention
 
 - **F10.1** A business that has not activated releases its rented phone number
@@ -318,22 +318,6 @@ period _n+1_ begins 30 days after period _n_.
 - **F10.6** **Call transcripts are retained; call recordings are not stored by
   Ringly.** Recordings remain with the telephony provider and are fetched by
   signed URL on demand.
-
----
-
-## 1.9 Deferred to v3.1
-
-- **Self-serve cancellation.** Replaces the email-based flow in F10.2. Recorded
-  now because it raises questions that should be answered before it is built:
-  - Does cancelling take effect immediately, or at period end?
-  - Is the refund automatic, or does it require review?
-  - What stops a business cycling — cancel, re-activate, and reset the $500 cap
-    (F7.9) — which is only safe today because a human sees every cancellation?
-  - Does the business get an export of their data before the day-30 deletion?
-  - Can a suspended business self-serve reactivate, or does that stay manual?
-- **Customer notification of appointment changes** (F5.2c), which ships with the
-  reminder channel.
-- **Operator alerting via Slack**, replacing email (F9.6).
 
 ---
 
@@ -456,37 +440,6 @@ F9.8), dropped-call definition (F6.3), calendar-provider switching out of scope
 
 ---
 
-### F10 — Account lifecycle, suspension and data retention
-
-- **F10.1** A business that has not activated releases its rented phone number
-  after **10 days**, and may place at most **10 test calls** before activation.
-  Both exist because an unactivated business is pure cost — a rented number and
-  live call minutes against no revenue.
-- **F10.2** **Cancellation is not self-serve in v3.** A business cancels by
-  emailing Ringly. _(Self-serve cancellation is a v3.1 requirement — §1.9.)_
-- **F10.3** Suspension and deletion run as **two phases**, so a business has time
-  to respond to warnings before anything irreversible happens:
-
-  | Day  | On payment failure                                                                                                        | On cancellation                                                                           |
-  | ---- | ------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
-  | 0    | Payment fails. Service continues, usage accrues, business emailed.                                                        | Business emails to cancel. Service stops. Refund and final usage invoice settled (F7.12). |
-  | 0–7  | **Grace period.** Calls answered as normal. Reminder emails sent.                                                         | —                                                                                         |
-  | 7    | **Suspended.** Calls stop being answered; the number is retained. Recoverable by paying.                                  | —                                                                                         |
-  | 7–30 | Suspended but fully recoverable.                                                                                          | Recoverable.                                                                              |
-  | 30   | **Phone number released. All data deleted** — appointments, customers, calls, transcripts, payment records. Irreversible. | Same.                                                                                     |
-
-- **F10.4** A business's telephone number is its public identity, printed on
-  signage and listings. It is therefore **never released before day 30**, whatever
-  the reason for suspension.
-- **F10.5** Deletion at day 30 must remove data held **by our processors too**,
-  not only our own database — including transcripts and recordings retained by
-  the telephony provider.
-- **F10.6** **Call transcripts are retained; call recordings are not stored by
-  Ringly.** Recordings remain with the telephony provider and are fetched by
-  signed URL on demand.
-
----
-
 ## 1.9 Deferred to v3.1
 
 - **Self-serve cancellation.** Replaces the email-based flow in F10.2. Recorded
@@ -500,126 +453,6 @@ F9.8), dropped-call definition (F6.3), calendar-provider switching out of scope
 - **Customer notification of appointment changes** (F5.2c), which ships with the
   reminder channel.
 - **Operator alerting via Slack**, replacing email (F9.6).
-
----
-
-## 1.6 Non-functional requirements
-
-### N1 — Multi-tenancy and isolation
-
-- **N1.1** Every row of business data belongs to exactly one business, and no
-  query path can return another business's rows. Isolation is enforced by the
-  database, not only by application code.
-- **N1.2** Server-side code paths that bypass row-level security (webhook
-  handlers using a service role) must scope every query by business explicitly,
-  and that scoping must be covered by tests.
-- **N1.3** A tenant's data can be exported and deleted on request, completely.
-
-### N2 — Scale
-
-- **N2.1** Target: **10,000 businesses**, each with up to **10,000 customers** and
-  a comparable number of historical appointments and calls — order 10⁸ rows in
-  the largest tables.
-- **N2.2** No feature may degrade as a function of _total_ platform size; only of
-  the requesting tenant's own size.
-- **N2.3** Reminder dispatch must sustain the resulting steady-state volume with
-  bounded lag (≤ 5 min from due time).
-
-### N3 — Latency on the call path
-
-Caller-perceived silence is the metric that matters. Budget per agent turn that
-involves a backend call:
-
-| Segment                                    | Target p95 |
-| ------------------------------------------ | ---------- |
-| Ringly webhook handler, end to end         | ≤ 400 ms   |
-| — of which our own datastore               | ≤ 80 ms    |
-| — of which external scheduling provider    | ≤ 250 ms   |
-| Hard ceiling before we abandon and degrade | 1500 ms    |
-| Caller-perceived silence (filler covers)   | ≈ 0        |
-
-- **N3.1** Any backend operation on the call path has a hard timeout and a
-  defined degraded result. Slow is treated as failed.
-- **N3.2** Work not needed to answer the caller is done after responding, never
-  before.
-
-### N4 — Serving cost
-
-- **N4.1** Per-business fixed monthly infrastructure cost (excluding telephony
-  and LLM minutes, which are usage-driven) is the metric to minimise; it must not
-  grow faster than linearly with tenants.
-- **N4.2** Repeated reads of slow-changing configuration on the call path must
-  not hit paid third-party APIs or the primary database every time.
-- **N4.3** Dashboard analytics must be served from pre-aggregated data, not from
-  scanning raw call history per request.
-- **N4.4** Paid third-party calls (Places, LLM, telephony) are attributable per
-  business so unit economics are measurable.
-
-### N5 — Timezone correctness
-
-- **N5.1** Every instant is stored in UTC and rendered in the business's IANA
-  timezone.
-- **N5.2** All day, week, and month boundaries — for availability, reminders,
-  analytics grouping, and billing periods — are computed in the business's
-  timezone, not the server's and not UTC.
-- **N5.3** Behaviour is correct across DST transitions, including the duplicated
-  and skipped local hours.
-
-### N6 — Security and compliance
-
-- **N6.1** Provider refresh tokens are encrypted at rest.
-- **N6.2** Card data never touches Ringly infrastructure (F7.3), keeping us out
-  of PCI-DSS scope beyond SAQ-A.
-- **N6.3** All inbound webhooks verify provider signatures before acting.
-- **N6.4** Customer PII (name, phone) is per-tenant and deletable (N1.3).
-
-### N7 — Availability and degradation
-
-- **N7.1** No third-party outage may prevent a business from answering calls and
-  taking bookings.
-- **N7.2** Every degraded path is logged and surfaced to the business; silent
-  degradation is a defect. _(See Risk R1 — this is currently violated.)_
-
----
-
-## 1.7 Success metrics
-
-| Metric                                | Target                 |
-| ------------------------------------- | ---------------------- |
-| Time-to-live (land → Go Live)         | p50 < 3 min            |
-| Activation rate (live → paid)         | > 60%                  |
-| Caller-perceived silence per turn     | p95 ≈ 0, no gap > 1.5s |
-| Booking conflicts reaching a customer | 0                      |
-| Reminder delivery lag                 | p99 ≤ 5 min            |
-| Dashboard load                        | p95 ≤ 500 ms           |
-| Monthly infra cost per business       | tracked, trending down |
-
-## 1.8 Decisions and open questions
-
-**Settled 2026-07-30:** pricing shape (F7), cap behaviour (F7.9), reminder
-metering (F7.5), email provider **Resend** (§2.10), 90-day recurrence horizon
-(§2.7), operator cost model (F9.5), net-of-fees revenue (F9.2).
-
-**Still open — each blocks the phase named:**
-
-- **Q1 — Rates (Phase 5).** Per-connected-minute rate is TBD; per-reminder rate
-  assumed $0.05. Both are configuration (F7.8), so Phase 5 can be built and
-  tested with placeholders, but cannot be switched on for real customers until
-  set.
-- **Q2 — Is the cap prorated on cancellation (Phase 5)?** A business that
-  cancels on day 12 has used 40% of its period. Is its cap still $500, or 12/30
-  of it? Affects F7.12.
-- **Q3 — Does a failed renewal keep the phone answered (Phase 5)?** F7.11 gives
-  a retry period; the behaviour _during_ it is unspecified. Proposed: keep
-  serving through the retry window, then suspend.
-- **Q4 — Which channel delivers reminders in v3 (Phase 6)?** F5.4–F5.7 require
-  reminders, but WhatsApp is explicitly out of v1 (F9.5). Either reminders ship
-  over SMS first, or F5 delivers recurrence and reminder _scheduling_ with
-  dispatch dark until a channel exists. **This is a scope conflict, not a
-  detail** — see Risk R7.
-- **Q5 — Double-charging optics (Phase 5).** Under F7.6, a caller who books and
-  later cancels produces two billable calls for a net-zero outcome. Accepted, or
-  suppress the second?
 
 ---
 
