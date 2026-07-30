@@ -114,8 +114,15 @@ _(Carried from v2; renumbered. v2 FR1–FR10 map to F1.1–F1.10.)_
   from save; the caller mid-conversation keeps the catalogue they started with.
 - **F3.3** Deactivating a service never alters appointments already booked
   against it.
-- **F3.4** Price and duration are versioned: an appointment records the price and
-  duration in force **when it was booked**, so later edits never rewrite history.
+- **F3.4** Price and duration are versioned, and resolve at **different moments**:
+  - **Price is the price in force at the time of the appointment**, not at
+    booking — these businesses charge their customer after the appointment
+    happens, so the price they will actually collect is the current one.
+  - **Duration is locked** when the appointment is booked (or, for a recurring
+    occurrence, when it is materialised) and never changes afterwards. A
+    duration that floated would silently overlap appointments booked around it.
+  - Deactivating or repricing a service therefore never breaks an existing
+    booking's slot, but does change what it is worth.
 
 ### F4 — Scheduling integrations
 
@@ -138,6 +145,16 @@ _(Carried from v2; renumbered. v2 FR1–FR10 map to F1.1–F1.10.)_
   "every fourth Tuesday at 2"), described by a standard recurrence rule.
 - **F5.2** Occurrences are generated ahead of time so each can be individually
   moved, cancelled, or skipped without affecting the rest of the series.
+- **F5.2a** If a generated occurrence lands on a slot that is already taken, it
+  is **shifted to the nearest free slot on the same day, within ±2 hours** of its
+  usual time. If nothing fits that window the occurrence is **skipped, not
+  moved**, so a customer is never silently relocated to another day.
+- **F5.2b** Either outcome — shifted or skipped — **emails the business owner**
+  with the customer's name and number, the original date and time, what happened,
+  and the new time if there is one.
+- **F5.2c** The **customer** is not notified of a shift in v3, because no channel
+  to reach them exists yet (R7). Customer notification of appointment changes is
+  a requirement of the reminder channel and ships with it.
 - **F5.3** Cancelling a series cancels its future occurrences and leaves past
   ones intact.
 - **F5.4** Every appointment, one-off or recurring, schedules reminders to the
@@ -160,8 +177,10 @@ _(Carried from v2; renumbered. v2 FR1–FR10 map to F1.1–F1.10.)_
   - outcome breakdown as counts and percentages: **booked / rescheduled /
     cancelled / enquiry-only / dropped**;
   - appointments booked, and revenue booked (from versioned service prices).
-- **F6.3** "Dropped" means the caller hung up without a resolved outcome; it is
-  reported separately from a completed enquiry.
+- **F6.3** **"Dropped"** covers both a caller who hung up without a resolved
+  outcome **and** a call the agent could not help with. If the caller did not get
+  what they rang for, it is dropped. A completed enquiry — the caller asked
+  something and got a useful answer — is reported separately.
 - **F6.4** A business can list, search, and open individual calls, with
   transcript and outcome.
 - **F6.5** Dashboard queries return in ≤ 500ms p95 regardless of tenant size,
@@ -194,7 +213,12 @@ period _n+1_ begins 30 days after period _n_.
   calls, wrong numbers, dropped calls, test calls, and any call that changed
   nothing for the business.
 - **F7.7** The **whole call** is billable, not only the minutes up to the
-  booking.
+  booking. Once a business is activated, **no caller is exempt** — Ringly does
+  not try to decide whether a call came from a genuine customer, the owner, or
+  the developer. The only filter is the outcome test in F7.6.
+- **F7.7a** Connected seconds are summed across the **whole billing period** and
+  **rounded up to a whole minute once**, at period close — not per call. A
+  business making many short calls is not charged a full minute for each.
 - **F7.8** Rates are **configuration, not constants in code**: per-connected-
   minute rate and per-reminder rate. Both are **TBD** and must be settable
   without a deploy. Working assumption for the reminder rate: **$0.05**.
@@ -203,11 +227,19 @@ period _n+1_ begins 30 days after period _n_.
   and absorbs the cost**, stops accruing further charges for that period, and
   **alerts the operator** (F9.6).
 - **F7.10** Billing repeats every 30 days with no action from the business.
-- **F7.11** A failed charge notifies the business (F8.2) and enters a retry
-  period before any service change.
+- **F7.11** A failed charge starts a **7-day grace period**. Through it Ringly
+  **keeps answering calls and keeps accruing usage**, and emails the business
+  about the failure. If payment has not cleared by day 7, the account is
+  **suspended** (F10.3).
 - **F7.12** On **cancellation mid-period**: refund the unused portion of the $100
-  fixed fee, prorated at 1/30 per whole day remaining, and charge usage accrued
-  up to the cancellation date.
+  fixed fee, prorated at 1/30 per day with the day of cancellation counted as
+  used, rounded **down** to the cent. Usage accrued to the cancellation date is
+  charged. The refund is executed through Stripe programmatically; the
+  **calculation is Ringly's**, because Stripe's own proration cannot enforce the
+  F7.9 cap.
+- **F7.12a** The total charged for a period **never exceeds $500**, including
+  after a cancellation. Worked example: cancel on day 12 with $470 of usage →
+  `$100 − $60 refund + $470 = $510` → clamped to **$500**.
 - **F7.13** The business dashboard shows current-period usage, amount accrued,
   the cap, and the next charge date.
 - **F7.14** Every charge, refund, and failure is recorded immutably against the
@@ -238,6 +270,14 @@ period _n+1_ begins 30 days after period _n_.
   Slack; pending implementation._
 - **F9.7** Refreshed **daily**, and available at all times. The current period is
   computed live; history is served from pre-aggregated data.
+- **F9.8** Figures are reported **by calendar month** (June, July, August), not by
+  each business's 30-day period. No two businesses share a period, so per-period
+  reporting cannot be summed into anything meaningful for accounting. Only
+  **money actually received into Stripe** counts as revenue, and only **real
+  incurred cost** counts as cost — neither is accrued or projected.
+- **F9.9** Shows **rented phone numbers that are not earning**: numbers held for
+  businesses that never activated, are suspended, or are otherwise not paying the
+  $100 minimum. Every such number is a standing cost with no revenue against it.
 
 ### F8 — Email notifications
 
@@ -249,6 +289,217 @@ period _n+1_ begins 30 days after period _n_.
 - **F8.4** A business can unsubscribe from stats email. **Billing email is
   transactional and cannot be unsubscribed.**
 - **F8.5** Email sending is idempotent — a retry never sends a duplicate.
+
+### F10 — Account lifecycle, suspension and data retention
+
+- **F10.1** A business that has not activated releases its rented phone number
+  after **10 days**, and may place at most **10 test calls** before activation.
+  Both exist because an unactivated business is pure cost — a rented number and
+  live call minutes against no revenue.
+- **F10.2** **Cancellation is not self-serve in v3.** A business cancels by
+  emailing Ringly. _(Self-serve cancellation is a v3.1 requirement — §1.9.)_
+- **F10.3** Suspension and deletion run as **two phases**, so a business has time
+  to respond to warnings before anything irreversible happens:
+
+  | Day  | On payment failure                                                                                                        | On cancellation                                                                           |
+  | ---- | ------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+  | 0    | Payment fails. Service continues, usage accrues, business emailed.                                                        | Business emails to cancel. Service stops. Refund and final usage invoice settled (F7.12). |
+  | 0–7  | **Grace period.** Calls answered as normal. Reminder emails sent.                                                         | —                                                                                         |
+  | 7    | **Suspended.** Calls stop being answered; the number is retained. Recoverable by paying.                                  | —                                                                                         |
+  | 7–30 | Suspended but fully recoverable.                                                                                          | Recoverable.                                                                              |
+  | 30   | **Phone number released. All data deleted** — appointments, customers, calls, transcripts, payment records. Irreversible. | Same.                                                                                     |
+
+- **F10.4** A business's telephone number is its public identity, printed on
+  signage and listings. It is therefore **never released before day 30**, whatever
+  the reason for suspension.
+- **F10.5** Deletion at day 30 must remove data held **by our processors too**,
+  not only our own database — including transcripts and recordings retained by
+  the telephony provider.
+- **F10.6** **Call transcripts are retained; call recordings are not stored by
+  Ringly.** Recordings remain with the telephony provider and are fetched by
+  signed URL on demand.
+
+---
+
+## 1.9 Deferred to v3.1
+
+- **Self-serve cancellation.** Replaces the email-based flow in F10.2. Recorded
+  now because it raises questions that should be answered before it is built:
+  - Does cancelling take effect immediately, or at period end?
+  - Is the refund automatic, or does it require review?
+  - What stops a business cycling — cancel, re-activate, and reset the $500 cap
+    (F7.9) — which is only safe today because a human sees every cancellation?
+  - Does the business get an export of their data before the day-30 deletion?
+  - Can a suspended business self-serve reactivate, or does that stay manual?
+- **Customer notification of appointment changes** (F5.2c), which ships with the
+  reminder channel.
+- **Operator alerting via Slack**, replacing email (F9.6).
+
+---
+
+## 1.6 Non-functional requirements
+
+### N1 — Multi-tenancy and isolation
+
+- **N1.1** Every row of business data belongs to exactly one business, and no
+  query path can return another business's rows. Isolation is enforced by the
+  database, not only by application code.
+- **N1.2** Server-side code paths that bypass row-level security (webhook
+  handlers using a service role) must scope every query by business explicitly,
+  and that scoping must be covered by tests.
+- **N1.3** A tenant's data can be exported and deleted on request, completely.
+
+### N2 — Scale
+
+- **N2.1** Target: **10,000 businesses**, each with up to **10,000 customers** and
+  a comparable number of historical appointments and calls — order 10⁸ rows in
+  the largest tables.
+- **N2.2** No feature may degrade as a function of _total_ platform size; only of
+  the requesting tenant's own size.
+- **N2.3** Reminder dispatch must sustain the resulting steady-state volume with
+  bounded lag (≤ 5 min from due time).
+
+### N3 — Latency on the call path
+
+Caller-perceived silence is the metric that matters. Budget per agent turn that
+involves a backend call:
+
+| Segment                                    | Target p95 |
+| ------------------------------------------ | ---------- |
+| Ringly webhook handler, end to end         | ≤ 400 ms   |
+| — of which our own datastore               | ≤ 80 ms    |
+| — of which external scheduling provider    | ≤ 250 ms   |
+| Hard ceiling before we abandon and degrade | 1500 ms    |
+| Caller-perceived silence (filler covers)   | ≈ 0        |
+
+- **N3.1** Any backend operation on the call path has a hard timeout and a
+  defined degraded result. Slow is treated as failed.
+- **N3.2** Work not needed to answer the caller is done after responding, never
+  before.
+
+### N4 — Serving cost
+
+- **N4.1** Per-business fixed monthly infrastructure cost (excluding telephony
+  and LLM minutes, which are usage-driven) is the metric to minimise; it must not
+  grow faster than linearly with tenants.
+- **N4.2** Repeated reads of slow-changing configuration on the call path must
+  not hit paid third-party APIs or the primary database every time.
+- **N4.3** Dashboard analytics must be served from pre-aggregated data, not from
+  scanning raw call history per request.
+- **N4.4** Paid third-party calls (Places, LLM, telephony) are attributable per
+  business so unit economics are measurable.
+
+### N5 — Timezone correctness
+
+- **N5.1** Every instant is stored in UTC and rendered in the business's IANA
+  timezone.
+- **N5.2** All day, week, and month boundaries — for availability, reminders,
+  analytics grouping, and billing periods — are computed in the business's
+  timezone, not the server's and not UTC.
+- **N5.3** Behaviour is correct across DST transitions, including the duplicated
+  and skipped local hours.
+
+### N6 — Security and compliance
+
+- **N6.1** Provider refresh tokens are encrypted at rest.
+- **N6.2** Card data never touches Ringly infrastructure (F7.3), keeping us out
+  of PCI-DSS scope beyond SAQ-A.
+- **N6.3** All inbound webhooks verify provider signatures before acting.
+- **N6.4** Customer PII (name, phone) is per-tenant and deletable (N1.3).
+
+### N7 — Availability and degradation
+
+- **N7.1** No third-party outage may prevent a business from answering calls and
+  taking bookings.
+- **N7.2** Every degraded path is logged and surfaced to the business; silent
+  degradation is a defect. _(See Risk R1 — this is currently violated.)_
+
+---
+
+## 1.7 Success metrics
+
+| Metric                                | Target                 |
+| ------------------------------------- | ---------------------- |
+| Time-to-live (land → Go Live)         | p50 < 3 min            |
+| Activation rate (live → paid)         | > 60%                  |
+| Caller-perceived silence per turn     | p95 ≈ 0, no gap > 1.5s |
+| Booking conflicts reaching a customer | 0                      |
+| Reminder delivery lag                 | p99 ≤ 5 min            |
+| Dashboard load                        | p95 ≤ 500 ms           |
+| Monthly infra cost per business       | tracked, trending down |
+
+## 1.8 Decisions and open questions
+
+**Settled 2026-07-30:** pricing shape (F7), cap behaviour (F7.9/F7.12a), reminder
+metering, minute rounding (F7.7a), grace and suspension timeline (F10.3), email
+provider Resend, 90-day recurrence horizon, occurrence-clash handling (F5.2a),
+price at occurrence time and duration locked (F3.4), transcripts retained /
+recordings not (F10.6), operator cost model and calendar-month reporting (F9.5,
+F9.8), dropped-call definition (F6.3), calendar-provider switching out of scope
+(R9).
+
+**Still open:**
+
+- **Q1 — The per-connected-minute rate (Phase 5).** TBD; held as configuration
+  (F7.8), so Phase 5 can be built and tested with a placeholder but cannot be
+  switched on for real customers until set. The per-reminder rate is assumed
+  $0.05.
+- **Q2 — Does F7.7 widen the billable set, or only remove caller exemptions?**
+  F7.6 bills only productive calls; F7.7 says no caller is exempt once activated.
+  Read together they mean "any caller, but still only productive outcomes". If
+  the intent was instead "every answered call is billable", that is a materially
+  larger revenue model and F7.6 should be retired now rather than later.
+  **This must be settled before Phase 5.**
+- **Q3 — Ringly's cancellation email address** (F10.2). Needed for the dashboard
+  and the transactional emails.
+- **Q4 — Which channel delivers reminders in v3 (Phase 6)?** See R7; unchanged.
+
+---
+
+### F10 — Account lifecycle, suspension and data retention
+
+- **F10.1** A business that has not activated releases its rented phone number
+  after **10 days**, and may place at most **10 test calls** before activation.
+  Both exist because an unactivated business is pure cost — a rented number and
+  live call minutes against no revenue.
+- **F10.2** **Cancellation is not self-serve in v3.** A business cancels by
+  emailing Ringly. _(Self-serve cancellation is a v3.1 requirement — §1.9.)_
+- **F10.3** Suspension and deletion run as **two phases**, so a business has time
+  to respond to warnings before anything irreversible happens:
+
+  | Day  | On payment failure                                                                                                        | On cancellation                                                                           |
+  | ---- | ------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+  | 0    | Payment fails. Service continues, usage accrues, business emailed.                                                        | Business emails to cancel. Service stops. Refund and final usage invoice settled (F7.12). |
+  | 0–7  | **Grace period.** Calls answered as normal. Reminder emails sent.                                                         | —                                                                                         |
+  | 7    | **Suspended.** Calls stop being answered; the number is retained. Recoverable by paying.                                  | —                                                                                         |
+  | 7–30 | Suspended but fully recoverable.                                                                                          | Recoverable.                                                                              |
+  | 30   | **Phone number released. All data deleted** — appointments, customers, calls, transcripts, payment records. Irreversible. | Same.                                                                                     |
+
+- **F10.4** A business's telephone number is its public identity, printed on
+  signage and listings. It is therefore **never released before day 30**, whatever
+  the reason for suspension.
+- **F10.5** Deletion at day 30 must remove data held **by our processors too**,
+  not only our own database — including transcripts and recordings retained by
+  the telephony provider.
+- **F10.6** **Call transcripts are retained; call recordings are not stored by
+  Ringly.** Recordings remain with the telephony provider and are fetched by
+  signed URL on demand.
+
+---
+
+## 1.9 Deferred to v3.1
+
+- **Self-serve cancellation.** Replaces the email-based flow in F10.2. Recorded
+  now because it raises questions that should be answered before it is built:
+  - Does cancelling take effect immediately, or at period end?
+  - Is the refund automatic, or does it require review?
+  - What stops a business cycling — cancel, re-activate, and reset the $500 cap
+    (F7.9) — which is only safe today because a human sees every cancellation?
+  - Does the business get an export of their data before the day-30 deletion?
+  - Can a suspended business self-serve reactivate, or does that stay manual?
+- **Customer notification of appointment changes** (F5.2c), which ships with the
+  reminder channel.
+- **Operator alerting via Slack**, replacing email (F9.6).
 
 ---
 
@@ -482,8 +733,10 @@ Migrations `005`–`010`, in dependency order.
 
 **009 — analytics (F6)**
 
-- `calls` gains `started_at`, `ended_at`, `duration_seconds`, and widens
-  `outcome` to include `dropped`.
+- `calls` gains `started_at`, `ended_at`, `duration_seconds`, `transcript`
+  (mirrored per §2.8a), `end_reason`, `is_billable`, and widens `outcome` to
+  include `dropped`. No `recording_url` column — signed URLs expire and must be
+  fetched on demand.
 - `daily_business_stats(business_id, local_date, calls, unique_callers, avg_duration_seconds, booked, rescheduled, cancelled, enquiry_only, dropped, revenue_booked_cents)` —
   primary key `(business_id, local_date)`, `local_date` computed in the
   business's timezone (N5.2).
@@ -491,15 +744,22 @@ Migrations `005`–`010`, in dependency order.
 **010 — billing and email (F7, F8)**
 
 - `businesses.contact_email`, `stripe_customer_id`, `stripe_subscription_id`,
-  `billing_status` (`unbilled | active | past_due | capped | cancelled`),
-  `period_started_at`, `cap_cents` (default 50000).
+  `billing_status` (`unbilled | active | grace | suspended | capped | cancelled`),
+  `activated_at`, `suspended_at`, `purge_after`, `cap_cents` (default 50000).
+- `billing_periods(id, business_id, seq, starts_at, ends_at, timezone, cap_cents, fixed_fee_cents, fixed_fee_charged_at, usage_settled_at, status)` —
+  **authoritative** period boundaries (§2.9). Explicit rows, not arithmetic over
+  `activated_at`, because cancellation, reactivation and payment failure all
+  break that arithmetic and periods must be immutable for reconciliation.
 - `pricing_config(id, key unique, cents, effective_from)` — the per-minute and
   per-reminder rates (F7.8). Rates are data, not constants, so they can be set
   without a deploy while they remain TBD (§1.8 Q1).
 - `billing_events(id, business_id, stripe_event_id unique, kind, amount_cents, fee_cents, occurred_at, payload)` —
   immutable ledger (F7.14); `stripe_event_id` unique for webhook idempotency;
   `fee_cents` from the Stripe balance transaction so revenue is net (F9.2).
-- `usage_records(id, business_id, period_start, occurred_at, kind, quantity, unit_cents, amount_cents, call_id, reminder_id)` —
+- `usage_records(id, business_id, billing_period_id, occurred_at, kind, quantity_seconds, quantity, unit_cents, amount_cents, call_id, reminder_id)` —
+  connected time is stored in **seconds**; the round-up to whole minutes happens
+  once at period close (F7.7a), never per row. Records reference a period id
+  rather than being bucketed by date arithmetic.
   `kind` in (`connected_minutes`, `reminder`). Per-tenant attribution (N4.4) and
   the input to the cap check (F7.9).
 - `email_log(id, business_id, kind, idempotency_key unique, sent_at, status)` — F8.5.
@@ -623,30 +883,72 @@ by tenant size, not platform size (N2.2).
 and was ended by the caller. This requires the post-call webhook to record
 `ended_at` and an end reason, which it does not do today.
 
+## 2.8a Transcripts, recordings and deletion (F10.5, F10.6)
+
+Today Ringly stores **neither** — `calls` holds only `retell_call_id`, and the
+transcript route fetches from Retell on demand. That is right for recordings and
+wrong for transcripts.
+
+- **Transcripts are mirrored** into our own database at the post-call webhook.
+  At the §1.7 scale that is roughly 10 GB/month, a few dollars — and it buys
+  independence from Retell's retention setting (R10), makes outcome derivation
+  and analytics possible without an API round trip per call, and puts the day-30
+  deletion entirely within our control.
+- **Recordings are never mirrored.** They stay with Retell and are fetched by
+  **signed URL on demand**, as the transcript route already does. Signed URLs
+  expire, so a stored `recording_url` column would rot — the URL must be
+  requested at view time, never persisted. This also keeps sensitive audio off
+  Ringly infrastructure entirely, which matters for the clinic persona (R11).
+- **Retention must be set explicitly on every agent we provision** (R10). It is
+  per-agent and configurable from 1 day to 2 years; inheriting a default would
+  make our retention promise accidental.
+- **Deletion at day 30 is a two-sided operation** (F10.5): purge our rows _and_
+  delete the Retell-side call data. A deletion that leaves transcripts sitting
+  with a processor has not happened.
+
 ## 2.9 Billing (F7)
 
 **Stripe, using Customers + Setup Intents + a 30-day recurring price + usage
 meters.** Verified capabilities in §2.15.
 
-| Requirement                         | Mechanism                                                                                                                                    |
-| ----------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| F7.1 $100 in advance, every 30 days | Subscription with `interval: day, interval_count: 30`, billed at period start. **Not** `interval: month` — see the drift note below.         |
-| F7.2 card stored                    | `SetupIntent` with `usage: off_session`, attached to the Customer                                                                            |
-| F7.3 no card liability              | Card entered into Stripe Elements; never reaches our servers. We store `stripe_customer_id` and `payment_method_id` only. Keeps us at SAQ-A. |
-| F7.4 usage in arrears               | Metered price on the same subscription, invoiced at period end                                                                               |
-| F7.5 two usage units                | Two Stripe **meters**: `connected_minutes` and `reminders_sent`                                                                              |
-| F7.6 productive calls only          | Our own predicate over call outcome, evaluated post-call; only productive calls emit a usage record                                          |
-| F7.8 rates configurable             | Rates live in `pricing_config`, not in code                                                                                                  |
-| F7.9 cap                            | Enforced **by us** before emitting usage, not by Stripe. On reaching: stop accruing, keep serving, alert operator                            |
-| F7.11 failed charge                 | `invoice.payment_failed` webhook → notify (F8.2) → Stripe retry schedule                                                                     |
-| F7.12 cancellation                  | Credit note for unused fixed-fee days + final usage invoice                                                                                  |
-| F7.14 immutable record              | `billing_events`, keyed by `stripe_event_id` for idempotency                                                                                 |
+| Requirement                         | Mechanism                                                                                                                                                      |
+| ----------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| F7.1 $100 in advance, every 30 days | Subscription with `interval: day, interval_count: 30`, billed at period start. **Not** `interval: month` — see the drift note below.                           |
+| F7.2 card stored                    | `SetupIntent` with `usage: off_session`, attached to the Customer                                                                                              |
+| F7.3 no card liability              | Card entered into Stripe Elements; never reaches our servers. We store `stripe_customer_id` and `payment_method_id` only. Keeps us at SAQ-A.                   |
+| F7.4 usage in arrears               | Metered price on the same subscription, invoiced at period end                                                                                                 |
+| F7.5 two usage units                | Two Stripe **meters**: `connected_minutes` and `reminders_sent`                                                                                                |
+| F7.6 productive calls only          | Our own predicate over call outcome, evaluated post-call; only productive calls emit a usage record                                                            |
+| F7.8 rates configurable             | Rates live in `pricing_config`, not in code                                                                                                                    |
+| F7.9 cap                            | Enforced **by us** before emitting usage, not by Stripe. On reaching: stop accruing, keep serving, alert operator                                              |
+| F7.11 failed charge                 | `invoice.payment_failed` webhook → notify (F8.2) → Stripe retry schedule                                                                                       |
+| F7.12 cancellation                  | **Ringly computes** the refund and the final usage total, clamps to the cap, then executes both through Stripe. Stripe's own proration is deliberately unused. |
+| F7.14 immutable record              | `billing_events`, keyed by `stripe_event_id` for idempotency                                                                                                   |
 
 Usage is written locally to `usage_records` first — the source of truth for our
 own reporting and unit economics (N4.4) — and pushed to Stripe's meters
 asynchronously, so a Stripe outage never blocks a call.
 
-**Three consequences worth stating plainly:**
+**Why we do not use Stripe's proration.** Stripe prorates by the second, credits
+the customer balance rather than the card unless told otherwise, and — decisively
+— has no way to express "the total for this period may never exceed $500"
+(F7.12a). Since the clamp has to be ours regardless, the whole calculation stays
+ours and Stripe is used only to _execute_ the resulting refund and invoice.
+
+**Billing period boundaries.** A period starts at **midnight local time** in the
+business's timezone on the activation day and runs **30 local days** (DST-aware,
+so a period may be 719 or 721 hours). The Stripe subscription is anchored at
+**09:00 local on day 1**, not midnight — Stripe advances by a fixed 720 hours, so
+a DST transition would otherwise drift the charge onto the previous calendar
+date. Decoupling the charge moment from the period boundary makes that
+impossible.
+
+**`billing_periods` rows are authoritative**, not arithmetic over an activation
+date. Cancellation, reactivation and payment failures all break
+`activation + n × 30 days`, and periods must be immutable for reconciliation
+(F7.14). Stripe is the payment executor; our table is the record.
+
+**Three further consequences worth stating plainly:**
 
 1. **The billing date drifts backwards through the calendar.** 30-day periods
    give 12.17 periods a year, not 12, so a business signing up on 1 January is
@@ -685,6 +987,15 @@ A separate application surface, not a privileged view of the business dashboard:
   processing fee, so margin is net rather than gross.
 - **Daily refresh (F9.7)** via the §2.8 rollup worker, writing
   `daily_business_economics`.
+- **Reported by calendar month (F9.8).** The daily rows are keyed by UTC date and
+  summed into calendar months, deliberately _not_ into business billing periods —
+  no two businesses share a period, so per-period figures cannot be aggregated
+  into anything an accountant recognises. Revenue counts money **settled in
+  Stripe**, not accrued; cost counts spend **incurred**, not projected.
+- **Idle-number view (F9.9).** Retell numbers are reconciled against businesses
+  with an active paid period; anything held without one is listed with its age
+  and monthly rental. This reuses `listPhoneNumbers` and the orphan-detection
+  logic already in `src/lib/retell.ts`.
 
 ## 2.10 Email (F8)
 
@@ -747,6 +1058,21 @@ implementation, never hand-rolled.
   can build recurrence, scheduling, and the dispatcher, but nothing will actually
   send until a channel exists. Either SMS ships as the first channel or F5
   delivers dark. **Unresolved — §1.8 Q4.**
+- **R9 — A business switching calendar provider is out of scope.** Migrating
+  `external_event_id` between providers is not designed and not built. Judged
+  unlikely in practice; recorded because the real world may disagree, and the
+  fallback (orphan the old events, re-sync forward only) should be a conscious
+  decision if it happens.
+- **R10 — Our retention promise depends on a provider setting.** Retell holds
+  transcripts and recordings for a **per-agent, configurable 1 day to 2 years**.
+  Two consequences: every agent Ringly provisions must have retention set
+  explicitly rather than inherited, and F10.5's day-30 deletion is incomplete
+  unless it also deletes Retell-side data. Mirroring transcripts into our own
+  database (§2.8a) removes the first dependency.
+- **R11 — PHI and the missing BAA.** The "clinic" persona means callers will
+  disclose health information over the phone. Retell is HIPAA-capable but
+  **requires a signed BAA before PHI is transmitted**, and Ringly has none. This
+  is a launch blocker for healthcare tenants, not a technical risk.
 - **R8 — Unbooked calls are pure cost.** Only productive calls are billable
   (F7.6) while every call costs Retell minutes. At Retell's $0.13–0.31/min
   all-in, the $100 fixed fee covers roughly 320–770 minutes of unbilled calling
@@ -824,6 +1150,15 @@ improvement to an existing screen, and each is complete when merged.
   Sources: [How real-time voice AI works](https://www.retellai.com/blog/how-real-time-voice-ai-works-stt-llm-tts),
   [Backchanneling changelog](https://www.retellai.com/changelog/latest-features-call-analysis-backchanneling-and-python-custom-llm-update),
   [Building a great voice agent](https://docs.retellai.com/blog/build-voice-agent).
+- **Retell data retention** — per-agent, configurable **1 day to 2 years**, for
+  transcripts, recordings and logs. Recording URLs are **signed** (so they expire
+  and must be fetched on demand, never stored). Retell is SOC 2 Type I/II, GDPR
+  and HIPAA capable, but **a signed BAA is required before transmitting PHI**
+  (R11). PII redaction is available per agent. If storage is disabled entirely,
+  the webhook's recording link expires ~10 minutes after delivery.
+  Sources: [Data storage settings](https://docs.retellai.com/accounts/privacy-disable),
+  [Security and compliance](https://docs.retellai.com/general/compliance),
+  [PII redaction](https://www.retellai.com/blog/introducing-retell-ai-pii-redaction-data-security-made-easy).
 - **Google Calendar `calendar.events`** — a **sensitive** scope; production use
   requires verification, and refresh tokens are revoked after 7 days while the app
   is in _Testing_ (R2).
