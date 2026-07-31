@@ -65,12 +65,15 @@ Revised again 2026-07-31 — see below._
 >
 > Three more, from the second review pass:
 >
-> 11. **Both non-payment cases are worked through in full** (F7.11d–f). A failed
->     fixed fee suspends inside the period it opened; a failed usage settlement
->     suspends inside the _next_ one, because the period that failed is already
->     closed and immutable. Paying inside a period resumes it with no new charge
->     and no days given back; paying after it ended starts a fresh one at full
->     price. **The $100 is never prorated** (F7.11e).
+> 11. **No new billing period opens while a business owes anything** (F7.11c),
+>     through grace as well as suspension — so **the debt is frozen** the moment
+>     service stops, and what a business owes on day 55 is what it owed on day 8.
+>     Both non-payment cases are worked through in full (F7.11d). Grace service is
+>     a one-time concession per failure, not a fresh week every thirty days
+>     (F7.11c-i), and is **unbilled when the failed charge was a settlement**,
+>     because that period closed the same day and none opens to bill it to
+>     (F7.11c-ii). **The $100 is never prorated** (F7.11e). A worked life from
+>     signup to either ending is at **F7b**.
 > 12. **Every activation failure is reported to the business, and says whether it
 >     was charged** (F1.12a-i). Binding a number is **verified by reading the
 >     provider's state back**, never by placing a call (F1.12a-ii).
@@ -969,18 +972,43 @@ charge failed first (F7.11).
   60-day deletion clock restarts with it, because the previous one expired when
   the account was restored.
 
-- **F7.11c** **Grace is the opposite, and deliberately so.** In `grace` the
-  business is still being served, so the period runs normally: it ends on time,
-  settles, and the next period opens with its $100 attempted like any other
-  charge. A second failure does **not** start a second clock — there is only ever
-  one, started by whichever charge failed first (F7.11), and the outstanding
-  amounts add up.
+- **F7.11c** **No new billing period ever opens while the business owes
+  anything.** Not during grace, not during suspension. This is the single rule
+  that keeps a failing account from accumulating fees, and it holds from the
+  moment the first charge declines until the moment the debt clears.
+  - **A business in trouble is therefore only ever dealing with one period** —
+    the one that was open when the trouble started, if any — and one debt.
+  - **The period that was already open runs to its own end and settles there**
+    (F7.11b), because it was opened and paid for, or invoiced, before any of this
+    began. Its successor simply never arrives.
+  - **A second decline does not start a second clock.** There is one, started by
+    whichever charge failed first (F7.11), and outstanding amounts add up.
 
-  **The distinction is service, not payment.** Ringly bills for what it
-  delivered. Through grace it is delivering, so it bills; through suspension it
-  is not, so it does not. Any other rule has a suspended business accumulating
-  $100 charges for a phone nobody is answering, and discovering the debt at the
-  exact moment it is deciding whether to come back.
+  **Without this rule a business is billed $100 for periods it never asked for
+  and mostly did not receive**, discovering the total at the exact moment it is
+  deciding whether to come back. With it, the debt a business must clear is
+  bounded by what it actually used before Ringly stopped serving it.
+
+- **F7.11c-i** **Grace service is a one-time concession per failure, not a
+  recurring benefit.** The seven days are given once, when a payment first
+  declines. They are not re-granted at what would have been the next period
+  boundary, because there is no next period while the debt stands (F7.11c) — a
+  business cannot collect a fresh week of free service every thirty days by
+  continuing not to pay.
+
+- **F7.11c-ii** **Grace usage is billed only if there is an open period to bill
+  it to.**
+  - **Usually there is**, and it settles with that period as ordinary usage —
+    service given is service billed.
+  - **In one case there is not**: when the failed charge _was_ the settlement of
+    a period, that period closes on the same day (F7.16), and the grace that
+    follows runs with no period open. **That usage is not billed.** There is
+    nothing to bill it to, no successor opens (F7.11c), and inventing a period to
+    hold it would be manufacturing exactly the $100 charge this design refuses.
+  - **The cost is still recorded.** `cost_records` do not belong to a period, so
+    Ringly keeps its true cost of serving those days (F9.5, R8) even though it
+    charges nothing for them. **What Ringly absorbs, Ringly measures.**
+  - It is bounded at seven days, once (F7.11c-i).
 
 - **F7.11d** **Which period suspension lands in depends on which charge failed,
   and the two cases are not symmetric.** There are only two ways to fail a payment
@@ -994,7 +1022,7 @@ charge failed first (F7.11).
   |                                                   |                                                                                                                                                                            |
   | ------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
   | Day 1                                             | $100 invoiced, declined. Grace starts                                                                                                                                      |
-  | Days 1–8                                          | Served. Period _N_ runs normally, usage accrues and is billable (F7.11c)                                                                                                   |
+  | Days 1–8                                          | Served. Period _N_ runs normally, usage accrues to it and is billable (F7.11c-ii)                                                                                          |
   | Day 8                                             | **Suspended.** Period _N_ keeps running; the business is simply not being served                                                                                           |
   | **Pay on day 20** — owes **$100**                 | That is the only invoice raised so far; _N_'s usage is not settled until day 30. Service resumes **inside _N_**, which still ends day 30. **Nothing else is charged then** |
   | └ then day 30                                     | _N_ settles as normal, for **days 1–8 _and_ 20–30** of usage — everything served, whenever it was served                                                                   |
@@ -1003,36 +1031,44 @@ charge failed first (F7.11).
   | Never pay                                         | Deleted at day 60 from the failure. Debt = the $100 **plus** the 7 days of usage, clamped (F7.9a)                                                                          |
 
   **Case (b) — the usage settlement fails.** Charged on the **last day** of period
-  _N_, so period _N_ is already over. **Suspension lands in period _N+1_.**
+  _N_, so _N_ closes that same day and **no successor ever opens** (F7.11c). The
+  whole episode belongs to _N_.
 
-  |                                                                          |                                                                                                                                                                   |
-  | ------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-  | Day 30 of _N_                                                            | Usage settled and invoiced; declined. Grace starts. **Period _N_ is closed** — `usage_settled_at` is set and it never reopens (F7.16)                             |
-  | Day 31                                                                   | **Period _N+1_ opens on schedule**, its $100 attempted like any other charge (F7.11c). Against a card that just failed it will usually fail too                   |
-  | Days 31–37                                                               | **Served — this is grace, inside _N+1_.** Usage accrues to _N+1_ and **is billable** (F7.11c). These seven days matter later                                      |
-  | Day 37                                                                   | **Suspended.** _N+1_ keeps running; _N_ is untouched, a settled period being immutable                                                                            |
-  | **Pay on day 45** — owes **_N_'s usage + _N+1_'s $100**                  | Both must clear; clearing one leaves them suspended (F7.10b). Service resumes **inside _N+1_**, which still ends day 60. **Nothing else charged then**            |
-  | └ then day 60                                                            | _N+1_ settles for **days 31–37 _and_ 45–60** — about **22 days** of usage, not 15. The grace days belong to _N+1_ and were billable when they were served         |
-  | **Pay on day 70** — owes **_N_'s usage + _N+1_'s $100 + _N+1_'s 7 days** | _N+1_ ended day 60 while suspended and **settled then** for its grace usage, so that invoice is in the debt too. A new period opens day 70, **$100 charged then** |
-  | Never pay                                                                | Deleted at day 90 (60 days from the day-30 failure). Debt = _N_'s usage **+** _N+1_'s $100 **+** _N+1_'s 7 days, each period clamped separately                   |
+  |                                          |                                                                                                                                                           |
+  | ---------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+  | Day 30 of _N_                            | Usage settled and invoiced; declined. Grace starts. **_N_ is closed** — `usage_settled_at` is set and it never reopens (F7.16)                            |
+  | Days 30–37                               | **Served, under grace — and not billed.** There is no open period to bill it to and none opens (F7.11c-ii). Ringly absorbs it; the cost is still recorded |
+  | Day 31                                   | **Nothing happens.** No period opens, no $100 is invoiced. The debt does not grow                                                                         |
+  | Day 37                                   | **Suspended.** Service stops                                                                                                                              |
+  | Outstanding, throughout                  | **One invoice: _N_'s usage settlement.** It never grows, however long the suspension lasts                                                                |
+  | **Pay on day 45** — owes **_N_'s usage** | Nothing outstanding → restored that day. **No period is open, so a new one opens on day 45** with its own $100, charged then (F7.10c). It runs to day 74  |
+  | **Pay on day 70** — owes **_N_'s usage** | **Identical.** A new period opens day 70, $100 charged then, running to day 99                                                                            |
+  | Never pay                                | Deleted at day 90 (60 days from the day-30 failure). Debt = **_N_'s usage settlement and nothing else**, clamped                                          |
 
-  **Two things about case (b) are easy to get wrong, and both concern period
-  _N+1_'s seven grace days:**
+  **Case (b) has no second period in it at all**, and that is the whole point of
+  F7.11c. Paying on day 45 and paying on day 70 are the same transaction: clear
+  one invoice, start fresh at full price. The only thing later costs the business
+  is the days its phone was not answered.
 
-  - **They are billable, so _N+1_'s settlement is bigger than the days after
-    restore.** Paying on day 45 buys 15 more days of service, but the bill on day
-    60 covers 22 — the seven served during grace are service given, and service
-    given is service billed (F7.11c).
-  - **_N+1_ is never a period "the business did not use".** It served seven days
-    before suspension, so its $100 is owed whatever happens next, and it does not
-    fall away because the business happened to return after the period closed
-    rather than before. Combined with F7.11e, **that $100 is owed in full on both
-    the day-45 and the day-70 paths.**
+  **The seven grace days in case (b) are free**, and deliberately so
+  (F7.11c-ii) — the period they would have belonged to closed the day the charge
+  failed, and Ringly will not open a period to have something to bill them
+  against. **They are given once** (F7.11c-i): a business that stays unpaid does
+  not receive another week at what would have been the next boundary, because no
+  boundary arrives.
 
-  **The shape both cases share:** paying inside the period resumes it without a
-  new charge and without giving the lost days back; paying after it has ended
-  starts a fresh period at full price. **Late payment costs service days. That is
-  the whole penalty, and it is enough of one.**
+  **The shape both cases share.** At most one period is ever open during a failure
+  episode, and at most one debt accumulates. Paying while that period is still
+  running resumes it with no new charge and no days given back; paying after it
+  has ended — or when there was never one open — starts a fresh period at full
+  price. **Late payment costs service days. That is the whole penalty, and it is
+  enough of one.**
+
+  **The debt never grows while a business is unpaid.** It is fixed by what was
+  served before Ringly stopped serving, and a business deciding on day 55 whether
+  to come back owes exactly what it owed on day 8. That is the property F7.11c
+  exists to guarantee, and it is what makes the recovery path something a
+  struggling business can actually take.
 
 - **F7.11e** **The $100 is never prorated — not on suspension, not on
   cancellation, not on deletion.** A period that delivered 7 days of service still
@@ -1228,6 +1264,67 @@ business's settlement charge fails**, it is recorded as owed and let go; there i
 nothing left to withhold.
 
 **Chargebacks** follow the non-payment path exactly.
+
+### F7b — One business, end to end
+
+_Illustrative, not normative. Where this and F7 differ, F7 wins._ A single
+worked life, because the rules above are individually simple and only get hard
+where they meet.
+
+**Signing up — no money moves.** A salon lands on the site, types its name and
+address, and Ringly enriches it from Places and builds a service menu from its
+website. It signs in with Google, grants calendar access, and a number is bought
+and an agent bound behind the value screen. **The account is `unbilled`. It has
+been charged nothing and could walk away costing Ringly one number rental.**
+
+**Getting ready — still no money.** The checklist shows three tasks. The owner
+rings the number, hears the agent, books a test appointment, and ticks "it
+worked". They verify the email that arrived. They add a card, **which is stored,
+not charged** (F7.2). Three test calls used, two remaining (F1.13).
+
+**Activation — the only thing that starts billing.** They press **Activate**.
+$100 is charged, `billing_status` becomes `active`, and **period 1 opens: day 1
+to day 30** (F1.12a). The agent is already bound, so the number is live. From the
+next call onward, usage accrues on productive calls (F7.6).
+
+**Period 1 runs.** 40 productive calls, 96 connected minutes. On **day 30**,
+usage settles: the seconds are summed across the period, rounded up once to 96
+minutes, priced at the rate pinned to this period, and charged. **Day 31: period
+2 opens and its $100 is charged.** Two charges, one day apart, never the same day
+(F7).
+
+**Period 2, and the card expires.** On **day 31** — day 1 of period 2 — the $100
+declines.
+
+| Day   |                                                                                                                                                    |                        |
+| ----- | -------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------- |
+| 31    | Charge fails. **Grace starts.** Email: _your service is still running_                                                                             | Owes **$100**          |
+| 31–38 | **Served normally.** Usage accrues to period 2 and is billable. Follow-up emails count down                                                        | Owes $100              |
+| 38    | **Suspended.** Agent unbound, verified (F1.12a-ii). The number stops answering. **Period 2 keeps running to day 60** — it is not extended (F7.11b) | Owes $100              |
+| 38–60 | Nothing accrues, nothing new is charged. Stripe keeps retrying; Ringly keeps emailing (F7.11b-i, -ii)                                              | Owes $100              |
+| 60    | **Period 2 ends on time and settles** for the 8 days of usage it did serve, clamped. That invoice joins the debt. **No period 3 opens** (F7.11c)   | Owes **$100 + 8 days** |
+| 60–90 | Suspended, debt **frozen**. It does not grow by a cent however long this lasts                                                                     | Owes $100 + 8 days     |
+| ~88   | 48-hour deletion warning                                                                                                                           |                        |
+
+**Two endings.**
+
+**They pay on day 75.** The retry succeeds; the webhook arrives; nothing is
+outstanding (§2.9.5). Ringly rebinds the agent and verifies it, and **the number
+answers again that day**. No period is open, so **period 3 opens on day 75 and
+its $100 is charged then** (F7.10c) — two movements on the same day, both in the
+billing history. Period 3 runs to day 104. If _that_ $100 had declined, it would
+be a **fresh** failure with a fresh 7-day grace (F7.11b-iv), not a continuation.
+
+**They never pay.** At **day 90** — 60 days from the first decline — the number
+is released to Retell, every Ringly row is deleted, and a departure record is
+written with **$100 + 8 days of usage** as owed and never collected (F10.9). The
+customer records, appointments and call history go with it (F10.1a-ii).
+
+**What the salon paid across the whole story:** $100 for period 1, plus period
+1's usage, plus — on the paying ending — the $100 and 8 days it owed for period
+2, plus $100 for period 3. **It was never charged for a single day the phone was
+not being answered, and the debt it had to clear on day 75 was exactly the debt
+it had on day 60.**
 
 **Who does what.**
 
@@ -1555,7 +1652,7 @@ messages from what looks like one company (F7.21).
   | ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
   | 0    | Charge fails. Service continues, usage keeps accruing, business emailed.                                                                                                          |
   | 0–7  | **Grace period.** Calls answered as normal. Payment follow-up emails sent. This usage **is billable** — service given is service billed.                                          |
-  | 7    | **Suspended.** Calls stop being answered; **the number and all data are retained**. The period keeps running and is not extended (F7.11b).                                        |
+  | 7    | **Suspended.** Calls stop being answered; **the number and all data are retained**. Any open period keeps running and is not extended (F7.11b); **none opens** (F7.11c).          |
   | 7–60 | Suspended and **charged nothing whatsoever** — no fee, no usage, no new period. Fully recoverable: paying what is owed restores service and resumes the period that day (F7.10b). |
   | ~58  | **48-hour final warning by email**, itemising exactly what will be deleted.                                                                                                       |
   | 60   | **Full stop.** Number released, Ringly-held data deleted, the paused period settled for what was served, amount owed recorded permanently (F10.9).                                |
@@ -2995,7 +3092,7 @@ stateDiagram-v2
     unbilled --> [*]: day 10, never activated (F10.1)
 
     active --> grace: a charge fails
-    grace --> active: pays — outstanding taken that day (F7.10b)
+    grace --> active: pays — no period opened meanwhile (F7.11c)
     grace --> suspended: day 7 (F10.3)
     suspended --> active: pays — same period, or a new one (F7.11b-iii)
     suspended --> [*]: day 60, deleted — open period settled
@@ -3011,25 +3108,33 @@ stateDiagram-v2
 | ------------ | --------------- | -------------- | -------------------- | -------------------------------------------------------------------- |
 | `unbilled`   | test only       | no             | on activation only   | activate → `active`; else deleted at day 10                          |
 | `active`     | yes             | yes            | **yes**              | charge fails → `grace`; cancel → `cancelling`                        |
-| `grace`      | yes             | **yes**        | **yes** (F7.11c)     | pays → `active`; day 7 → `suspended`                                 |
-| `suspended`  | **no**          | no             | **no** (F7.11b)      | pays → `active`, same period or a new one (F7.11b-iii); day 60 → del |
+| `grace`      | yes             | if one is open | **no** (F7.11c)      | pays → `active`; day 7 → `suspended`                                 |
+| `suspended`  | **no**          | no             | **no** (F7.11c)      | pays → `active`, same period or a new one (F7.11b-iii); day 60 → del |
 | `cancelling` | yes             | **no**         | no                   | revokes → `active`; window closes → `dormant`                        |
 | `dormant`    | no              | no             | no                   | returns → `active` on a new period; day 60 → `deleted`               |
 
-**Periods are 30 calendar days and never move** (F7.11b). Suspension does not
-pause the clock — it stops the service, stops usage accruing, and stops any new
-period opening. A suspended business is charged nothing new; it simply loses the
-days it is not being served, which is the cost of paying late.
+**Two columns carry the whole failure model.**
 
-**A period can therefore end while suspended**, and that case has one answer: it
-**settles on its original last day** for whatever accrued before suspension, and
-**no successor opens** until service resumes. Because no successor opens, at most
-one boundary is ever crossed (F7.11d).
+**Periods are 30 calendar days and never move** (F7.11b). Suspension does not
+pause the clock — it stops the service, and therefore usage. A suspended business
+loses the days it is not being served, which is the cost of paying late.
+
+**No new period opens from the first decline until the debt clears** (F7.11c) —
+through grace as well as suspension. This is what freezes the debt: whatever a
+business owed when it stopped being served is what it owes on the day it decides
+whether to come back.
+
+**A period can end during any of this**, and that case has one answer: it
+**settles on its original last day** for whatever it served, and **no successor
+opens**. Grace usage settles with that period if one is open; **if the failed
+charge was the settlement itself, the period closes that day and the grace that
+follows is not billed at all** (F7.11c-ii) — there is nothing to bill it to.
 
 Three transitions carry the rules most easily got wrong:
 
-- **`grace` → `active`** — the grace usage stays billable and settles with its
-  period; service given is service billed.
+- **`grace` → `active`** — grace usage settles with the open period if there is
+  one (service given is service billed), and is **free if there is not**
+  (F7.11c-ii). No period opened during the grace, so nothing extra is owed.
 - **`cancelling` → `active`** makes the window's usage **billable retroactively**
   (F7.12a). The free window is a concession for leaving; without this, cancel-
   then-revoke is a way to take a free week and stay.
@@ -3154,8 +3259,11 @@ invoice paid (webhook, signature verified)
 ```
 
 - **The check is "is anything outstanding", not "did this invoice succeed".** A
-  business can owe a failed fixed fee _and_ an unsettled usage bill (F7.10b).
-  Clearing one of two leaves it suspended, and the email says which is left.
+  business can owe a failed fixed fee _and_ an unsettled usage bill (F7.10b) —
+  the fee for the period that was open when it failed, and that period's
+  settlement when it later ended. Clearing one of two leaves it suspended, and
+  the email says which is left. **It is never more than two**, because no further
+  period opens (F7.11c).
 - **No boundary is recalculated** (F7.11b). The open period is untouched apart
   from a `resumed_at` stamp for the record; if none is open, exactly one new one
   is created. This is the branch F7.11b-iii describes and the only branch here.
@@ -3344,10 +3452,14 @@ schedule rather than by remembering to check.
 **Nothing about suspension stops any clock.** The 60-day `suspended_expiry` runs
 (F10.3), and so does the billing period it interrupted (F7.11b) — periods are 30
 calendar days and are never extended. What suspension stops is **service**, and
-therefore usage accrual and any new charge. **A period that ends mid-suspension
-settles on its original last day, and no successor opens** until service resumes
-(F7.11d); the settlement worker treats it as an ordinary period end, because it
-is one.
+therefore usage accrual.
+
+**What stops the debt growing is a different rule**: no new period opens from the
+first decline until the debt clears (F7.11c), through grace as well as
+suspension. **A period that ends mid-episode settles on its original last day and
+no successor opens** — the settlement worker treats it as an ordinary period end,
+because it is one, and the period-opening worker simply finds an outstanding
+balance and does nothing.
 
 **Billing reconciliation**, daily and separate from the sweeper (§2.9.5): for
 every `suspended` business, ask Stripe whether anything is outstanding and
