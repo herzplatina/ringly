@@ -881,9 +881,11 @@ charge failed first (F7.11).
   business is treated as **non-paying**: the suspension clock keeps running
   (F10.3), no free window opens, and no usage is forgiven. Cancelling is not a
   route out of a debt.
-- **F7.11b** **A billing period is always 30 calendar days. Suspension does not
-  extend it, and a suspended business is charged nothing new.** Two rules that
-  sound like they conflict and do not:
+- **F7.11b** **A billing period is 30 calendar days and is never extended.
+  Suspension does not extend it, and a suspended business is charged nothing
+  new.** (The one thing that can make a period _shorter_ is cancellation, which
+  settles the final one early — F7.12b. Nothing ever makes one longer.) Two rules
+  that sound like they conflict and do not:
   - **The period clock never stops.** `starts_at` and `ends_at` are set when the
     period opens and **never move**. A period that begins on the 3rd ends on the
     2nd of the following month whether the business was served for thirty of
@@ -1339,6 +1341,40 @@ Billing thresholds: neither. Customer portal: disabled. **Teardown order:** capt
 lifetime revenue → cancel subscription → void open invoices → detach card →
 delete the Stripe customer → delete Ringly's rows → write the departure record.
 
+### F7c — Invariants
+
+_Normative. Every one of these should hold for every business in every state; a
+change that breaks one is a change to the commercial model, not a detail._
+
+| #      | Invariant                                                                                                                                                                                                                     | Exceptions                                                                                                           |
+| ------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| **I1** | **A billing period is 30 calendar days and is never extended** — not by suspension, not by grace, not by anything (F7.11b)                                                                                                    | **One:** cancellation settles the final period **early** (F7.12b). Periods can be cut short; none is ever lengthened |
+| **I2** | **At most one period is open at a time, and none opens while the business owes anything** (F7.11c, F7.11f)                                                                                                                    | None                                                                                                                 |
+| **I3** | **Outstanding debt never exceeds the per-period cap — $500, inclusive of the fixed fee** (F7.9), plus tax (F7.18). Because only one period can be outstanding (I2), **$500 is the ceiling on what any business can ever owe** | None                                                                                                                 |
+| **I4** | **Nothing is deleted without a 48-hour warning email** (F10.3a)                                                                                                                                                               | None                                                                                                                 |
+| **I5** | **A business is never charged for a day its number was not being answered** (F7.11b)                                                                                                                                          | None                                                                                                                 |
+| **I6** | **The $100 is never prorated or refunded** (F7.11e, F7.12b)                                                                                                                                                                   | Goodwill refunds, by hand, which no rule produces (F6.7)                                                             |
+
+**Three things that are _not_ invariants**, listed because they read like they
+should be:
+
+- **"Everything is deleted at 60 days."** There are **three** deletion clocks and
+  they start from different events: **10 days** for a business that never
+  activated (F10.1, and the operator can pause it — F10.1b); **60 days from the
+  first failed charge** for non-payment and chargebacks (F10.3); **60 days after
+  service stops** for a business that cancelled, which is itself up to 7 days
+  after the request (F7.12e) — so up to 67 days from that request.
+- **"Free service never exceeds 7 days."** It is bounded at 7 in the two places
+  that look like concessions — the grace period (F7.11) and the cancellation
+  window (F7.12) — but **the $500 cap is deliberately unbounded within a period**
+  (F7.9b). A business that reaches the cap on day 6 is served free for the
+  remaining 24 days, and Ringly absorbs it on purpose. That is the single largest
+  giveaway in the model and the one worth watching (R8).
+- **"Grace always costs the business nothing."** Grace usage **is billed** when a
+  period is open to bill it to, which is the ordinary case; it is free only when
+  the failed charge was itself a settlement, because that period closed the same
+  day (F7.11c-ii).
+
 ### F8 — Email
 
 - **F8.1** Business email goes to the contact address collected at onboarding
@@ -1412,6 +1448,39 @@ messages from what looks like one company (F7.21).
 | Recurring change        | Occurrence shifted or skipped (F5.2b)         | Informational; **states plainly that the customer was not told**                                                               |
 | Test calls exhausted    | 5th test call, not activated (F1.13a)         | States plainly that the number has stopped answering, that they are not charged, and that activating turns it back on (F1.13b) |
 | Stats digest            | Each billing period (F8.3)                    | Light; the only unsubscribable email                                                                                           |
+
+**Who raises the money and who writes the words — every scenario**
+
+One rule underneath the table: **Stripe invoices, charges and retries; Ringly
+decides the amounts and writes every message except the three Stripe already
+sends well.** Stripe's dunning is off throughout (F7.21), including during
+suspension (F7.11b-ii).
+
+| Scenario                    | Invoice + charge                                   | Email to the business                             |
+| --------------------------- | -------------------------------------------------- | ------------------------------------------------- |
+| Activation, period 1's $100 | **Stripe** (Ringly triggers)                       | Receipt: **Stripe** · "You're live": **Ringly**   |
+| Each period's $100          | **Stripe**                                         | Upcoming charge: **Ringly** · Receipt: **Stripe** |
+| Usage settlement            | **Stripe** — Ringly computes and clamps (F7.9)     | Receipt: **Stripe**                               |
+| $500 cap reached            | — nothing charged                                  | **Ringly**                                        |
+| Payment declines            | Stripe retries, 60-day schedule                    | **Ringly**                                        |
+| Through grace               | Stripe still retrying                              | **Ringly** — follow-ups                           |
+| Suspension                  | Stripe **still retrying**; no new invoice (F7.11c) | **Ringly** — suspension notice, then follow-ups   |
+| Service restored            | New period's $100, if one opens: **Stripe**        | **Ringly**                                        |
+| 48h before deletion         | —                                                  | **Ringly**                                        |
+| Deletion                    | Teardown voids open invoices (§2.9.4)              | **Ringly**, to the operator (F8.13)               |
+| Cancellation requested      | — nothing charged in the window                    | **Ringly** — confirmation, then countdown         |
+| Cancellation settles        | Final usage: **Stripe**                            | **Ringly** — closing statement                    |
+| Refund (goodwill only)      | **Stripe**, by hand (F6.7)                         | none automated                                    |
+| Test calls exhausted        | — never charged                                    | **Ringly**                                        |
+| Calendar unreachable        | —                                                  | **Ringly**                                        |
+| Recurring occurrence moved  | —                                                  | **Ringly**                                        |
+| Stats digest                | —                                                  | **Ringly**                                        |
+
+**Stripe sends exactly three things to a business: invoices, receipts, and
+payment-succeeded** (F8.3a). Everything else in the table is Ringly's, because
+every other message depends on something Stripe does not know — that service
+continues seven days, that the agent has been unbound, that no new period will
+open, or what is destroyed in forty-eight hours.
 
 **Operator-facing email**
 
