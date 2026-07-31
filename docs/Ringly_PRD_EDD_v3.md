@@ -29,19 +29,26 @@ Revised again 2026-07-31 — see below._
 > 4. **A suspended business is charged nothing at all** (F7.11b). Suspension
 >    **pauses the billing period** rather than letting it run: no fixed fee, no
 >    usage, no new period, for any part of it. Ringly bills for what it delivers,
->    and a suspended phone delivers nothing.
-> 5. **Customer PII deletion is automated on both paths** (F10.1a-i, F10.1a-ii,
->    §2.10.2) — a self-serve control on the business dashboard, and automatic
->    destruction when the business itself is deleted. Neither waits on anyone at
->    Ringly.
+>    and a suspended phone delivers nothing. **What does not pause is the chase**
+>    (F7.11b-i): the unpaid invoice that caused the suspension stays open,
+>    retried and followed up, because clearing it is the only way back.
+> 5. **Customer PII is destroyed on exactly two occasions, both automatic**
+>    (F10.1a, §2.10.2): a self-serve control on the business dashboard for one
+>    customer, and the lifecycle sweeper for all of them when the business itself
+>    is deleted. Neither involves anyone at Ringly.
 > 6. **Opening hours are the business's to change** (F3.5), written on save and
 >    binding on every subsequent booking decision, including the generation of
 >    future recurring occurrences (F5.2e).
-> 7. **Money records get three copies, one of them outside the primary provider's
->    account** (N10, §2.14.1) — the only layer that survives losing the account
->    rather than the data.
+> 7. **Money records get point-in-time recovery and cross-region backups** (N10).
+>    A third copy outside the provider account is **deferred** (§1.9, R22) — real
+>    work against a rare failure, with Stripe holding the payments meanwhile.
 > 8. **Rate limiting is sized for the traffic actually expected**, which is low
 >    (N9): a per-IP limit and a spend ceiling, not an abuse system.
+>
+> Two things were also made unambiguous after being misread in review:
+> **activation is one button pressed by the owner and nothing else ever triggers
+> it** (F1.12b, F1.13b — no call count activates a business), and **a test call
+> is simply any call arriving before that button is pressed** (F1.13a).
 >
 > The same pass corrected the contradictions and gaps found reading Part 1
 > against Part 2. The substantive ones: the 30-day/60-day retention conflict
@@ -184,37 +191,77 @@ _(Carried from v2; renumbered. v2 FR1–FR10 map to F1.1–F1.10.)_
   giving anyone a card can; one that wants everything done in a minute can. The
   screen shows all three with their state, and what remains.
 
-- **F1.12a** **When all three are done, activation is offered**: the $100 is
-  charged, period 1 begins, and the business is told plainly that it is **now
-  taking customer calls**. There is no separate activation fee (F7.1) — this
-  charge is period 1's.
-- **F1.13** A business may place at most **10 test calls** before
-  activating. **If it exhausts them without confirming**, onboarding stops and:
+- **F1.12a** **Activation is one deliberate act by the business owner: pressing
+  a button.** When all three checklist items are green an **Activate** button
+  becomes available. Pressing it — and nothing else, ever — charges the $100,
+  starts period 1, and flips the account from `unbilled` to `active`. The
+  business is then told plainly that it is **now taking customer calls** and
+  that billing has begun. There is no separate activation fee (F7.1); this charge
+  is period 1's.
+- **F1.12b** **Nothing activates a business except that button.** Stated
+  negatively because it is the thing most likely to be assumed otherwise:
+  - **Call volume never activates anything.** Not the first call, not the tenth,
+    not the eleventh. The number of calls placed has no bearing on billing status
+    whatsoever.
+  - **Confirming the test call does not activate.** It ticks one of three boxes
+    (F1.12) and nothing more. A business can confirm its test call and sit there
+    for a week without being charged a penny.
+  - **Adding a card does not activate**, and the card is not charged when it is
+    added — only stored (F7.2).
+  - **Time never activates.** An unactivated business is deleted at day 10
+    (F10.1); it is never promoted into a paying one.
+  - **Ringly never activates a business on its behalf.** Not the operator, not a
+    background job, not a support action.
+
+  **Before that press: no charge is possible, ever.** After it: usage is billed
+  by outcome alone (F7.6). There is no third state and no gradual transition.
+
+- **F1.13** **The 10-call limit is a ceiling on an unactivated business's cost to
+  Ringly, not a countdown to anything.** Before activation, calls cost Ringly
+  telephony minutes against no revenue, so the allowance is bounded. **Reaching
+  ten does not activate the business, charge it, or change its state** — it stops
+  it, which is the opposite. On the tenth without an activation:
   - the business is **emailed** to say the number has not been activated and
     Ringly is investigating and will come back to them;
   - the failure is raised on the **operator dashboard** and **emailed to the
     operator**.
 
-  A business in this state is never charged, and cannot activate itself out of
-  it — recovery is operator-led (F10.1b, F10.1c).
+  A business in this state is never charged and cannot get itself out — recovery
+  is operator-led (F10.1b, F10.1c). It is **stuck, not activated**.
 
-- **F1.13a** **A test call is any call answered before the business activates.
-  There is no detection, because there is nothing to detect.** Ringly buys the
-  number moments earlier; it is on no listing, no website, no sign, and no
-  customer's phone. The only person who knows it exists is the owner Ringly just
-  gave it to. **Pre-activation, every inbound call is a test call by
-  construction** — the state of the account is the whole test.
-  - **Who is calling is not examined**, and deliberately not: caller ID would add
-    a way to be wrong about something the account state already settles. If a
-    stranger somehow dials the number, it still counts against the ten and the
-    business is still charged nothing, which is the correct outcome either way.
-  - **The classification is fixed at the moment of the call, not derived later**
+- **F1.13a** **A call is a test call if the business had not yet pressed Activate
+  when it arrived. That is the whole rule; there is no detection.** Ringly bought
+  the number minutes earlier and it is on no listing, no website, no sign and in
+  nobody's contacts. The only person who knows it exists is the owner Ringly just
+  gave it to, so before activation there is no other kind of call it could be.
+  - **Who is calling is not examined**, deliberately: caller ID would add a way
+    to be wrong about something the account state already settles. If a stranger
+    somehow dials the number it still counts against the ten and the business is
+    still charged nothing, which is the right answer either way.
+  - **The classification is written at the time of the call, not derived later**
     (EDD 005, `is_test_call`). Billing status changes; a call's history must not.
-    Re-deriving it from today's status would silently reclassify all ten of a
-    business's test calls the instant it activates.
+    Deriving it from today's status would reclassify all ten of a business's test
+    calls the instant it activated.
   - **After activation there are no test calls.** The owner ringing their own
     number is billed on the same terms as anyone else, by outcome alone (F7.6,
     F7.7).
+
+- **F1.13b** **The lifecycle in full, so the boundary is unambiguous.** Two
+  businesses, same ten calls, different outcomes — the only difference is a
+  button:
+
+  |                                         | Business A                                     | Business B                                                                                      |
+  | --------------------------------------- | ---------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+  | Signs up, gets a number                 | `unbilled`                                     | `unbilled`                                                                                      |
+  | Places 3 calls, likes what it hears     | 3 test calls, **$0**                           | 3 test calls, **$0**                                                                            |
+  | Confirms the test call on the checklist | box 2 ticked, still `unbilled`, still **$0**   | box 2 ticked, still `unbilled`, still **$0**                                                    |
+  | Verifies email, adds a card             | all 3 green, still `unbilled`, still **$0**    | all 3 green, still `unbilled`, still **$0**                                                     |
+  | **Presses Activate**                    | → `active`, **$100 charged**, period 1 starts  | — does not press it                                                                             |
+  | Places 7 more calls                     | **production calls, billed by outcome** (F7.6) | test calls 4–10, **$0**                                                                         |
+  | Where it ends up                        | Paying customer                                | Stuck at ten (F1.13); deleted day 10 unless the operator intervenes; **never charged anything** |
+
+  **Business B is never charged, no matter how many calls it makes**, because it
+  never pressed the button. There is no call count at which billing begins.
 
 ### F2 — Call handling and booking
 
@@ -658,6 +705,33 @@ charge failed first (F7.11).
   - **Usage does not accrue either**, because no calls are being served.
   - **If they never return**, the paused period is settled at deletion for what
     was served up to suspension, clamped, and recorded as owed (F7.9a case 3).
+- **F7.11b-i** **What pauses is the meter, not the collection of what is already
+  owed.** These are two different things and conflating them breaks the recovery
+  path, because the unpaid charge is the entire reason the business is suspended
+  and paying it is the only way out.
+
+  | During suspension                              | Continues? |
+  | ---------------------------------------------- | ---------- |
+  | The **outstanding invoice** stays open and due | **Yes**    |
+  | **Automatic retries** against the card on file | **Yes**    |
+  | **Payment follow-up emails** to the business   | **Yes**    |
+  | The 48-hour deletion warning at ~day 58        | **Yes**    |
+  | New fixed fees                                 | **No**     |
+  | New usage charges                              | **No**     |
+  | New billing periods                            | **No**     |
+
+  A suspended business must be **chased as hard as any other debtor** — it is
+  being asked to settle what it already owes, which is not a charge for the
+  suspension. What it must never receive is a **new** charge for a service it is
+  not getting.
+
+  **The failure this guards against is the opposite of the one F7.11b guards
+  against.** F7.11b stops Ringly billing for a phone nobody answers; F7.11b-i
+  stops Ringly going quiet on a debt and letting a recoverable business drift to
+  day 60 in silence. The implementation detail that makes the pair work is at
+  §2.9.3 — a subscription whose collection is fully paused would stop the
+  retries, which is not what is wanted.
+
 - **F7.11c** **Grace is the opposite, and deliberately so.** In `grace` the
   business is still being served, so the period runs normally: it ends on time,
   settles, and the next period opens with its $100 attempted like any other
@@ -1064,34 +1138,54 @@ messages from what looks like one company (F7.21).
   one. A caller wanting their data removed asks the **business**, which is who
   they have a relationship with; Ringly is the business's service provider
   (N6.5) and offers the caller no interface.
-- **F10.1a-i** **Deleting one customer is a self-serve control on the business
-  dashboard, and it is automated.** The owner enters the caller's phone number,
-  confirms once, and Ringly erases them — no email to Ringly, no operator, no
-  ticket, no waiting. A deletion right that depends on somebody at Ringly reading
-  their inbox is not a deletion right.
-  - **The search is by phone number only**, which is the customer's identity
-    (F2.4) and the only thing a caller can state unambiguously. Names are not
-    unique and the dashboard shows no customer list (F6.9) — this is a targeted
-    lookup for a deletion, not a customer directory.
-  - **What is erased:** the customer row and every piece of PII on it — name,
-    phone — everywhere it appears.
-  - **Future appointments are cancelled** and removed from the connected calendar
-    in the same operation. An appointment nobody can be identified for is a slot
-    the business will hold open for a ghost.
-  - **Past appointments are retained with the PII stripped**, not deleted. They
-    carry the revenue the business already earned (F6.3a) and the analytics
-    already counted; deleting them would silently rewrite settled figures and
-    past invoices (F7.16). What remains is a service, a duration, a price and a
-    date — a transaction record with nobody's name on it.
-  - **Calls are untouched** because there is nothing in them to touch: calls
-    carry no customer link (F6.3) and no content (F10.6).
-  - **It is irreversible and says so** before the confirmation.
-- **F10.1a-ii** **All customer PII is destroyed automatically when the business
-  is deleted**, on whichever clock the ending set — day 10 unactivated, day 60
-  otherwise (F10.3, F10.8). This is the sweeper's ordinary work, not a request
-  anyone has to make: customers and appointments go with everything else, and
-  the only thing that survives is the financial record, which by construction
-  contains no consumer data at all (F10.9).
+
+  **Customer PII is destroyed on exactly two occasions, and both are automatic.
+  There is no third, and neither involves anyone at Ringly:**
+
+  |                      | **Path 1 — one customer**                                                              | **Path 2 — the whole business**                                                |
+  | -------------------- | -------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+  | **What triggers it** | The business owner presses delete on the dashboard, having been asked by that customer | A lifecycle deadline expires — day 10 unactivated, day 60 suspended or dormant |
+  | **Who acts**         | The business owner, self-serve                                                         | Nobody. The lifecycle sweeper, on a timer                                      |
+  | **Scope**            | That one customer                                                                      | Every customer the business ever had, and the business itself                  |
+  | **Requirement**      | F10.1a-i                                                                               | F10.1a-ii                                                                      |
+
+- **F10.1a-i** **Path 1 — deleting one customer, self-serve and immediate.** The
+  owner enters the caller's phone number, is shown what will be erased, confirms
+  once, and it is done. No email to Ringly, no operator, no ticket, no waiting —
+  a deletion right that depends on somebody reading an inbox is not a deletion
+  right.
+
+  **Phone number is the only way in**, because it is the customer's identity
+  (F2.4) and the only thing a caller can state unambiguously. This is a targeted
+  lookup in order to delete, **not** a customer directory: it never lists
+  customers and never resolves a partial match into a name, or it would become
+  exactly the per-customer view F6.9 excludes.
+
+  |                                           | Outcome                                                                                                          | Why                                                                                                                                                                                                                                                    |
+  | ----------------------------------------- | ---------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+  | **The `customers` row** — name, phone     | **Deleted**                                                                                                      | It is the PII. This is the point of the operation                                                                                                                                                                                                      |
+  | **Future appointments** for that customer | **Cancelled and deleted**, and their events removed from the connected calendar                                  | An appointment whose customer no longer exists is a slot the business holds open for a ghost                                                                                                                                                           |
+  | **Past appointments**                     | **Kept, with the customer link removed** — service, duration, price and date survive; the name and number do not | They carry revenue the business already earned and the rollups already counted (F6.3a), and invoices already settled against them (F7.16). Deleting them would silently rewrite closed figures. What is left is a transaction with nobody's name on it |
+  | **`calls`**                               | **Untouched — nothing to touch**                                                                                 | Calls carry no customer link (F6.3) and no transcript or recording (F10.6). There is no PII in them to erase                                                                                                                                           |
+  | **Analytics rollups**                     | **Untouched**                                                                                                    | Daily aggregates only; no customer grain exists anywhere in them (§2.8)                                                                                                                                                                                |
+  | **Billing and money records**             | **Untouched**                                                                                                    | They are about the business, never about its callers (F10.9)                                                                                                                                                                                           |
+  | **The business's own calendar**           | Future events removed; **past events left alone**                                                                | Past events are the business's own record in a system Ringly does not own                                                                                                                                                                              |
+
+  **It is irreversible, and says so before the confirmation.**
+
+- **F10.1a-ii** **Path 2 — the business is deleted, and every customer goes with
+  it, automatically.** When a lifecycle deadline expires (day 10 unactivated, day
+  60 suspended or dormant) the sweeper deletes the tenant, and customers and
+  appointments are ordinary tenant rows caught by that (F10.3, F10.8). **Nobody
+  requests it and nobody performs it.**
+
+  **Exactly one thing survives, and it contains no consumer data by
+  construction**: `departed_businesses` (F10.9) — the business's id and name, when
+  it joined and left, how it ended, what it owed, and what Ringly earned from it.
+  **No caller name, no caller number, no appointment.** That is a property to
+  preserve, not a coincidence: the departure record must never become a way for
+  customer data to outlive the deletion that was supposed to remove it.
+
 - **F10.1b** **The operator can pause the 10-day clock on any individual
   business**, from the operator dashboard (F9.13). A business whose test calls
   all failed (F1.13) is waiting on Ringly, not the other way round, and would
@@ -1408,31 +1502,38 @@ totals, or the usage they were derived from.
   `billing_periods`, `pricing_policy` and `departed_businesses`.** They are named
   here so the protections below apply to a definite list rather than a feeling
   about which data is important.
-- **N10.2** **Three independent copies, at least one outside the primary
-  provider's control.** In order of how much they protect against:
+- **N10.2** **Two copies in v3:**
   1. **Point-in-time recovery** on the primary database — covers a bad
-     migration, an errant delete, corruption. Useless if the account or region is
-     lost.
+     migration, an errant delete, corruption.
   2. **Automated backups replicated to a second region**, retained ≥ 90 days —
      covers losing a region.
-  3. **A periodic append-only export of the money tables to storage in a
-     different provider account**, retained ≥ 1 year with object lock or
-     equivalent — covers **losing the account itself**, which is the failure the
-     first two share and neither survives. A backup that a compromised or closed
-     account can delete is not a third copy.
 - **N10.3** **RPO ≤ 1 hour for the money tables, RTO ≤ 4 hours.** An hour is
   below any billing interval in this design, so at most one hour of usage
   records — not one period's, and never a settled charge — can be at risk.
 - **N10.4** **Nothing in the money tables is ever hard-deleted or updated in
   place once settled** (F7.16). Corrections are new rows. A durable copy of a
-  table that gets rewritten protects nothing.
-- **N10.5** **Restores are exercised on a schedule and the result recorded** —
-  including one restore of the third copy, since it is the one nothing else
-  tests. A backup never restored is a belief, and this is the requirement where a
-  belief is not good enough.
+  table that gets rewritten protects nothing, and this costs nothing to hold to
+  from the first migration.
+- **N10.5** **Restores are exercised on a schedule and the result recorded.** A
+  backup never restored is a belief.
 - **N10.6** **Deleting a business is not an exception.** The departure record is
   written last and deliberately outlives everything else (F10.9, F10.10); it is a
-  money record and is covered by all of the above.
+  money record and is covered by the above.
+- **N10.7** **Stripe is a second copy of the payments, though not of the
+  reasoning.** Every charge, refund and dispute also exists in Stripe's own
+  records, which fail independently of Ringly's infrastructure. What Stripe does
+  **not** hold is which period a payment settled, under which policy version,
+  against how many seconds of usage, and clamped by how much — so Stripe is a
+  meaningful partial backstop for v3, and not a substitute for N10.2.
+
+> **Deferred, deliberately (§1.9): a third copy outside the provider account.**
+> Both copies above live in the same provider account and share its fate — a
+> credential compromise or an account closure takes them together. The fix is an
+> append-only export to storage under separate credentials, and it is **not built
+> in v3**: it is real work for a failure mode that is rare, and Stripe (N10.7)
+> covers the payments half of it in the meantime. Recorded so the gap is a
+> decision rather than an oversight, and revisited once there is revenue worth
+> the effort.
 
 ## 1.7 Success metrics
 
@@ -1488,6 +1589,17 @@ dropped-call definition (F6.3), calendar-provider switching out of scope (R9).
   customer, because moving a live phone system is not a thing to do casually.
   The decision turns on how scheduled work is run (N8.3) and on whether the
   Next.js-native deployment is worth more than the container control.
+- **Q7 — Who sends the payment follow-up emails during grace and suspension?**
+  That they **must keep going through suspension is settled** (F7.11b-i) — the
+  open part is the sender. F7.20 and F7.21 assign the whole failure path to
+  Ringly and switch Stripe's dunning off, on the grounds that only Ringly can say
+  service continues seven days, that nothing has been deleted yet, and what goes
+  in forty-eight hours. **Turning Stripe's dunning back on would mean two
+  differently-worded emails from what looks like one company**, which is the
+  thing F7.21 exists to prevent. Options: keep it as specified (Ringly sends,
+  Stripe retries silently), or hand the plain "your card was declined" note to
+  Stripe and keep only the consequence-bearing ones. **Blocks nothing before
+  Phase 6**; the retries themselves are Stripe's either way (F7.20).
 
 ---
 
@@ -1512,6 +1624,13 @@ unused column, no dead code path held open against a future that may not arrive
   export**, deliberately and permanently (N1.3).
 
 - **Operator alerting via Slack**, replacing email (F9.6).
+- **A third copy of the money records, outside the primary provider account**
+  (N10). v3 ships point-in-time recovery plus cross-region backups, which both
+  live in one account and share its fate. The eventual fix is an append-only
+  daily export under separate credentials with object lock (§2.14.1 records the
+  shape). **Deferred because it is real work against a rare failure**, and
+  because Stripe independently holds the payments half in the meantime (N10.7).
+  Worth doing once there is enough revenue to miss.
 - **Stripe's own customer portal as the cancellation route.** It would give
   businesses self-service cancellation and payment-method updates without Ringly
   building either. Deliberately **disabled in v3** because it would bypass the
@@ -1972,13 +2091,32 @@ merely experience.
 | 6   | **Scope check**           | The **granted** scopes are inspected, not assumed.                                                                                                                                                    | **F1.7a**   |
 | 7   | **Provision**             | Business row created from the draft, refresh token encrypted, Retell number bought or reused, agent created and bound — behind a value screen.                                                        | F1.9        |
 | 8   | **Get ready — checklist** | **Three tasks shown together, done in any order:** verify the contact email · make a test call and confirm it worked · add a payment method. Live state on each; nothing is sequenced.                | **F1.12**   |
-| 9   | **Activate**              | Offered once all three are green: $100 charged, period 1 starts, and the business is told plainly it is **now taking customer calls**.                                                                | **F1.12a**  |
+| 9   | **Activate**              | A button, enabled once all three are green. **The owner presses it**: $100 charged, `billing_status` → `active`, period 1 starts, business told it is **now taking customer calls**.                  | **F1.12a**  |
 
 **Step 8 is the whole design decision.** Sequencing those three would force a
 business to hand over a card before hearing what it is buying, or to wait on an
 inbox round-trip before it can play with the thing it just built. Presenting them
 together lets an owner who wants to try the receptionist immediately do exactly
 that, and an owner who wants to be finished in ninety seconds do that instead.
+
+**Step 9 is a single explicit act, and it is the only thing in the system that
+starts billing** (F1.12a, F1.12b). One handler, one state transition:
+
+```
+POST /api/activate            -- the Activate button, and nothing else
+  guard: contact_email_verified_at is not null
+  guard: test_call_confirmed_at   is not null
+  guard: a payment method is on file
+  ├─ charge $100 (period 1's fixed fee, F7.1)
+  ├─ businesses.billing_status = 'active'
+  ├─ businesses.activated_at   = now()
+  └─ insert billing_periods (seq 1, starts_at = now(), ends_at = +30d)
+```
+
+**`billing_status` moves off `unbilled` here and nowhere else in onboarding.**
+No background job promotes a business, no call count trips it, no operator action
+does it. That single write is what every downstream billing decision keys
+on — including whether the call arriving a second later is a test call (F1.13a).
 
 ### 2.4a.2 The two ways it stops, and what the user sees
 
@@ -2001,9 +2139,12 @@ actually granted.
   written at the post-call webhook as `billing_status = 'unbilled'`, and that is
   the entire rule. The number was bought minutes ago and published nowhere, so
   before activation there is no other kind of call it could be.
-- The eleventh inbound call is **still answered** — refusing to answer a phone is
-  worse than the cost of a call — but it does not extend the allowance, and the
-  account stays stuck until the operator acts.
+- **Reaching ten does not activate anything** (F1.13, F1.12b). It is a ceiling
+  on Ringly's exposure to an unactivated business, not a threshold that promotes
+  one. The eleventh inbound call is **still answered** — refusing to answer a
+  phone is worse than the cost of a call — is **still a test call**, is **still
+  free**, and does not extend the allowance. The account stays `unbilled` and
+  stuck until the operator acts.
 - The business is **emailed**: the number is not active, Ringly is looking into
   it, and they will hear back. They are never charged.
 - The failure is raised on the **operator dashboard** and emailed to the operator
@@ -2449,27 +2590,49 @@ true number for margin (F9), the business is never charged more than $500.
 
 Everything below exists to stop both systems acting on the same event (F7.20).
 
-| Setting                     | Value                    | Without it                                           |
-| --------------------------- | ------------------------ | ---------------------------------------------------- |
-| Subscription interval       | `day` × 30               | `month` drifts to calendar months                    |
-| Billing anchor              | 09:00 local, day 1       | midnight ± DST moves the charge to the previous date |
-| Dunning emails              | **off**                  | two payment-failure emails from one company          |
-| Receipts, payment-succeeded | **on**, Ringly-branded   | Ringly duplicates what Stripe does better            |
-| `proration_behavior`        | `none`                   | Stripe prorates by the second and ignores the cap    |
-| Billing thresholds          | **not configured**       | invoices early, alongside our cap logic              |
-| Customer portal             | **disabled**             | businesses self-cancel, bypassing F10.2              |
-| Smart Retries               | schedule spans 60 days   | gives up before the deletion boundary                |
-| End of dunning              | leave subscription alone | Stripe ends the relationship on its schedule         |
-| Statement descriptor        | `RINGLY`                 | unrecognised charges become disputes                 |
-| On suspension               | `pause_collection`       | **Stripe keeps invoicing a paused period** (F7.11b)  |
+| Setting                     | Value                                         | Without it                                                      |
+| --------------------------- | --------------------------------------------- | --------------------------------------------------------------- |
+| Subscription interval       | `day` × 30                                    | `month` drifts to calendar months                               |
+| Billing anchor              | 09:00 local, day 1                            | midnight ± DST moves the charge to the previous date            |
+| Dunning emails              | **off**                                       | two payment-failure emails from one company                     |
+| Receipts, payment-succeeded | **on**, Ringly-branded                        | Ringly duplicates what Stripe does better                       |
+| `proration_behavior`        | `none`                                        | Stripe prorates by the second and ignores the cap               |
+| Billing thresholds          | **not configured**                            | invoices early, alongside our cap logic                         |
+| Customer portal             | **disabled**                                  | businesses self-cancel, bypassing F10.2                         |
+| Smart Retries               | schedule spans 60 days                        | gives up before the deletion boundary                           |
+| End of dunning              | leave subscription alone                      | Stripe ends the relationship on its schedule                    |
+| Statement descriptor        | `RINGLY`                                      | unrecognised charges become disputes                            |
+| On suspension               | **Stop the cycle, keep the debt** — see below | Either a new invoice for a paused period, or a stalled recovery |
 
-**`pause_collection` is not optional.** Ringly pausing its own period clock
-(F7.11b) means nothing if Stripe's subscription keeps its own 30-day cadence and
-raises an invoice on day 30 regardless — the business would be charged for
-exactly the suspended time this design promises is free, and Ringly's records and
-Stripe's would disagree about what is owed. **Suspension pauses collection;
-restore resumes it and moves the subscription's anchor forward by the same
-elapsed time `ends_at` moved**, so the two systems stay on one calendar.
+#### Suspension: two things that must not be done together
+
+This is the subtlest configuration in the design, because the obvious move is
+wrong. **Suspension must stop Stripe raising _new_ invoices while leaving the
+_existing unpaid one_ open, due, and actively retried** (F7.11b, F7.11b-i).
+
+|                                         | On suspension                               | Why                                                                                                                                     |
+| --------------------------------------- | ------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| **The unpaid invoice that caused this** | **stays open, stays retried**               | It is the reason for the suspension and paying it is the only way out. Going quiet on it is how a recoverable business drifts to day 60 |
+| **Payment follow-up emails**            | **keep sending**                            | Same reason. Suspension is the point at which chasing matters most                                                                      |
+| **Smart Retries**                       | **keep running**, schedule spanning 60 days | Aligns with the deletion boundary                                                                                                       |
+| **The subscription's billing cycle**    | **stopped** — no new invoice while paused   | A new $100 for a phone nobody is answering is the exact charge F7.11b forbids                                                           |
+| **Usage pushed to the meter**           | **stopped**                                 | No calls are served, so there is nothing to meter                                                                                       |
+
+> **Do not reach for a blanket "pause collection" on the subscription.** Whatever
+> the mechanism ends up being, it must not suspend retries or dunning on the
+> already-open invoice — that would satisfy F7.11b by breaking F7.11b-i, and the
+> business would sit suspended, un-chased, until it was deleted. **The exact
+> Stripe mechanism is to be confirmed against current API behaviour before Phase
+> 6 is built** (see §2.18): the requirement above is behavioural and is what the
+> implementation must be checked against, not the API name.
+
+**On restore**, the cycle restarts and the subscription's anchor moves forward by
+the same elapsed time `ends_at` moved (§2.9.1), so Ringly and Stripe stay on one
+calendar.
+
+**Ringly's own `billing_periods` are authoritative**; Stripe executes payments.
+Where the two disagree about when a period started or how long it ran, ours wins
+and Stripe is corrected to match.
 
 **Ringly's own `billing_periods` are authoritative**; Stripe executes payments.
 Where the two disagree about when a period started or how long it ran, ours wins
@@ -2537,10 +2700,14 @@ holding it (F10.4).
 
 **Unbinding and pausing the meter are one transaction, not two steps that happen
 to run together** (F7.11b). The moment the agent stops answering, the billing
-period stamps `paused_at` and Stripe's subscription enters `pause_collection`;
+period stamps `paused_at` and Stripe's billing cycle stops raising new invoices;
 the moment it answers again, all three reverse. Splitting them is how a business
 ends up billed for a phone nobody picked up — and the failure is silent, because
 every part of the system looks correct on its own.
+
+**What does _not_ pause is the chase** (F7.11b-i). The unpaid invoice stays open
+and retried and the follow-up emails keep going, because that debt is the reason
+the agent was unbound and clearing it is the only thing that rebinds it.
 
 **Unbinding must never make a number reusable** (F10.4a). `selectReusableNumber`
 treats a Retell number with no inbound agent as orphaned, and an unbound number
@@ -2615,41 +2782,70 @@ active; everything goes when the relationship ends, on the clock the ending sets
 — day 10 unactivated, day 60 suspended, 60 days after service stops for a
 cancellation. There is no field-level expiry and no rolling deletion.
 
-### 2.10.2 Deleting customers
+### 2.10.2 Deleting customer PII — the two paths
 
-Two paths, **both automated, neither requiring anyone at Ringly** (N6.4).
+**Both automated. Neither requires anyone at Ringly** (N6.4). There is no third
+path, and no manual one.
 
-**Wholesale, when the business goes** (F10.1a-ii). Customers and appointments are
-tenant rows like any other and are removed by the sweeper at §2.9.4 step 7.
-Nothing special is needed and nothing is exempt — `departed_businesses` is the
-only survivor and carries business identity and money only (F10.9).
+#### Path 1 — one customer, on the business's own request (F10.1a-i)
 
-**Individually, on the business's own request** (F10.1a-i), as one transaction:
+Triggered by the owner pressing delete on the dashboard. One transaction:
 
 ```
 1  resolve the customer by (business_id, phone)      -- exact match, tenant-scoped
-2  cancel future appointments; delete their calendar events
-3  null customer_id on PAST appointments             -- on delete set null
-4  delete the customer row
+2  cancel any appointment_series they own            -- stop future materialisation
+3  delete FUTURE appointments; delete their calendar events
+4  null customer_id on PAST appointments             -- on delete set null
+5  delete the customer row
 ```
 
-- **Step 3 before step 4, and `set null` rather than `cascade`.** A cascade would
-  take the past appointments with the customer and silently rewrite
-  `revenue_booked_cents` in every rollup that already counted them (F6.3a) and
-  every invoice already settled against them (F7.16). What must survive is the
-  transaction — service, duration, price, date — with nobody's name on it.
-- **Step 2 before step 4** for the same reason the teardown releases the number
+| Table                        | What happens                           | Why                                                                                                  |
+| ---------------------------- | -------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `customers`                  | **row deleted**                        | It is the PII                                                                                        |
+| `appointment_series`         | **cancelled, then deleted**            | Skipping this leaves the materialiser generating occurrences hourly for someone who no longer exists |
+| `appointments`, future       | **deleted**, calendar events withdrawn | A slot held for a ghost                                                                              |
+| `appointments`, past         | **`customer_id` set null**, row kept   | Carries revenue the rollups counted (F6.3a) and invoices already settled (F7.16)                     |
+| `calls`                      | **nothing to do**                      | No customer link (F6.3), no transcript or recording (F10.6)                                          |
+| `daily_business_stats`       | **nothing to do**                      | Daily aggregates; no customer grain exists (§2.8)                                                    |
+| `usage_records`, `billing_*` | **nothing to do**                      | About the business, never its callers                                                                |
+
+- **Step 2 is the one most likely to be forgotten.** A recurring series outlives
+  its customer otherwise, and the materialiser cheerfully regenerates occurrences
+  for a deleted person every hour (§2.7).
+- **Step 4 before step 5, and `set null` rather than `cascade`.** A cascade takes
+  the past appointments with the customer and silently rewrites
+  `revenue_booked_cents` in every rollup that already counted them, and every
+  period already settled against them. What must survive is the transaction —
+  service, duration, price, date — with nobody's name on it.
+- **Step 3 before step 5**, for the same reason teardown releases the number
   before deleting the row: once the customer is gone, nothing identifies which
   calendar events to withdraw.
-- **`calls` needs no step**, because it has no customer link and no content
-  (F6.3, F10.6) — one of the quieter benefits of not storing transcripts.
-- **The whole thing is one transaction.** A half-deleted customer is a customer
-  who was told they were erased and was not.
+- **One transaction.** A half-deleted customer is a customer who was told they
+  were erased and was not.
 
-**Transcripts and recordings are never stored** (F10.6). They stay with Retell on
-a 30-day TTL set per agent at provisioning, are fetched on demand by signed URL,
-and **Ringly issues no deletion call** (F10.5) — the TTL expires long before the
-earliest Ringly deletion.
+#### Path 2 — the whole business, on a lifecycle deadline (F10.1a-ii)
+
+Triggered by the sweeper, not by a request. Customers and appointments are
+ordinary tenant rows and are removed at §2.9.4 step 7 along with everything else;
+no special handling and nothing exempt.
+
+**What survives a business deletion, in full:**
+
+| Survives                      | Contains                                                                                                                                           |
+| ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `departed_businesses` (F10.9) | Business id and name, joined and left dates, how it ended, amount owed, lifetime net revenue. **No caller name, no caller number, no appointment** |
+
+That is the entire list. **The departure record carrying no consumer data is an
+invariant, not an accident** — it exists to answer "what did this customer earn
+us" years later, and must never become the route by which a caller's details
+outlive the deletion meant to remove them. Anything added to it in future is
+checked against that.
+
+**Transcripts and recordings are never stored by Ringly** (F10.6). They sit with
+Retell on a 30-day TTL set per agent at provisioning and are fetched on demand by
+signed URL. On the 60-day paths the TTL has long expired by the time deletion
+runs, so nothing is required; **on the 10-day unactivated path it has not, and
+Ringly issues an explicit provider-side delete** (F10.5, R18).
 
 ## 2.11 The operator surface
 
@@ -2774,42 +2970,39 @@ machinery that has to be maintained.
 
 ### 2.14.1 Durability of money records (N10)
 
-The strictest requirement in the document, and the one with the least room for
-"we'll add it later" — a durability gap is only ever discovered by the event it
-was supposed to survive.
-
 **The protected set** is `billing_events`, `usage_records`, `billing_periods`,
 `pricing_policy` and `departed_businesses` (N10.1). Stripe holds the payments,
 but only Ringly holds which period a payment settled, under which policy version,
 against how many seconds of usage, and clamped by how much.
 
-| Layer                                                                      | Protects against              | Retention |
-| -------------------------------------------------------------------------- | ----------------------------- | --------- |
-| Point-in-time recovery on the primary                                      | Bad migration, errant delete  | ≥ 7 days  |
-| Automated backups replicated to a **second region**                        | Losing a region               | ≥ 90 days |
-| **Append-only export of the money tables to a different provider account** | **Losing the account itself** | ≥ 1 year  |
+**v3 uses what the database platform already provides.** No bespoke backup
+machinery:
 
-**The third layer is the one that is easy to skip and the one that matters
-most.** The first two live inside the same provider account and share its fate: a
-billing dispute, a credential compromise, or a mistaken account closure takes all
-copies at once. The export therefore goes to **a different provider under
-different credentials, write-only from the application's perspective, with object
-lock** — so the application, and anything that compromises it, can add to it and
-cannot remove from it.
+| Layer                                               | Protects against             | Retention |
+| --------------------------------------------------- | ---------------------------- | --------- |
+| Point-in-time recovery on the primary               | Bad migration, errant delete | ≥ 7 days  |
+| Automated backups replicated to a **second region** | Losing a region              | ≥ 90 days |
 
-- **It is an export, not a replica.** Newline-delimited JSON per table per day,
-  which restores without needing the schema that produced it. A replica of a
-  corrupted table is a corrupted replica.
-- **It is append-only by construction** (N10.4): settled rows are never updated
-  in place, so each day's export is a strict addition and the set of files is
-  itself the audit trail.
-- **The daily export job is an ordinary worker** (§2.2a) — idempotent, keyed by
-  date, safe to re-run.
+Two properties do most of the work here and both are free:
 
-**Restores are exercised on a schedule** (N10.5), **including from the export**,
-because it is the copy nothing else would ever exercise. The result is recorded;
-an untested third copy is the same as no third copy, with worse morale when it is
-needed.
+- **Settled rows are never updated in place** (N10.4). Corrections are new rows,
+  so any restore lands on a consistent history rather than a half-rewritten one,
+  and the tables are their own audit trail. This costs nothing if it is held to
+  from the first migration and is expensive to retrofit.
+- **Stripe is an independent copy of the payments** (N10.7). It fails separately
+  from Ringly's infrastructure, so the "what money moved" half of the record has
+  a second source without Ringly building anything.
+
+**Restores are exercised on a schedule and the result recorded** (N10.5).
+
+> **Not in v3: a third copy outside the provider account.** Both layers above
+> live in one provider account and share its fate. The eventual fix is an
+> append-only daily export — newline-delimited JSON per table, to storage under
+> separate credentials with object lock, so the application can add to it and
+> nothing that compromises the application can remove from it. **Deferred**
+> (§1.9): it is real work against a rare failure, Stripe covers the payments half
+> in the meantime, and the shape is recorded here so picking it up later is
+> implementation rather than design.
 
 ## 2.15 What has to change in code that already exists
 
@@ -2933,13 +3126,24 @@ charged until the rate is set.
   dropped call and a lost customer, with no transfer and no message taken. The
   `dropped` metric (F6.4) exists to show how often; revisit when it is measured
   rather than guessed.
-- **R21 — Suspension pauses billing, and two systems have to agree about it**
-  (F7.11b). Ringly pauses its own period; Stripe must enter `pause_collection` at
-  the same moment (§2.9.3). If they drift, a business is charged for exactly the
-  suspended days this design promises are free — and the failure is **silent**,
-  because each system is behaving correctly on its own terms. Test the pair, not
-  the parts: suspend, cross a would-be period boundary, restore, and assert that
-  nothing was invoiced and `ends_at` moved by the elapsed pause.
+- **R21 — Suspension has to stop one Stripe behaviour and preserve another, and
+  the two are usually configured together.** New invoices must stop (F7.11b)
+  while the open invoice stays retried and chased (F7.11b-i). Get it wrong in one
+  direction and a business is billed for a phone nobody answers; wrong in the
+  other and a recoverable business sits un-chased until it is deleted. **Both
+  failures are silent** — each system behaves correctly on its own terms.
+  Mitigation: the behavioural table in §2.9.3 is the acceptance criterion, the
+  Stripe mechanism is confirmed against the live API before Phase 6, and the test
+  covers the pair — suspend, cross a would-be period boundary, restore, then
+  assert that no new invoice was raised, that the original one was retried
+  throughout, and that `ends_at` moved by the elapsed pause.
+- **R22 — Every backup of the money records lives in one provider account**
+  (N10.2). A credential compromise or an account closure takes point-in-time
+  recovery and the cross-region copies together. **Accepted for v3 and deferred**
+  (§1.9): the failure is rare, and Stripe independently holds the payments
+  (N10.7) — though not which period they settled or under which terms, which is
+  precisely the part that would be lost. Revisit when there is revenue worth
+  missing.
 
 ## 2.18 Verified vendor capabilities (2026-07-30)
 
@@ -2976,51 +3180,52 @@ the check that the design is complete**, and it is maintained with the design: a
 requirement added to Part 1 with no entry here is a requirement nobody has
 designed for.
 
-| Requirements                | Satisfied by                                                                          |
-| --------------------------- | ------------------------------------------------------------------------------------- |
-| F1.1–F1.9 onboarding        | §2.4a.1 steps 1–7                                                                     |
-| F1.7a–c scope decline       | §2.4a.1 steps 4–6, §2.4a.2                                                            |
-| F1.11 contact email         | 005 (`contact_email`, `contact_email_verified_at`), §2.12                             |
-| F1.12–F1.12a checklist      | §2.4a.1 steps 8–9, §2.4a.3; 005 (`test_call_confirmed_at`, `activated_at`)            |
-| F1.13, F1.13a test calls    | §2.4a.2; 005 (`is_test_call`, written from `unbilled` at post-call); F9.12            |
-| F2.1a disclosure            | §2.15 (appended by Ringly at provisioning, not editable)                              |
-| F2.2–F2.3a booking          | §2.5.2 steps 1–8; 005 exclusion constraint                                            |
-| F2.4 identifying an appt    | §2.5.6                                                                                |
-| F2.5, N5 timezone           | 009 `local_date`; §2.8; rollup bucketing                                              |
-| F2.6 filler                 | §2.5.1 (`speak_during_execution`)                                                     |
-| F2.7–F2.7a fail-closed      | §2.5.3 `BusyLookup`, §2.5.4 `calendar_incidents`                                      |
-| F2.8–F2.9a horizons         | §2.5.2 step 3; 005 horizon columns + bound constraint                                 |
-| **F2.10–F2.11 no fallback** | **Agent prompt only — no design element, and none needed**                            |
-| F3.1–F3.6 catalogue, hours  | 006 (`sort_order`, `deactivated_at`, `service_versions`); §2.5.5 cache invalidation   |
-| F4 scheduling providers     | §2.6 `SchedulingProvider`; 007                                                        |
-| F5 recurrence               | 008; §2.7 materialiser, clash **and opening-hours** handling (F5.2e)                  |
-| F6.1–F6.3f analytics        | 009 `daily_business_stats`; §2.8; §2.8a composition                                   |
-| F6.5–F6.6 definitions       | 009 `outcome_rulesets` + `outcome_ruleset_version`; §2.8a definitions panel           |
-| F6.7–F6.8 billing history   | 010 `billing_periods`, `usage_records`; §2.8a table                                   |
-| F6.12 dashboard latency     | §2.8 pre-aggregation; live median bounded by range                                    |
-| F6.14 freshness             | §2.8a freshness line; 009 (nightly rollup, live median labelled as such)              |
-| F7.1–F7.14 billing          | 010; §2.9.1 state machine; §2.9.2 settlement; §2.9.3 Stripe                           |
-| **F7.11b suspension pause** | 010 (`paused_at`, `paused_seconds_total`); §2.9.1; §2.9.3 `pause_collection`; §2.10.1 |
-| F7.15–F7.16 terms change    | 010 `pricing_policy` pinned per period                                                |
-| F7.17–F7.18 disputes, tax   | §2.9.3; 010 `tax_cents`                                                               |
-| F7.19, F10.10 teardown      | §2.9.4, in order                                                                      |
-| F8 email                    | §2.12; 011 `email_log`; 010 digest opt-out                                            |
-| F9 operator                 | §2.11; 011 `daily_business_economics`; §2.8a operator composition                     |
-| F10.1–F10.3b lifecycle      | 011 `lifecycle_deadlines`; §2.10 sweeper                                              |
-| **F10.1a-i, -ii deletion**  | **§2.10.2 — self-serve and automated on both paths**                                  |
-| F10.4–F10.4b the number     | §2.10.1, including the reassignment chain                                             |
-| F10.5–F10.7 call content    | §2.10 (per-agent TTL) **+ the explicit 10-day-path delete, R18**                      |
-| F10.8 retention             | §2.10                                                                                 |
-| F10.9 departure record      | 011 `departed_businesses`; §2.9.4 order                                               |
-| N1 isolation                | §2.3.1 `tenantScoped`, RLS, isolation tests                                           |
-| N2 scale                    | §2.3.2 index layout; §2.8 pre-aggregation                                             |
-| N3 latency                  | §2.5.1 budget; §2.5.5 cache                                                           |
-| N4 serving cost             | §2.13                                                                                 |
-| N6 security                 | §2.14                                                                                 |
-| N7 dependencies             | §2.5.3, §2.5.4, §2.9.3 (usage written locally first)                                  |
-| **N8 hosting portability**  | **§2.2a — workers as HTTP endpoints**                                                 |
-| **N9 cost control**         | **§2.14 — deliberately small, sized for the expected volume**                         |
-| **N10 durability**          | **§2.14.1 — three copies, the third outside the provider account**                    |
+| Requirements                | Satisfied by                                                                        |
+| --------------------------- | ----------------------------------------------------------------------------------- |
+| F1.1–F1.9 onboarding        | §2.4a.1 steps 1–7                                                                   |
+| F1.7a–c scope decline       | §2.4a.1 steps 4–6, §2.4a.2                                                          |
+| F1.11 contact email         | 005 (`contact_email`, `contact_email_verified_at`), §2.12                           |
+| F1.12–F1.12a checklist      | §2.4a.1 steps 8–9, §2.4a.3; 005 (`test_call_confirmed_at`, `activated_at`)          |
+| F1.13, F1.13a test calls    | §2.4a.2; 005 (`is_test_call`, written from `unbilled` at post-call); F9.12          |
+| F2.1a disclosure            | §2.15 (appended by Ringly at provisioning, not editable)                            |
+| F2.2–F2.3a booking          | §2.5.2 steps 1–8; 005 exclusion constraint                                          |
+| F2.4 identifying an appt    | §2.5.6                                                                              |
+| F2.5, N5 timezone           | 009 `local_date`; §2.8; rollup bucketing                                            |
+| F2.6 filler                 | §2.5.1 (`speak_during_execution`)                                                   |
+| F2.7–F2.7a fail-closed      | §2.5.3 `BusyLookup`, §2.5.4 `calendar_incidents`                                    |
+| F2.8–F2.9a horizons         | §2.5.2 step 3; 005 horizon columns + bound constraint                               |
+| **F2.10–F2.11 no fallback** | **Agent prompt only — no design element, and none needed**                          |
+| F3.1–F3.6 catalogue, hours  | 006 (`sort_order`, `deactivated_at`, `service_versions`); §2.5.5 cache invalidation |
+| F4 scheduling providers     | §2.6 `SchedulingProvider`; 007                                                      |
+| F5 recurrence               | 008; §2.7 materialiser, clash **and opening-hours** handling (F5.2e)                |
+| F6.1–F6.3f analytics        | 009 `daily_business_stats`; §2.8; §2.8a composition                                 |
+| F6.5–F6.6 definitions       | 009 `outcome_rulesets` + `outcome_ruleset_version`; §2.8a definitions panel         |
+| F6.7–F6.8 billing history   | 010 `billing_periods`, `usage_records`; §2.8a table                                 |
+| F6.12 dashboard latency     | §2.8 pre-aggregation; live median bounded by range                                  |
+| F6.14 freshness             | §2.8a freshness line; 009 (nightly rollup, live median labelled as such)            |
+| F7.1–F7.14 billing          | 010; §2.9.1 state machine; §2.9.2 settlement; §2.9.3 Stripe                         |
+| **F7.11b, -i suspension**   | 010 (`paused_at`, `paused_seconds_total`); §2.9.1; §2.9.3 suspension table; §2.10.1 |
+| F7.15–F7.16 terms change    | 010 `pricing_policy` pinned per period                                              |
+| F7.17–F7.18 disputes, tax   | §2.9.3; 010 `tax_cents`                                                             |
+| F7.19, F10.10 teardown      | §2.9.4, in order                                                                    |
+| F8 email                    | §2.12; 011 `email_log`; 010 digest opt-out                                          |
+| F9 operator                 | §2.11; 011 `daily_business_economics`; §2.8a operator composition                   |
+| F10.1–F10.3b lifecycle      | 011 `lifecycle_deadlines`; §2.10 sweeper                                            |
+| **F10.1a-i, -ii deletion**  | **§2.10.2 — path 1 self-serve, path 2 by sweeper; both automated**                  |
+| F1.12a–F1.12b activation    | §2.4a.1 step 9 — one button, one `billing_status` write, nothing else               |
+| F10.4–F10.4b the number     | §2.10.1, including the reassignment chain                                           |
+| F10.5–F10.7 call content    | §2.10 (per-agent TTL) **+ the explicit 10-day-path delete, R18**                    |
+| F10.8 retention             | §2.10                                                                               |
+| F10.9 departure record      | 011 `departed_businesses`; §2.9.4 order                                             |
+| N1 isolation                | §2.3.1 `tenantScoped`, RLS, isolation tests                                         |
+| N2 scale                    | §2.3.2 index layout; §2.8 pre-aggregation                                           |
+| N3 latency                  | §2.5.1 budget; §2.5.5 cache                                                         |
+| N4 serving cost             | §2.13                                                                               |
+| N6 security                 | §2.14                                                                               |
+| N7 dependencies             | §2.5.3, §2.5.4, §2.9.3 (usage written locally first)                                |
+| **N8 hosting portability**  | **§2.2a — workers as HTTP endpoints**                                               |
+| **N9 cost control**         | **§2.14 — deliberately small, sized for the expected volume**                       |
+| **N10 durability**          | **§2.14.1 — PITR + cross-region; third copy deferred (§1.9, R22)**                  |
 
 **The one row carrying no design element is deliberate:** F2.10–F2.11 are prompt
 behaviour, with nothing to build and nothing to store.
