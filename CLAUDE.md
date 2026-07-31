@@ -34,8 +34,15 @@ later. Several commits per PR is correct and makes `git bisect` useful.
 
 **One PR is one reviewable idea that leaves `main` deployable.** A delivery
 phase is not a PR — phases split by layer: migration+types → backend → UI →
-enablement. PRs are **squash-merged**, so `git log main` reads as one entry per
-feature and `git revert` is trivial.
+enablement.
+
+**Do not squash-merge.** Revised 2026-07-31. Merge with `--no-ff` and keep the
+individual commits. Each commit's message carries the _why_ for one decision, and
+that reasoning is the part which cannot be reconstructed from the diff — squashing
+destroys exactly the thing atomic commits exist to preserve, and replaces a dozen
+specific explanations with one summary nobody can act on. `git log main
+--first-parent` still reads as one entry per feature because of the merge commit,
+and `git revert -m 1` on that commit is just as trivial as reverting a squash.
 
 **PR descriptions state the problem, not the solution.** Describe what was
 broken or missing and why it mattered; the diff explains the implementation.

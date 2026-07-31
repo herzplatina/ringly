@@ -91,6 +91,16 @@ Revised again 2026-07-31 — see below._
 > and not the billing period. Suspension stops _service_, and therefore usage and
 > any new charge; it does not buy time back.
 >
+> **The delivery plan was then rebuilt from scratch** by deriving the order from
+> Part 1's dependencies rather than patching the existing one (§2.16). It moved:
+> billing from phase 6 to **phase 4**, because the dashboard reports billing and
+> the dependency had been pointing the wrong way; lifecycle to **phase 5**, onto
+> the critical path; recurrence later, since it needs the provider abstraction
+> and hours. **Migrations are renumbered so their order matches ship order** —
+> the old plan had 008 shipping after 011, which cannot happen. §2.16.1 names the
+> minimum set that can charge a real customer (phases 0–5) and §2.16.2 lists every
+> difference from the previous plan.
+>
 > **A final pass over the whole document** then fixed: an invariant that claimed
 > a business is never charged for an unanswered day, which the fixed-period model
 > contradicts (I5); an operator alert firing for every business that used its
@@ -98,8 +108,8 @@ Revised again 2026-07-31 — see below._
 > more instances of the migration-ordering bug — `calendar_incidents`,
 > `email_log` and `billing_status` all owned by migrations later than the phase
 > that reads them, plus **no phase owning the email dispatcher at all** (now
-> Phase 1b) and the billing history assigned to a phase before the table it reads
-> exists. Migration 011 is split into 011 and 012, since two phases each needed
+> its own phase) and the billing history assigned to a phase before the table it reads
+> exists. Migration 007 is split into 007 and 012, since two phases each needed
 > half of it.
 >
 > The same pass corrected the contradictions and gaps found reading Part 1
@@ -109,7 +119,7 @@ Revised again 2026-07-31 — see below._
 > `contact_email` and the horizons arriving in a migration three phases after the
 > phase that needs them (005), no `is_test_call` column for the counter F1.13
 > depends on, no schema behind the outcome definitions F6.5–F6.6 promise, and an
-> activation step that Phase 2 could not finish without Phase 6 (§2.16). New
+> activation step that onboarding could not finish without billing (§2.16). New
 > requirements: F1.13a–d (the allowance, the unbind, and what makes a call a test call), F2.10–F2.11 (no transfer,
 > no voicemail), F3.5–F3.6 (hours are editable, timezone is not), F6.14 (say how
 > fresh the dashboard is), N8, N9, N10.
@@ -1028,6 +1038,16 @@ charge failed first (F7.11).
     charges nothing for them. **What Ringly absorbs, Ringly measures.**
   - It is bounded at seven days, once (F7.11c-i).
 
+  **This makes grace mean two slightly different things, and that is accepted.**
+  Where the fee declined, grace is _service continues and you still owe for it_;
+  where the settlement declined, grace is _service continues and it is free_. The
+  difference is not a policy choice about which failure deserves more sympathy —
+  it falls out of whether a period happened to be open. **Recorded rather than
+  smoothed over**, because the two ways to remove it are both worse: opening a
+  period to bill against would manufacture a $100 charge on an already-failing
+  account, and withholding service during the second kind of grace would punish
+  the business that failed the _smaller_ of the two charges.
+
 - **F7.11d** **Which period suspension lands in depends on which charge failed,
   and the two cases are not symmetric.** There are only two ways to fail a payment
   (F7.11) and they sit at opposite ends of a period, so both are worked through
@@ -1398,7 +1418,8 @@ should be:
 - **"Grace always costs the business nothing."** Grace usage **is billed** when a
   period is open to bill it to, which is the ordinary case; it is free only when
   the failed charge was itself a settlement, because that period closed the same
-  day (F7.11c-ii).
+  day (F7.11c-ii). **The asymmetry is known and accepted** — see F7.11c-ii for
+  why the two ways of removing it are both worse than living with it.
 
 ### F8 — Email
 
@@ -1516,9 +1537,9 @@ open, or what is destroyed in forty-eight hours.
   no marketing voice.
 - **F8.13** The set: business hit its cap (with cost-to-serve and margin, so an
   unprofitable tenant is visible immediately), payment failed, calendar
-  unreachable, activation stuck, **business deleted** — the last carrying
-  lifetime net revenue and the amount left owing, since deletion is the only
-  moment those totals are final (F10.3c).
+  unreachable, activation stuck, **unactivated and about to expire** (F9.6a),
+  **business deleted** — the last carrying lifetime net revenue and the amount
+  left owing, since deletion is the only moment those totals are final (F10.3c).
 - **F8.14** These move to Slack later (F9.6). The format carries the same
   information either way, so the move is a transport change rather than a
   rewrite.
@@ -1583,9 +1604,24 @@ open, or what is destroyed in forty-eight hours.
   per business; nothing is carried here in advance of that.
 - **F9.6** **Operator alerts** are the set in F8.13 and no other: a business
   reaching its cap (F7.9b, with cost-to-serve and margin), a payment failure,
-  a calendar unreachable (F2.7), an activation stuck (F1.13a), and a business
-  deleted. Delivered by **email** initially. _Moving operator alerting to Slack
-  is deferred (§1.9)._
+  a calendar unreachable (F2.7), an activation stuck (F1.13a), **an unactivated
+  business approaching deletion** (F9.6a), and a business deleted (F10.3c).
+  Delivered by **email** initially. _Moving operator alerting to Slack is
+  deferred (§1.9)._
+- **F9.6a** **An unactivated business is raised to the operator before its 10-day
+  clock runs out**, whether or not it is stuck (F1.13a). The two conditions are
+  different and both need a human:
+  - **Stuck** means it _cannot_ activate — no test call ever worked — and Ringly
+    is the blocker.
+  - **Expiring** means it _has not_ activated, for any reason, and is about to be
+    deleted with its number released. It may be a business that got busy, hit a
+    problem Ringly never saw, or is one prompt away from paying.
+  - **This is the last moment anything can be done.** After deletion the number
+    is gone to the carrier and the account is a stranger (F10.4b) — an outcome
+    worth one email to avoid, given a signup already cost Ringly enrichment,
+    a number, and up to five calls.
+  - **Timed to leave room to act**, not fired at the deadline. The operator can
+    then reach out, pause the clock (F10.1b), or let it lapse deliberately.
 - **F9.7** **The operator dashboard follows the same freshness rule as the
   business one** (F6.14): served from the nightly rollup, complete to a stated
   date, with **median duration the one live figure and labelled as such**. One
@@ -2129,7 +2165,7 @@ dropped-call definition (F6.3), calendar-provider switching out of scope (R9).
 
 **Still open:**
 
-- **Q1 — The per-connected-minute rate (Phase 6).** TBD; held as configuration
+- **Q1 — The per-connected-minute rate (Phase 4).** TBD; held as configuration
   (F7.8), so billing can be built and tested with a placeholder but **cannot be
   switched on for real customers until it is set**.
 - **Q2 — Resolved.** Any caller, but only productive outcomes. F7.6 and F7.7
@@ -2138,7 +2174,7 @@ dropped-call definition (F6.3), calendar-provider switching out of scope (R9).
 - **Q3 — Ringly's contact email address** (F10.2). It is the single channel for
   cancellation, deletion and reactivation, so it is needed by the dashboard, the
   transactional emails, and the footer of every message Ringly sends. **Blocks
-  Phase 7.**
+  Phase 5.**
 - **Q4 — Resolved.** Ringly has no channel to the calling customer at all, and
   this is a product boundary rather than a deferral (§1.4).
 - **Q5 — Resolved.** Every email is declared and templated (F8.2, F8.3), and the
@@ -2429,10 +2465,10 @@ false`, and **`is_test_call boolean not null default false`**.
   `transcript` and no `recording_url` — Ringly stores neither (F10.6), and a
   stored recording URL would rot because Retell's are signed.
 
-- **`businesses` gains the onboarding checklist**, because Phase 2 needs it and
-  billing (010) is three phases later: `contact_email`, `contact_email_verified_at`,
+- **`businesses` gains the onboarding checklist**, because Phase 3 needs it and
+  billing (006) is three phases later: `contact_email`, `contact_email_verified_at`,
   `test_call_confirmed_at`, `activated_at` (F1.11, F1.12). The **payment-method**
-  leg of the checklist is read from Stripe in Phase 6, not stored here.
+  leg of the checklist is read from Stripe in Phase 4, not stored here.
 - **`businesses.test_call_allowance int not null default 5`** (F1.13). A column
   rather than a constant so the platform default can move without a deploy and so
   the operator's reset (F10.1c) is a write to one row rather than a special case
@@ -2440,7 +2476,7 @@ false`, and **`is_test_call boolean not null default false`**.
   ceiling they are counted against.
 - **`businesses` gains the two horizons** — `booking_horizon_days default 70`
   and `materialisation_horizon_days default 90` (F2.9, F5.2) — for the same
-  reason: Phases 3, 4 and 8 read them, and none of those depends on billing.
+  reason: Phases 6, 7 and 9 read them, and none of those depends on billing.
   A check constraint enforces the bounds **and their relationship**:
   `booking_horizon_days between 7 and 180`,
   `materialisation_horizon_days between 30 and 365`, and
@@ -2449,27 +2485,113 @@ false`, and **`is_test_call boolean not null default false`**.
   a caller books into a series that has not been generated (F2.9a).
 - **Composite indexes** leading with `business_id` on `appointments`, `calls`,
   `customers`; plus `(business_id, started_at)` on `calls`, which is what the
-  live median query needs (009).
+  live median query needs (010).
 - **`calendar_incidents(id, business_id, opened_at, closed_at, last_error,
 notified_at)`** — Phase 1 builds fail-closed booking and the one-email-per-outage
   rule (F2.7, §2.5.4), and neither works without somewhere to record an open
   incident.
 - **`email_log(id, business_id, kind, idempotency_key unique, sent_at, status)`**
-  — Phase 2 sends the email-verification message (F1.11) and every phase after
-  it sends something. The idempotency key is written **before** the send (F8.5),
+  — Phase 3 sends the email-verification message (F1.11) and every phase from
+  there on sends something. The idempotency key is written **before** the send (F8.5),
   so the log is not an audit trail bolted on later; it is the mechanism.
 - **`businesses.billing_status`** with the states in §2.9.1, defaulting to
   `unbilled`. It looks like a billing column and belongs to billing, but **Phase 1
   already depends on it**: `is_test_call` is written from it at the post-call
-  webhook (F1.13c), and Phase 2's activation is the write that moves it off
-  `unbilled`. Everything Stripe-specific stays in 010.
+  webhook (F1.13c), and the Activate button in Phase 4 is the write that moves it
+  off `unbilled`. Everything Stripe-specific stays in 006.
+- **`businesses.agent_bound_at timestamptz`** — null when the agent is unbound.
+  F6.15 must tell a business whether its number is answering **on every dashboard
+  load**, and §2.10.1 unbinds it for three different reasons; without a local
+  flag the only source of truth is Retell, and the dashboard would call a third
+  party to render a page. It is written by the same transaction that binds or
+  unbinds, and **reconciled against the provider by the read-after-write check**
+  (F1.12a-ii) rather than trusted blindly.
 - **`tenant_id_of(uuid)`** — the `security definer stable` RLS helper.
 
-**Three of the columns above sit in 005 for the same reason** — Phase 1 or 2
-reads them and the migration that would otherwise own them lands five or six
-phases later. A schema can land inert ahead of its use; it cannot land after it.
+**Three of the columns above sit in 005 for the same reason** — an early phase
+reads them and the migration that would otherwise own them lands several phases
+later. A schema can land inert ahead of its use; it cannot land after it.
 
-### 006 — service versioning (F3.4)
+### 006 — billing (F7)
+
+```
+pricing_policy(id, version unique, effective_from,
+               fixed_fee_cents, cap_cents, per_minute_cents,
+               billable_outcomes text[])
+
+billing_periods(id, business_id, seq, starts_at, ends_at, timezone,
+                pricing_policy_id, status, fixed_fee_charged_at,
+                usage_settled_at, cancellation_requested_at,
+                free_from, suspended_at, resumed_at,
+                unique (business_id, seq))
+
+usage_records(id, business_id, billing_period_id, call_id, occurred_at,
+              kind, quantity_seconds, unit_cents, amount_cents)
+
+billing_events(id, business_id, stripe_event_id unique, kind,
+               amount_cents, tax_cents, fee_cents, occurred_at, payload)
+
+cost_records(id, business_id, call_id, occurred_at, source, kind, amount_cents)
+
+businesses.stripe_customer_id, stripe_subscription_id,
+          stats_digest_opted_out_at
+```
+
+`contact_email`, `activated_at`, `billing_status`, `email_log` and the two
+horizons are **not here** — they land in 005, because Phases 1–3 read them and
+none of those depends on billing. **Only what Stripe touches belongs in this
+migration.**
+
+Four deliberate choices:
+
+- **`billing_periods` rows are authoritative**, not arithmetic over
+  `activated_at`. Cancellation, suspension and reactivation all break
+  `activated_at + n × 30 days`, and a settled period must be immutable for
+  reconciliation (F7.16).
+- **`starts_at` and `ends_at` are written once and never change** (F7.11b). Every
+  period is exactly 30 calendar days. There is no extension, no proration, and no
+  arithmetic anywhere that adjusts a period's boundaries after it opens — which
+  is what keeps `billing_periods` reconcilable and the billing history readable
+  (F6.7). The **only** field of an open period that changes is `usage_settled_at`,
+  and setting it closes the period for good (F7.16).
+- **`suspended_at` and `resumed_at` are a record, not a mechanism.** They mark
+  the days a period was not being served, so the dashboard can label the row
+  (F6.7) and an operator can answer "why did this business only get eighteen
+  days" without reconstructing it from `billing_events`. **Nothing computes from
+  them** — no boundary moves, no charge is adjusted. At most one suspension can
+  fall inside one period (F7.11f), so a pair of columns is enough and a table of
+  intervals would be storing a case that cannot arise.
+- **`pricing_policy_id` is pinned per period**, so changing the fee or the cap
+  cannot retroactively alter a closed invoice (F7.16). `billable_outcomes` holds
+  the F7.6 predicate as data, so widening billing to every connected minute is a
+  new policy row rather than a deploy (F7.15).
+- **`usage_records.quantity_seconds`** — seconds, not minutes. The round-up to
+  whole minutes happens once at settlement (F7.7a), never per row. `unit_cents`
+  and `amount_cents` on a usage row are therefore **indicative, not the charge**:
+  the charge is computed from the summed seconds at settlement, and a row's own
+  `amount_cents` exists only so an unsettled period can show a running estimate
+  (F7.13). Nothing may sum `amount_cents` to produce an invoice.
+- **`tax_cents` is stored but never computed** (F7.18). Stripe Tax calculates it;
+  Ringly records the figure Stripe returned so a period can be reconciled against
+  a bank statement without calling Stripe back.
+
+### 007 — lifecycle (F10)
+
+```
+lifecycle_deadlines(business_id pk, kind, due_at, paused_at, paused_by, reason)
+departed_businesses(business_id pk, name, joined_at, left_at, ended_by,
+                    owed_at_departure_cents, lifetime_net_revenue_cents)
+```
+
+**`lifecycle_deadlines` exists because the operator can pause a clock** (F10.1b).
+A deadline computed on the fly from `created_at + 10 days` cannot be paused; a
+stored `due_at` with a nullable `paused_at` can. Every lifecycle transition in
+§2.10 reads from this table.
+
+`departed_businesses` carries **no consumer data** and no RLS policy — it is
+reachable only through the ops module (§2.11).
+
+### 008 — service versioning (F3.4)
 
 ```
 service_versions(id, service_id, business_id, name, price_cents,
@@ -2489,7 +2611,7 @@ hides a service from the agent while leaving every appointment booked against it
 intact, and `service_versions` rows are never removed, which is what makes the
 last-known-price fallback possible after an actual delete.
 
-### 007 — scheduling credentials (F4)
+### 009 — scheduling credentials (F4)
 
 ```
 businesses.scheduling_provider text not null default 'google'
@@ -2503,20 +2625,7 @@ Generalises `google_calendar_id`, `google_calendar_event_id` and
 `google_refresh_token`. There is **no `none` provider** — a calendar is mandatory
 (F4.1).
 
-### 008 — recurrence (F5)
-
-```
-appointment_series(id, business_id, customer_id, service_id, rrule, timezone,
-                   dtstart, until, status)
-appointments.series_id, appointments.occurrence_date
-unique (series_id, occurrence_date)
-```
-
-The unique key is what makes materialisation idempotent. Occurrences are ordinary
-appointment rows, so conflict checking, calendar sync and analytics work on them
-unchanged.
-
-### 009 — analytics (F6, F9)
+### 010 — analytics (F6, F9)
 
 ```
 daily_business_stats(
@@ -2575,84 +2684,18 @@ The **operator dashboard reads the same table** (F9.2), grouped by business and
 summed into calendar months, plus `cost_records` and `billing_events` for the
 money. There is no second analytics pipeline.
 
-### 010 — billing (F7)
+### 011 — recurrence (F5)
 
 ```
-pricing_policy(id, version unique, effective_from,
-               fixed_fee_cents, cap_cents, per_minute_cents,
-               billable_outcomes text[])
-
-billing_periods(id, business_id, seq, starts_at, ends_at, timezone,
-                pricing_policy_id, status, fixed_fee_charged_at,
-                usage_settled_at, cancellation_requested_at,
-                free_from, suspended_at, resumed_at,
-                unique (business_id, seq))
-
-usage_records(id, business_id, billing_period_id, call_id, occurred_at,
-              kind, quantity_seconds, unit_cents, amount_cents)
-
-billing_events(id, business_id, stripe_event_id unique, kind,
-               amount_cents, tax_cents, fee_cents, occurred_at, payload)
-
-cost_records(id, business_id, call_id, occurred_at, source, kind, amount_cents)
-
-businesses.stripe_customer_id, stripe_subscription_id,
-          stats_digest_opted_out_at
+appointment_series(id, business_id, customer_id, service_id, rrule, timezone,
+                   dtstart, until, status)
+appointments.series_id, appointments.occurrence_date
+unique (series_id, occurrence_date)
 ```
 
-`contact_email`, `activated_at`, `billing_status`, `email_log` and the two
-horizons are **not here** — they land in 005, because Phases 1–4 read them and
-none of those depends on billing. **Only what Stripe touches belongs in this
-migration.**
-
-Four deliberate choices:
-
-- **`billing_periods` rows are authoritative**, not arithmetic over
-  `activated_at`. Cancellation, suspension and reactivation all break
-  `activated_at + n × 30 days`, and a settled period must be immutable for
-  reconciliation (F7.16).
-- **`starts_at` and `ends_at` are written once and never change** (F7.11b). Every
-  period is exactly 30 calendar days. There is no extension, no proration, and no
-  arithmetic anywhere that adjusts a period's boundaries after it opens — which
-  is what keeps `billing_periods` reconcilable and the billing history readable
-  (F6.7). The **only** field of an open period that changes is `usage_settled_at`,
-  and setting it closes the period for good (F7.16).
-- **`suspended_at` and `resumed_at` are a record, not a mechanism.** They mark
-  the days a period was not being served, so the dashboard can label the row
-  (F6.7) and an operator can answer "why did this business only get eighteen
-  days" without reconstructing it from `billing_events`. **Nothing computes from
-  them** — no boundary moves, no charge is adjusted. At most one suspension can
-  fall inside one period (F7.11f), so a pair of columns is enough and a table of
-  intervals would be storing a case that cannot arise.
-- **`pricing_policy_id` is pinned per period**, so changing the fee or the cap
-  cannot retroactively alter a closed invoice (F7.16). `billable_outcomes` holds
-  the F7.6 predicate as data, so widening billing to every connected minute is a
-  new policy row rather than a deploy (F7.15).
-- **`usage_records.quantity_seconds`** — seconds, not minutes. The round-up to
-  whole minutes happens once at settlement (F7.7a), never per row. `unit_cents`
-  and `amount_cents` on a usage row are therefore **indicative, not the charge**:
-  the charge is computed from the summed seconds at settlement, and a row's own
-  `amount_cents` exists only so an unsettled period can show a running estimate
-  (F7.13). Nothing may sum `amount_cents` to produce an invoice.
-- **`tax_cents` is stored but never computed** (F7.18). Stripe Tax calculates it;
-  Ringly records the figure Stripe returned so a period can be reconciled against
-  a bank statement without calling Stripe back.
-
-### 011 — lifecycle (F10)
-
-```
-lifecycle_deadlines(business_id pk, kind, due_at, paused_at, paused_by, reason)
-departed_businesses(business_id pk, name, joined_at, left_at, ended_by,
-                    owed_at_departure_cents, lifetime_net_revenue_cents)
-```
-
-**`lifecycle_deadlines` exists because the operator can pause a clock** (F10.1b).
-A deadline computed on the fly from `created_at + 10 days` cannot be paused; a
-stored `due_at` with a nullable `paused_at` can. Every lifecycle transition in
-§2.10 reads from this table.
-
-`departed_businesses` carries **no consumer data** and no RLS policy — it is
-reachable only through the ops module (§2.11).
+The unique key is what makes materialisation idempotent. Occurrences are ordinary
+appointment rows, so conflict checking, calendar sync and analytics work on them
+unchanged.
 
 ### 012 — operator economics (F9)
 
@@ -2662,8 +2705,8 @@ daily_business_economics(business_id, local_date, revenue_net_cents,
                          primary key (business_id, local_date))
 ```
 
-**Split from 011 rather than sharing it**, because 011 lands with Phase 7 and
-this with Phase 9 (§2.16), and a migration that two phases each need half of is
+**Split from 007 rather than sharing it**, because 007 lands with Phase 5 and
+this with Phase 10 (§2.16), and a migration that two phases each need half of is
 a migration neither can ship. One concern per file, as the source-control rules
 require. No consumer data, no RLS policy; ops module only.
 
@@ -3088,7 +3131,7 @@ turns it back on: activate (F1.13b) or settle what is owed (F7.10b).
 **KPI row — five stat tiles**
 
 Total calls · Average duration · **Median duration** _(live)_ · **Calls that
-booked** · Revenue booked _(est.)_. Median is computed live (§2.4/009) and
+booked** · Revenue booked _(est.)_. Median is computed live (§2.4/010) and
 **labelled live** (F6.14); the rest come from the rollup. "Est." on revenue is
 required wherever the range includes future appointments (F6.3a).
 
@@ -3130,7 +3173,7 @@ units, and one plot carrying both needs two axes.
 **Definitions and freshness — two fixed elements, not decoration**
 
 - **An outcome-definitions panel** beside the outcome chart, rendered from
-  `outcome_rulesets.definitions` (F6.5, 009) rather than written into the
+  `outcome_rulesets.definitions` (F6.5, 010) rather than written into the
   component. It is the same text the operator sees (F9.11) because it is the same
   row. It also carries the two facts that are otherwise invisible: that figures
   cover **only appointments booked through Ringly** (F6.10), and that
@@ -3713,7 +3756,7 @@ be summed into anything an accountant recognises.
 nightly rollup the business reads** (F9.7) — grouped by business and summed into
 calendar months. There is no separate operator pipeline and no fresher copy: the
 median is computed live and labelled, exactly as on the business dashboard
-(§2.4/009), and everything else is complete to last night.
+(§2.4/010), and everything else is complete to last night.
 
 **Controls** (F9.9–F9.13): set and clear cancelled status (the only place that
 exists), pause an unactivated clock, **reset a test-call allowance and rebind**
@@ -3759,7 +3802,7 @@ able to land a suspension notice in spam.** Reports is the stream at risk, and i
 is the one carrying nothing urgent.
 
 **The one opt-out is the digest** (F8.4), stored as
-`businesses.stats_digest_opted_out_at` (010) and honoured by the dispatcher.
+`businesses.stats_digest_opted_out_at` (006) and honoured by the dispatcher.
 `registry.ts` marks every other kind transactional, and the dispatcher **refuses
 to consult an opt-out for a transactional kind** — the check is not "is this
 business opted out" but "is this kind opt-out-able at all", so no future edit can
@@ -3870,62 +3913,96 @@ discovered late:
 
 ## 2.16 Delivery plan
 
-Each phase is independently shippable. **Phase 1 is a prerequisite for
-everything**; the rest are independent of each other after it.
+**Rebuilt 2026-07-31 by deriving the order from Part 1's dependencies rather
+than from the shape of the design.** Doing it that way moved several phases, and
+the differences from the previous plan are recorded at the end so the reasoning
+is not lost.
 
-| Phase                        | Scope                                                                                                                                                                                                                            | Needs       | Flag |
-| ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------- | ---- |
-| **0 — Google verification**  | Submit `calendar.events` for sensitive-scope review (R2). **Calendar time, not engineering time** — start it on day one and let it run alongside everything below                                                                | —           | n/a  |
-| **1 — Foundations**          | 005; `tenantScoped` + isolation tests; fail-closed booking and incidents (R1); delete the customer-messaging schema and the transcript route; recording disclosure; call capture                                                 | —           | no   |
-| **1b — Email plumbing**      | The dispatcher, `registry.ts`, idempotency against `email_log`, the four sending identities (F8.2, F8.5, F8.11). **Templates already exist** (PR #4); nothing here is business logic                                             | 1           | no   |
-| **2 — Onboarding**           | Scope check and the declined-calendar path (F1.7a–c); contact email and verification; test-call allowance, **the unbind at five** (F1.13a) and confirmation; the checklist screen (§2.4a) **up to but not including the charge** | 1, 1b       | no   |
-| **3 — Catalogue + cache**    | 006; tenant config cache; F3 end to end                                                                                                                                                                                          | 1           | no   |
-| **4 — Provider abstraction** | 007; extract `SchedulingProvider`; port Google behind it                                                                                                                                                                         | 1           | no   |
-| **5 — Call analytics**       | 009; rollup worker; F6 **except the billing history** — service status, KPIs, charts, definitions, freshness (§2.8a)                                                                                                             | 1           | no   |
-| **6 — Billing**              | 010; state machine; settlement; reconciliation (§2.9.5); Stripe configuration; **the activation charge that completes Phase 2**; **the billing history rows of Phase 5's dashboard**; F7                                         | 1, 1b, 2, 5 | yes  |
-| **7 — Lifecycle**            | 011; sweeper; unbind/rebind (§2.10.1); teardown incl. the deletion emails (F10.3c); departure record; F10                                                                                                                        | 1, 1b, 6    | yes  |
-| **8 — Recurrence**           | 008; materialiser; clash and opening-hours handling; F5                                                                                                                                                                          | 1, 4        | yes  |
-| **9 — Operator dashboard**   | 012; `/ops` walled garden; view-as-business; F9                                                                                                                                                                                  | 1, 5, 6     | yes  |
+**Migration numbers now match ship order.** The previous plan had migration 008
+shipping in the eighth phase, after 009, 010 and 011 — which is not a thing that
+can happen, since migrations apply in numeric sequence. Every number below lands
+in the phase beside it.
 
-**Activation is split across 2 and 6, deliberately.** F1.12a makes activation and
-the first $100 charge the same event, so a Phase 2 that "finishes onboarding"
-would need Stripe — and Phase 6 needs businesses to exist before it can be
-tested. Cutting it at the charge breaks the loop: **Phase 2 builds the checklist
-and everything that makes its three items go green; Phase 6 adds the button that
-takes the money.** Between the two, a business can be provisioned and can place
-test calls but cannot activate, which is exactly the state the flag describes.
+| Phase                        | Scope                                                                                                                                                                                                                                                                                                                                           | Migration | Needs      | Flag |
+| ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- | ---------- | ---- |
+| **0 — Google verification**  | Submit `calendar.events` for sensitive-scope review (R2). **Calendar time, not engineering time** — start it on day one and let it run alongside everything below                                                                                                                                                                               | —         | —          | n/a  |
+| **1 — Foundations**          | `tenantScoped` + isolation tests (N1); fail-closed booking and incidents (F2.7, R1); hours and horizon enforcement (F2.8, F2.9); the exclusion-constraint race (F2.3a); agent prompt — disclosure, no transfer, read-back (F2.1a, F2.10, F2.11); call capture and `is_test_call`; delete the customer-messaging schema and the transcript route | **005**   | —          | no   |
+| **2 — Email plumbing**       | Dispatcher, `registry.ts`, idempotency against `email_log`, four sending identities (F8). Templates already exist (PR #4); no business logic here                                                                                                                                                                                               | —         | 1          | no   |
+| **3 — Onboarding**           | Scope check and declined-calendar path (F1.7a–c); contact email and verification (F1.11); test-call allowance, unbind at five, confirmation (F1.13); enrichment rate limit and spend ceiling (N9); the checklist (§2.4a) **up to but not including the charge**                                                                                 | —         | 1, 2       | yes  |
+| **4 — Billing**              | State machine (§2.9.1); settlement and the cap (§2.9.2); Stripe configuration (§2.9.3); recovery and reconciliation (§2.9.5); **the Activate button that completes Phase 3**; F7                                                                                                                                                                | **006**   | 1, 2, 3    | yes  |
+| **5 — Lifecycle**            | Sweeper and deadlines (§2.10); unbind/rebind (§2.10.1); unactivated-expiring alert (F9.6a); teardown and the deletion emails (§2.9.4, F10.3c); departure record; F10                                                                                                                                                                            | **007**   | 1, 2, 4    | yes  |
+| **6 — Catalogue + hours**    | Service versioning and reordering; opening-hours editing; the tenant config cache; F3                                                                                                                                                                                                                                                           | **008**   | 1          | no   |
+| **7 — Provider abstraction** | Extract `SchedulingProvider` (§2.6); port Google behind it; F4                                                                                                                                                                                                                                                                                  | **009**   | 1          | no   |
+| **8 — Business dashboard**   | Rollup worker; `outcome_rulesets`; the whole of §2.8a — service status, KPIs, charts, definitions, freshness, **billing history**; delete-a-customer (F10.1a-i); F6                                                                                                                                                                             | **010**   | 1, 4, 6    | no   |
+| **9 — Recurrence**           | Materialiser; clash and opening-hours handling; F5                                                                                                                                                                                                                                                                                              | **011**   | 1, 6, 7    | yes  |
+| **10 — Operator dashboard**  | `/ops` walled garden (§2.11); economics; view-as-business; F9                                                                                                                                                                                                                                                                                   | **012**   | 1, 4, 5, 8 | yes  |
 
-**Three dependencies were only visible once the schema was written down**, and
-each is the same mistake in a different place — a table or column that a later
-migration owned but an earlier phase reads:
+### 2.16.1 Why this order
 
-- **Email plumbing is now Phase 1b**, because Phase 2 sends the verification
-  email and every phase after it sends something. It had no owning phase at all,
-  and `email_log` sat in a migration six phases downstream.
-- **`calendar_incidents` and `billing_status` moved into 005.** Phase 1 opens
-  incidents and writes `is_test_call` from the billing status; both were defined
-  in migrations it does not run.
-- **The billing history is Phase 6, not Phase 5.** F6.7 needs `billing_periods`,
-  which does not exist until 010. Phase 5 delivers everything else on the
-  dashboard and the history rows arrive with the thing they describe.
+**The critical path to a paying customer is phases 0–5, and nothing else.** A
+business can sign up, be charged, be chased when it fails, and be removed when it
+never comes back. Everything after that improves a product that already works:
 
-**Phase 0 is not engineering work and does not gate any other phase**, but it
-gates _launch_ — a refresh token revoked after seven days (R2) stops booking for
-every business, and review takes weeks that cannot be compressed by starting
-late.
+|                                       | Phases           | Without them                                                                                                                      |
+| ------------------------------------- | ---------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| **Minimum to charge a real customer** | 0, 1, 2, 3, 4, 5 | —                                                                                                                                 |
+| **Enhancements**                      | 6, 7, 8, 9, 10   | The agent still answers, books and bills; the business cannot edit its catalogue, see analytics, or set up a standing appointment |
+
+**Three dependencies point the opposite way from the previous plan:**
+
+- **Billing no longer waits for the dashboard.** The old plan had Phase 6 needing
+  Phase 5 because the billing history is a dashboard element. That is backwards:
+  the dashboard _reports_ billing, so **the dashboard depends on billing**. Moving
+  it shortens the path to revenue by a whole phase and puts the billing history
+  in the same phase as the table it reads.
+- **Lifecycle follows billing directly**, because teardown settles a period and
+  the departure record needs lifetime revenue (F10.10). It is on the critical
+  path: without it, a business that stops paying is served forever.
+- **Recurrence moved later, not earlier.** It needs the provider abstraction
+  (calendar writes) and opening hours (F5.2e), and it is the one headline feature
+  the product is still usable without.
+
+**Catalogue and provider abstraction (6, 7) depend only on foundations** and can
+run in parallel with the billing path, or slip, without blocking revenue.
+
+### 2.16.2 What changed from the previous plan
+
+| Was                                                                                  | Now                                              | Why                                                                                                   |
+| ------------------------------------------------------------------------------------ | ------------------------------------------------ | ----------------------------------------------------------------------------------------------------- |
+| Billing at 6, needing analytics at 5                                                 | **Billing at 4**, dashboard at 8 needing billing | The dependency was inverted; revenue was gated on reporting                                           |
+| Recurrence at 8 with migration **008**                                               | Recurrence at 9 with migration **011**           | A migration cannot ship after higher-numbered ones                                                    |
+| Email plumbing unassigned, `email_log` in the lifecycle migration                    | **Phase 2**, `email_log` in 005                  | Every phase from 3 onward sends something                                                             |
+| `calendar_incidents`, `billing_status` in later migrations                           | Both in **005**                                  | Phase 1 opens incidents and writes `is_test_call` from billing status                                 |
+| One migration split across Phases 7 and 9                                            | **007** and **012**, one concern each            | A migration two phases each need half of is one neither can ship                                      |
+| Phase 2 unflagged                                                                    | **Flagged**                                      | It ends at a checklist with an Activate button that cannot yet take money — a visibly half-built flow |
+| Hours/horizon enforcement, prompt rules, rate limiting, delete-a-customer unassigned | Assigned to 1, 1, 3, 8                           | Each was a requirement with no phase                                                                  |
+
+### 2.16.3 Rules that still hold
 
 **Phases split by layer** — migration+types → backend → UI → enablement — because
 each merges green independently and a schema can land inert before anything uses
-it. **Phase 6 additionally splits by concern** (subscription, then usage and cap,
+it. **Phase 4 additionally splits by concern** (subscription, then usage and cap,
 then settlement), because "billing" as one PR is unreviewable.
 
-**Phases 1–5 need no flags:** each is invisible to users or a strict improvement,
-and complete when merged. **Phases 6–9 are flagged** so incomplete work lives on
-`main` rather than on a long-lived branch.
+**Phases 1, 2, 6, 7 and 8 need no flags:** each is invisible to users or a strict
+improvement, and complete when merged. **Phases 3, 4, 5, 9 and 10 are flagged** so
+incomplete work lives on `main` rather than on a long-lived branch.
+
+**Activation is split across phases 3 and 4, deliberately.** F1.12a makes
+activation and the first $100 charge the same event, so a Phase 3 that "finishes
+onboarding" would need Stripe — and Phase 4 needs businesses to exist before it
+can be tested. Cutting it at the charge breaks the loop: **Phase 3 builds the
+checklist and everything that makes its three items go green; Phase 4 adds the
+button that takes the money.**
+
+**Phase 0 gates launch, not any other phase** — a refresh token revoked after
+seven days (R2) stops booking for every business, and review takes weeks that
+cannot be compressed by starting late.
 
 **Q1 gates going live, not building.** The per-minute rate is configuration
-(F7.8), so Phase 6 ships and is tested against a placeholder; no real card may be
-charged until the rate is set.
+(F7.8), so Phase 4 ships and is tested against a placeholder; no real card may be
+charged until the rate is set. **Q3 gates Phase 5** — the contact address is the
+only channel for cancellation (F10.2).
 
 ## 2.17 Risks
 
@@ -3993,7 +4070,7 @@ charged until the rate is set.
   other and a recoverable business sits un-chased until it is deleted. **Both
   failures are silent** — each system behaves correctly on its own terms.
   Mitigation: the behavioural table in §2.9.3 is the acceptance criterion, the
-  Stripe mechanism is confirmed against the live API before Phase 6, and the test
+  Stripe mechanism is confirmed against the live API before Phase 4, and the test
   covers the pair — suspend, cross a would-be period boundary, restore, then
   assert that no new invoice was raised, that the original one was retried
   throughout, and that `ends_at` moved by the elapsed pause.
@@ -4050,29 +4127,32 @@ designed for.
 | F2.1a disclosure                | §2.15 (appended by Ringly at provisioning, not editable)                                     |
 | F2.2–F2.3a booking              | §2.5.2 steps 1–8; 005 exclusion constraint                                                   |
 | F2.4 identifying an appt        | §2.5.6                                                                                       |
-| F2.5, N5 timezone               | 009 `local_date`; §2.8; rollup bucketing                                                     |
+| F2.5, N5 timezone               | 010 `local_date`; §2.8; rollup bucketing                                                     |
 | F2.6 filler                     | §2.5.1 (`speak_during_execution`)                                                            |
 | F2.7–F2.7a fail-closed          | §2.5.3 `BusyLookup`, §2.5.4 `calendar_incidents`                                             |
 | F2.8–F2.9a horizons             | §2.5.2 step 3; 005 horizon columns + bound constraint                                        |
 | **F2.10–F2.11 no fallback**     | **Agent prompt only — no design element, and none needed**                                   |
-| F3.1–F3.6 catalogue, hours      | 006 (`sort_order`, `deactivated_at`, `service_versions`); §2.5.5 cache invalidation          |
-| F4 scheduling providers         | §2.6 `SchedulingProvider`; 007                                                               |
-| F5 recurrence                   | 008; §2.7 materialiser, clash **and opening-hours** handling (F5.2e)                         |
-| F6.1–F6.3f analytics            | 009 `daily_business_stats`; §2.8; §2.8a composition                                          |
-| F6.5–F6.6 definitions           | 009 `outcome_rulesets` + `outcome_ruleset_version`; §2.8a definitions panel                  |
-| F6.7–F6.8 billing history       | 010 `billing_periods`, `usage_records`; §2.8a — one table, current period as its first row   |
+| F3.1–F3.6 catalogue, hours      | 008 (`sort_order`, `deactivated_at`, `service_versions`); §2.5.5 cache invalidation          |
+| F4 scheduling providers         | §2.6 `SchedulingProvider`; 009                                                               |
+| F5 recurrence                   | 011; §2.7 materialiser, clash **and opening-hours** handling (F5.2e)                         |
+| F6.1–F6.3f analytics            | 010 `daily_business_stats`; §2.8; §2.8a composition                                          |
+| F6.5–F6.6 definitions           | 010 `outcome_rulesets` + `outcome_ruleset_version`; §2.8a definitions panel                  |
+| F6.7–F6.8 billing history       | 006 `billing_periods`, `usage_records`; §2.8a — one table, current period as its first row   |
+| F6.4, F6.9–F6.11 definitions    | 010 `outcome_rulesets`, `local_date`; §2.8 no per-customer grain; §2.8a definitions panel    |
+| F6.13 controls                  | §2.8a controls list — **the set spans phases 3, 4, 6 and 8**; the dashboard assembles them   |
 | F6.12 dashboard latency         | §2.8 pre-aggregation; live median bounded by range                                           |
-| F6.14, F6.14a freshness, money  | §2.8a freshness line; 009 nightly rollup, live median labelled; settled/accruing/outstanding |
-| **F6.15 service status**        | **§2.8a — first element on the page, read from current state, never the rollup**             |
-| F7.1–F7.14 billing              | 010; §2.9.1 state machine; §2.9.2 settlement; §2.9.3 Stripe                                  |
-| **F7.11b, -o, -i, -ii**         | 010 (fixed 30-day periods, `suspended_at`/`resumed_at`); §2.9.1; §2.9.3; §2.10.1             |
+| F6.14, F6.14a freshness, money  | §2.8a freshness line; 010 nightly rollup, live median labelled; settled/accruing/outstanding |
+| **F6.15 service status**        | **§2.8a, first element on the page; 005 `agent_bound_at`; test calls counted from `calls`**  |
+| F7.1–F7.14 billing              | 006; §2.9.1 state machine; §2.9.2 settlement; §2.9.3 Stripe                                  |
+| **F7.11b, -o, -i, -ii**         | 006 (fixed 30-day periods, `suspended_at`/`resumed_at`); §2.9.1; §2.9.3; §2.10.1             |
 | **F7.10b, -i recovery**         | **§2.9.5 — webhook-driven, plus the daily reconciliation backstop**                          |
-| F7.15–F7.16 terms change        | 010 `pricing_policy` pinned per period                                                       |
-| F7.17–F7.18 disputes, tax       | §2.9.3; 010 `tax_cents`                                                                      |
+| F7.15–F7.16 terms change        | 006 `pricing_policy` pinned per period                                                       |
+| F7.17–F7.18 disputes, tax       | §2.9.3; 006 `tax_cents`                                                                      |
+| F7.20–F7.21 Stripe division     | §2.9.3 configuration; §2.12; the who-does-what table in F8                                   |
 | F7.19, F10.10 teardown          | §2.9.4, in order                                                                             |
-| F8 email                        | §2.12; 005 `email_log`; 010 digest opt-out; Phase 1b builds the dispatcher                   |
+| F8 email                        | §2.12; 005 `email_log`; 006 digest opt-out; Phase 2 builds the dispatcher                    |
 | F9 operator                     | §2.11; **012** `daily_business_economics`; §2.8a operator composition                        |
-| F10.1–F10.3b lifecycle          | 011 `lifecycle_deadlines`; §2.10 sweeper                                                     |
+| F10.1–F10.3b lifecycle          | 007 `lifecycle_deadlines`; §2.10 sweeper                                                     |
 | F2.7 incidents                  | **005** `calendar_incidents` (Phase 1 needs it); §2.5.4                                      |
 | **F10.1a-i, -ii deletion**      | **§2.10.2 — path 1 self-serve, path 2 by sweeper; both automated**                           |
 | F1.12a–F1.12b activation        | §2.4a.1 step 9 — one button, one `billing_status` write, nothing else                        |
@@ -4082,7 +4162,7 @@ designed for.
 | F10.4–F10.4b the number         | §2.10.1, including the reassignment chain                                                    |
 | F10.5–F10.7 call content        | §2.10 (per-agent TTL) **+ the explicit 10-day-path delete, R18**                             |
 | F10.8 retention                 | §2.10                                                                                        |
-| F10.9 departure record          | 011 `departed_businesses`; §2.9.4 order                                                      |
+| F10.9 departure record          | 007 `departed_businesses`; §2.9.4 order                                                      |
 | N1 isolation                    | §2.3.1 `tenantScoped`, RLS, isolation tests                                                  |
 | N2 scale                        | §2.3.2 index layout; §2.8 pre-aggregation                                                    |
 | N3 latency                      | §2.5.1 budget; §2.5.5 cache                                                                  |
