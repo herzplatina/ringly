@@ -643,6 +643,26 @@ F9.8), dropped-call definition (F6.3), calendar-provider switching out of scope
 - **Q3 — Ringly's cancellation email address** (F10.2). Needed for the dashboard
   and the transactional emails.
 - **Q4 — Resolved.** Reminders leave v3 entirely (§1.9).
+- **Q5 — No email's content is specified (Phase 5).** F8 names five categories,
+  but the requirements elsewhere trigger **fourteen distinct emails**, and not
+  one has a defined subject, field list, tone, or call to action:
+
+  _Billing (transactional, F8.4):_ activation receipt · upcoming charge notice ·
+  invoice issued · payment succeeded · payment failed · grace-period reminders ·
+  suspension notice (day 7) · retry notices (days 7–30) · **48-hour final
+  deletion warning (F10.3a)** · cap reached (F7.9) · cancellation confirmation
+  and refund (F7.12).
+  _Operational:_ calendar access failing (F2.7, one per incident) · recurring
+  occurrence shifted or skipped (F5.2b) · test calls exhausted (F1.13).
+  _Reporting:_ the stats digest (F8.3), the only unsubscribable one.
+
+  The 48-hour deletion warning is the highest-stakes of these — it is the last
+  thing a business sees before its number and data are destroyed — and currently
+  has no specified content at all. Two adjacent decisions belong with it:
+  whether templates are **React Email components versioned in this repo** (the
+  main reason Resend was chosen over Postmark), and whether the same content
+  requirement covers **operator-facing** email (cap alerts, payment failures,
+  test-call failures — the ones bound for Slack later, F9.6).
 
 ---
 
