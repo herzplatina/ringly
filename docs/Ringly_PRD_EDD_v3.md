@@ -1434,6 +1434,70 @@ stored `due_at` with a nullable `paused_at` can. Every lifecycle transition in
 `departed_businesses` and `daily_business_economics` carry **no consumer data**
 and no RLS policy — they are reachable only through the ops module (§2.11).
 
+## 2.4a Onboarding and activation
+
+The flow that turns a stranger into a paying business. It has to be seamless —
+the v2 target of under three minutes still stands — and it has to be _clear_,
+because two things in it can fail in ways the user must understand rather than
+merely experience.
+
+### 2.4a.1 The flow
+
+| #   | Screen                        | What happens                                                                                                                                                                                                                 | Requirement      |
+| --- | ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------- |
+| 1   | **Intake** (public, no login) | One textarea, shadow prompt _"Tell me the name and address of your business…"_, spoken aloud. User types.                                                                                                                    | F1.1, F1.2       |
+| 2   | **Enrichment**                | One request: Places Text Search resolves the business (several hits → show candidates), Place Details returns name, address, phone, hours, IANA timezone, website; the website is fetched and Claude structures ≤5 services. | F1.3, F1.4, F1.6 |
+| 3   | **Review**                    | Every field inline-editable. Services can be added, removed, edited; a menu image or PDF, or manual entry, cover the case where nothing was found.                                                                           | F1.5             |
+| 4   | **Why we need access**        | Before Google is opened: a plain-language screen naming each scope and its reason — sign-in so the account is theirs, calendar because **Ringly refuses to book a time it cannot verify**, so this one is not optional.      | **F1.7c**        |
+| 5   | **Google consent**            | `signInWithOAuth` with `calendar.events`, `access_type=offline`, `prompt=consent`.                                                                                                                                           | F1.7             |
+| 6   | **Scope check**               | On return, the **granted** scopes are inspected, not assumed.                                                                                                                                                                | **F1.7a**        |
+| 7   | **Claim + provision**         | Business row created from the draft, refresh token encrypted and stored, Retell number bought or reused, LLM and agent created and bound. A value screen runs while this happens.                                            | F1.9             |
+| 8   | **Contact email**             | Defaulted from the Google identity, editable, and a verification email sent.                                                                                                                                                 | F1.11            |
+| 9   | **Test call**                 | The number shown large: _"Call it now and hear your receptionist."_ Remaining test calls displayed.                                                                                                                          | F1.12, F1.13     |
+| 10  | **Confirm it worked**         | _"Did that sound right?"_ — **the owner's judgement, not Ringly's inference**. Confirming is what activates.                                                                                                                 | **F1.12**        |
+| 11  | **Payment**                   | Stripe Elements collects the card; a SetupIntent stores it off-session and the first $100 is charged. Period 1 starts.                                                                                                       | F7.1, F7.2       |
+| 12  | **Live**                      | Dashboard.                                                                                                                                                                                                                   | —                |
+
+### 2.4a.2 The two ways it stops, and what the user sees
+
+**Calendar scope declined** (F1.7a–b). Google's granular consent lets a user
+grant sign-in and refuse calendar in the same dialog, so step 6 checks what was
+actually granted.
+
+- **Sign-in still completes and the enriched draft is kept.** Declining costs a
+  click, never the work already done.
+- Onboarding stops at a screen that explains, without jargon, that Ringly will
+  not book a time it cannot verify — so without calendar access there is nothing
+  to sell — and offers **one button: grant calendar access**.
+- The **account exists but cannot activate**, and is never charged. It sits at
+  `unbilled` under the 10-day clock like any other unactivated business.
+
+**Test calls exhausted without confirmation** (F1.13). The counter is `calls`
+where `is_test_call` and the business is still `unbilled`; the tenth is the last.
+
+- The business is **emailed**: the number is not active, Ringly is looking into
+  it, and they will hear back. They are never charged.
+- The failure is raised on the **operator dashboard** and emailed to the operator
+  (F9.12, "activation stuck").
+- **Recovery is operator-led** and the operator will usually **pause the 10-day
+  clock** (F10.1b) — otherwise the business being investigated is deleted
+  underneath the investigation.
+
+### 2.4a.3 Ordering decisions worth stating
+
+- **Email verification does not block the test call**, only activation. Making
+  someone wait for an inbox round-trip before they can hear their own receptionist
+  would break the flow at its most persuasive moment. But the address receives the
+  48-hour deletion warning, so it must be verified before money changes hands.
+- **Activation and first payment are the same step.** There is no separate
+  activation fee (F7.1); confirming the test call is what starts period 1.
+- **Provisioning runs in the background** behind the value screen (F1.9), so the
+  Retell round-trip is never a blocking form step.
+- **The draft survives the OAuth redirect** in `sessionStorage`, with a
+  short-lived server-side copy keyed by nonce as backup — carried over from v2,
+  and now load-bearing for the declined-scope path, which returns the user to a
+  screen that must still have their business on it.
+
 ## 2.5 The call path
 
 ### 2.5.1 Budget
@@ -1959,16 +2023,20 @@ discovered late:
 Each phase is independently shippable. **Phase 1 is a prerequisite for
 everything**; the rest are independent of each other after it.
 
-| Phase                        | Scope                                                                                                                                        | Needs   | Flag |
-| ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- | ------- | ---- |
-| **1 — Foundations**          | 005; `tenantScoped` + isolation tests; fail-closed booking and incidents (R1); delete reminders/WhatsApp; recording disclosure; call capture | —       | no   |
-| **2 — Catalogue + cache**    | 006; tenant config cache; F3 end to end                                                                                                      | 1       | no   |
-| **3 — Provider abstraction** | 007; extract `SchedulingProvider`; port Google behind it                                                                                     | 1       | no   |
-| **4 — Business dashboard**   | 009; rollup worker; F6                                                                                                                       | 1       | no   |
-| **5 — Billing**              | 010; state machine; settlement; Stripe config; F7                                                                                            | 1, 4    | yes  |
-| **6 — Lifecycle**            | 011 (deadlines); sweeper; teardown; departure record; F10                                                                                    | 1, 5    | yes  |
-| **7 — Recurrence**           | 008; materialiser; clash shift/skip; F5                                                                                                      | 1, 3    | yes  |
-| **8 — Operator dashboard**   | 011 (economics); `/ops` walled garden; F9                                                                                                    | 1, 4, 5 | yes  |
+| Phase                        | Scope                                                                                                                                                                 | Needs   | Flag |
+| ---------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------- | ---- |
+| **1 — Foundations**          | 005; `tenantScoped` + isolation tests; fail-closed booking and incidents (R1); delete reminders/WhatsApp and the transcript route; recording disclosure; call capture | —       | no   |
+| **2 — Onboarding**           | Scope check and the declined-calendar path (F1.7a–c); contact email and verification; test-call counter and confirmation; activation (§2.4a)                          | 1       | no   |
+| **3 — Catalogue + cache**    | 006; tenant config cache; F3 end to end                                                                                                                               | 1       | no   |
+| **4 — Provider abstraction** | 007; extract `SchedulingProvider`; port Google behind it                                                                                                              | 1       | no   |
+| **5 — Business dashboard**   | 009; rollup worker; F6 including the dashboard composition (§2.8a)                                                                                                    | 1       | no   |
+| **6 — Billing**              | 010; state machine; settlement; Stripe configuration; F7                                                                                                              | 1, 2, 5 | yes  |
+| **7 — Lifecycle**            | 011 (deadlines); sweeper; unbind/rebind (§2.10.1); teardown; departure record; F10                                                                                    | 1, 6    | yes  |
+| **8 — Recurrence**           | 008; materialiser; clash shift/skip; F5                                                                                                                               | 1, 4    | yes  |
+| **9 — Operator dashboard**   | 011 (economics); `/ops` walled garden; view-as-business; F9                                                                                                           | 1, 5, 6 | yes  |
+
+**Onboarding sits at 2** because it is what creates a business to bill, and
+billing (6) cannot be tested without it. It depends only on the foundations.
 
 **Phases split by layer** — migration+types → backend → UI → enablement — because
 each merges green independently and a schema can land inert before anything uses
