@@ -758,9 +758,9 @@ delete the Stripe customer → delete Ringly's rows → write the departure reco
   | Until window closes | Reconsideration window — **7 days, or period end, whichever is sooner**. Service runs free. Reminder emails explain what is coming.            |
   | Any time inside it  | Revoking erases the request; the period continues to its original end and billing resumes (F7.12a).                                            |
   | **Window closes**   | Period settled early. Usage to the request date charged; **no refund of the fixed fee**. Service stops. **Closing statement sent** (F7.12b–c). |
-  | + 0 to 30 days      | **Dormant.** Number and all data retained. Returning resumes the same number and history on a new period (F7.12e).                             |
-  | + 28 days           | **48-hour final warning** before deletion.                                                                                                     |
-  | + 30 days           | Number released, Ringly-held data deleted (F10.8). A later return is a wholly new account.                                                     |
+  | + 0 to 60 days      | **Dormant.** Number and all data retained. Returning resumes the same number and history on a new period (F7.12e).                             |
+  | + 58 days           | **48-hour final warning** before deletion.                                                                                                     |
+  | + 60 days           | Number released, Ringly-held data deleted (F10.8). A later return is a wholly new account.                                                     |
 
 - **F10.3a** **Nothing is ever deleted without a 48-hour warning email first.**
   This applies to both paths and is not conditional on the business having read
@@ -775,7 +775,7 @@ delete the Stripe customer → delete Ringly's rows → write the departure reco
   - **Non-payment or chargeback** — held to **day 30** (F10.3), recoverable
     throughout by paying what is owed. Holding it costs Ringly only the rental;
     releasing it early costs the business its identity.
-  - **The business's own cancellation** — held a further **30 days** after
+  - **The business's own cancellation** — held a further **60 days** after
     service stops (F7.12e), fully recoverable, because a business that left in
     good standing may come back and should find itself intact.
 - **F10.5** **Ringly issues no deletion call to the telephony provider.**
@@ -802,7 +802,7 @@ delete the Stripe customer → delete Ringly's rows → write the departure reco
   - The **only** thing on a 30-day clock is what Ringly does **not** store:
     transcripts and recordings, held by the telephony provider (F10.6).
   - Everything Ringly holds is destroyed when the relationship is over, on the
-    clock the ending sets (F10.3, F10.4): **day 30** for non-payment, **30 days
+    clock the ending sets (F10.3, F10.4): **day 30** for non-payment, **60 days
     after service stops** for a business that cancelled, **day 10** for one that
     never activated.
   - There is no partial or rolling deletion, and no field-level expiry.
