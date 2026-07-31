@@ -45,10 +45,22 @@ Revised again 2026-07-31 — see below._
 > 8. **Rate limiting is sized for the traffic actually expected**, which is low
 >    (N9): a per-IP limit and a spend ceiling, not an abuse system.
 >
-> Two things were also made unambiguous after being misread in review:
-> **activation is one button pressed by the owner and nothing else ever triggers
-> it** (F1.12b, F1.13b — no call count activates a business), and **a test call
-> is simply any call arriving before that button is pressed** (F1.13a).
+> Two further decisions, and one clarification:
+>
+> 9. **Ringly sends every payment email, including throughout suspension; Stripe
+>    retries the card silently** (Q7, F7.11b-ii). Stripe does not know what
+>    suspension means here, so it cannot write a true email about it.
+> 10. **The test-call allowance is five, and the sixth call is not answered**
+>     (F1.13, F1.13a). At the fifth, the agent is unbound from the number — the
+>     same mechanism as suspension — because a recorded refusal would still be a
+>     connected call and still cost Ringly minutes. **Activating rebinds it**
+>     (F1.13b), so a business that decides to pay is never held back by an
+>     allowance that exists to cap free usage.
+>
+> And the clarification, after both were misread in review: **activation is one
+> button pressed by the owner and nothing else ever triggers it** (F1.12b, F1.13d
+> — no call count activates a business), and **a test call is simply any call
+> arriving before that button is pressed** (F1.13c).
 >
 > The same pass corrected the contradictions and gaps found reading Part 1
 > against Part 2. The substantive ones: the 30-day/60-day retention conflict
@@ -58,7 +70,7 @@ Revised again 2026-07-31 — see below._
 > phase that needs them (005), no `is_test_call` column for the counter F1.13
 > depends on, no schema behind the outcome definitions F6.5–F6.6 promise, and an
 > activation step that Phase 2 could not finish without Phase 6 (§2.16). New
-> requirements: F1.13a (what makes a call a test call), F2.10–F2.11 (no transfer,
+> requirements: F1.13a–d (the allowance, the unbind, and what makes a call a test call), F2.10–F2.11 (no transfer,
 > no voicemail), F3.5–F3.6 (hours are editable, timezone is not), F6.14 (say how
 > fresh the dashboard is), N8, N9, N10.
 
@@ -191,6 +203,10 @@ _(Carried from v2; renumbered. v2 FR1–FR10 map to F1.1–F1.10.)_
   giving anyone a card can; one that wants everything done in a minute can. The
   screen shows all three with their state, and what remains.
 
+  **The screen also shows test calls remaining** (F1.13), because the allowance
+  is small and running out of it stops the phone answering. A counter a business
+  discovers only by hitting zero is a trap.
+
 - **F1.12a** **Activation is one deliberate act by the business owner: pressing
   a button.** When all three checklist items are green an **Activate** button
   becomes available. Pressing it — and nothing else, ever — charges the $100,
@@ -200,9 +216,9 @@ _(Carried from v2; renumbered. v2 FR1–FR10 map to F1.1–F1.10.)_
   is period 1's.
 - **F1.12b** **Nothing activates a business except that button.** Stated
   negatively because it is the thing most likely to be assumed otherwise:
-  - **Call volume never activates anything.** Not the first call, not the tenth,
-    not the eleventh. The number of calls placed has no bearing on billing status
-    whatsoever.
+  - **Call volume never activates anything.** Not the first call, not the fifth,
+    not the one that gets refused after it. The number of calls placed has no
+    bearing on billing status whatsoever.
   - **Confirming the test call does not activate.** It ticks one of three boxes
     (F1.12) and nothing more. A business can confirm its test call and sit there
     for a week without being charged a penny.
@@ -216,52 +232,82 @@ _(Carried from v2; renumbered. v2 FR1–FR10 map to F1.1–F1.10.)_
   **Before that press: no charge is possible, ever.** After it: usage is billed
   by outcome alone (F7.6). There is no third state and no gradual transition.
 
-- **F1.13** **The 10-call limit is a ceiling on an unactivated business's cost to
-  Ringly, not a countdown to anything.** Before activation, calls cost Ringly
-  telephony minutes against no revenue, so the allowance is bounded. **Reaching
-  ten does not activate the business, charge it, or change its state** — it stops
-  it, which is the opposite. On the tenth without an activation:
-  - the business is **emailed** to say the number has not been activated and
-    Ringly is investigating and will come back to them;
-  - the failure is raised on the **operator dashboard** and **emailed to the
-    operator**.
+- **F1.13** **An unactivated business gets five free test calls, and then the
+  number stops answering.** Every pre-activation call costs Ringly real telephony
+  and LLM minutes against no revenue (R8), and a business that will not activate
+  is a business Ringly is subsidising indefinitely. Five is enough to hear the
+  agent, try a booking, and try a reschedule; it is not enough to run a free
+  receptionist.
+  - **The allowance is five, and it is configuration, not a constant** — a
+    platform default, changeable without a deploy, on the same principle as every
+    other number in this document (F7.15).
+  - **Reaching five does not activate the business, charge it, or promote it in
+    any way.** It stops it, which is the opposite (F1.12b).
+- **F1.13a** **At the fifth call the agent is unbound from the number, and the
+  sixth call is not answered at all.** This is the same mechanism used for
+  suspension and dormancy (EDD §2.10.1), applied for a different reason.
+  - **Not answering is the point.** A polite refusal recorded by the agent would
+    still be a connected call and would still cost Ringly minutes, which is the
+    cost the limit exists to bound. The call must not reach the agent.
+  - **The number stays rented and stays reserved to that business** (F10.4a). It
+    is unbound, not released; nothing else can be given it while the business row
+    exists.
+  - **The business is emailed** — its number is not active, Ringly is looking
+    into it, and it will hear back — and **the operator is alerted** on the
+    dashboard and by email (F9.12, "activation stuck").
+  - **The business is never charged.** Not for the five, not for the refused
+    calls, not for being stuck.
+- **F1.13b** **There are two ways out, and which one applies depends on whether
+  the business ever heard a call that worked.**
+  1. **It can activate itself, and that rebinds the number immediately.** If all
+     three checklist items are green — including a confirmed test call — the
+     Activate button still works. Pressing it charges the $100, binds the agent
+     back, and the business is live (F1.12a). **Running out of test calls is not
+     a bar to activating**; a business that has decided to pay should never be
+     held back by an allowance that exists to limit free usage.
+  2. **Otherwise it is genuinely stuck and recovery is operator-led.** A business
+     that never got a call it was happy with cannot tick box 2 and therefore
+     cannot activate. The operator investigates, **pauses the deletion clock**
+     (F10.1b), and **resets the allowance and rebinds the agent** (F10.1c) once
+     the fault is fixed.
 
-  A business in this state is never charged and cannot get itself out — recovery
-  is operator-led (F10.1b, F10.1c). It is **stuck, not activated**.
+  In both cases the **10-day clock keeps running unless the operator pauses it**
+  (F10.1). An unactivated business is still deleted at day 10.
 
-- **F1.13a** **A call is a test call if the business had not yet pressed Activate
+- **F1.13c** **A call is a test call if the business had not yet pressed Activate
   when it arrived. That is the whole rule; there is no detection.** Ringly bought
   the number minutes earlier and it is on no listing, no website, no sign and in
   nobody's contacts. The only person who knows it exists is the owner Ringly just
   gave it to, so before activation there is no other kind of call it could be.
   - **Who is calling is not examined**, deliberately: caller ID would add a way
     to be wrong about something the account state already settles. If a stranger
-    somehow dials the number it still counts against the ten and the business is
+    somehow dials the number it still counts against the five and the business is
     still charged nothing, which is the right answer either way.
   - **The classification is written at the time of the call, not derived later**
     (EDD 005, `is_test_call`). Billing status changes; a call's history must not.
-    Deriving it from today's status would reclassify all ten of a business's test
-    calls the instant it activated.
+    Deriving it from today's status would reclassify every one of a business's
+    test calls the instant it activated.
   - **After activation there are no test calls.** The owner ringing their own
     number is billed on the same terms as anyone else, by outcome alone (F7.6,
     F7.7).
 
-- **F1.13b** **The lifecycle in full, so the boundary is unambiguous.** Two
-  businesses, same ten calls, different outcomes — the only difference is a
-  button:
+- **F1.13d** **The lifecycle in full, so the boundary is unambiguous.** Three
+  businesses, same five calls; the only difference is the button:
 
-  |                                         | Business A                                     | Business B                                                                                      |
-  | --------------------------------------- | ---------------------------------------------- | ----------------------------------------------------------------------------------------------- |
-  | Signs up, gets a number                 | `unbilled`                                     | `unbilled`                                                                                      |
-  | Places 3 calls, likes what it hears     | 3 test calls, **$0**                           | 3 test calls, **$0**                                                                            |
-  | Confirms the test call on the checklist | box 2 ticked, still `unbilled`, still **$0**   | box 2 ticked, still `unbilled`, still **$0**                                                    |
-  | Verifies email, adds a card             | all 3 green, still `unbilled`, still **$0**    | all 3 green, still `unbilled`, still **$0**                                                     |
-  | **Presses Activate**                    | → `active`, **$100 charged**, period 1 starts  | — does not press it                                                                             |
-  | Places 7 more calls                     | **production calls, billed by outcome** (F7.6) | test calls 4–10, **$0**                                                                         |
-  | Where it ends up                        | Paying customer                                | Stuck at ten (F1.13); deleted day 10 unless the operator intervenes; **never charged anything** |
+  |                            | A — activates                               | B — could, doesn't                                     | C — never got a good call                                   |
+  | -------------------------- | ------------------------------------------- | ------------------------------------------------------ | ----------------------------------------------------------- |
+  | Signs up, gets a number    | `unbilled`                                  | `unbilled`                                             | `unbilled`                                                  |
+  | Places 5 test calls        | 5 test calls, **$0**                        | 5 test calls, **$0**                                   | 5 test calls, **$0**                                        |
+  | Confirms one worked        | box 2 ticked                                | box 2 ticked                                           | **cannot** — none sounded right                             |
+  | Email verified, card added | all 3 green                                 | all 3 green                                            | 2 of 3                                                      |
+  | 6th call arrives           | (already activated — answered and billable) | **not answered**; agent unbound (F1.13a)               | **not answered**; agent unbound                             |
+  | **Presses Activate**       | → `active`, **$100**, period 1, agent bound | can still do this at any time → rebinds, live (F1.13b) | **button unavailable** — box 2 is not green                 |
+  | Where it ends up           | Paying customer                             | Its own choice; deleted at day 10 if it never presses  | Operator-led (F10.1b, F10.1c); deleted day 10 unless paused |
+  | Total charged              | $100 + usage                                | **$0**                                                 | **$0**                                                      |
 
-  **Business B is never charged, no matter how many calls it makes**, because it
-  never pressed the button. There is no call count at which billing begins.
+  **B and C are never charged anything, whatever happens**, because neither
+  pressed the button. There is no call count at which billing begins — only a
+  call count at which the phone stops being answered.
 
 ### F2 — Call handling and booking
 
@@ -710,20 +756,29 @@ charge failed first (F7.11).
   path, because the unpaid charge is the entire reason the business is suspended
   and paying it is the only way out.
 
-  | During suspension                              | Continues? |
-  | ---------------------------------------------- | ---------- |
-  | The **outstanding invoice** stays open and due | **Yes**    |
-  | **Automatic retries** against the card on file | **Yes**    |
-  | **Payment follow-up emails** to the business   | **Yes**    |
-  | The 48-hour deletion warning at ~day 58        | **Yes**    |
-  | New fixed fees                                 | **No**     |
-  | New usage charges                              | **No**     |
-  | New billing periods                            | **No**     |
+  | During suspension                              | Continues? | Whose job  |
+  | ---------------------------------------------- | ---------- | ---------- |
+  | The **outstanding invoice** stays open and due | **Yes**    | Stripe     |
+  | **Automatic retries** against the card on file | **Yes**    | Stripe     |
+  | **Payment follow-up emails** to the business   | **Yes**    | **Ringly** |
+  | The 48-hour deletion warning at ~day 58        | **Yes**    | **Ringly** |
+  | New fixed fees                                 | **No**     | —          |
+  | New usage charges                              | **No**     | —          |
+  | New billing periods                            | **No**     | —          |
 
   A suspended business must be **chased as hard as any other debtor** — it is
   being asked to settle what it already owes, which is not a charge for the
   suspension. What it must never receive is a **new** charge for a service it is
   not getting.
+
+- **F7.11b-ii** **Ringly writes and sends every one of those emails; Stripe
+  retries the card in silence** (Q7, F7.20, F7.21). Suspension is a Ringly
+  concept and Stripe knows nothing about it — not that the agent has been
+  unbound, not that the period is paused, not that the number goes in 48 hours.
+  An email from Stripe during suspension could only say a card was declined,
+  which is the least useful true thing available and would arrive alongside
+  Ringly's saying something different. **Stripe's dunning stays off throughout**,
+  including here.
 
   **The failure this guards against is the opposite of the one F7.11b guards
   against.** F7.11b stops Ringly billing for a phone nobody answers; F7.11b-i
@@ -858,10 +913,12 @@ charge failed first (F7.11).
 
 _Normative summary. Where this and F7/F10 differ, the numbered requirements win._
 
-**Activation.** A business signs up, gets a number, places up to 10 test calls,
-and confirms on its dashboard that one worked. That confirmation activates the
-number and starts period 1. A business that never confirms is removed entirely at
-day 10.
+**Activation.** A business signs up, gets a number, and places up to **five** test
+calls. To go live it must do three things — verify its email, confirm on its
+dashboard that a test call worked, and add a card — and then **press Activate**.
+That press charges the $100 and starts period 1; **nothing else does** (F1.12b).
+At five test calls without activating, **the number stops answering** (F1.13a).
+A business that never activates is removed entirely at day 10.
 
 **A period.** Thirty days from activation. **$100 on the first day.** Usage
 accrues across the period on **productive calls only** — a booking, a reschedule
@@ -987,23 +1044,23 @@ payment-succeeded notices are **absent by design** — they are Stripe's (F8.3a)
 and duplicating them is how a business ends up with two differently-worded
 messages from what looks like one company (F7.21).
 
-| Email                   | When                                       | Tone default                                                      |
-| ----------------------- | ------------------------------------------ | ----------------------------------------------------------------- |
-| Email verification      | Contact email entered (F1.11)              | Functional; one link, nothing else                                |
-| Welcome / now live      | Activation completes (F1.12a)              | Welcoming; **states the number is now taking customer calls**     |
-| Upcoming charge         | Before each period's fixed fee             | Neutral; no action needed                                         |
-| Payment failed          | First decline (F7.11)                      | Calm, **leads with "your service is still running"**              |
-| Payment follow-up       | Through the grace period                   | Firmer, counts down to the date service stops                     |
-| Suspension notice       | Day 7 (F10.3)                              | Direct, **leads with "nothing has been deleted"**                 |
-| Deletion warning        | 48 hours before deletion (F10.3a)          | Unambiguous; itemises exactly what is destroyed                   |
-| Cap reached             | $500 reached (F7.9b)                       | **Good news** — they earned it, the rest is on Ringly             |
-| Cancellation confirmed  | Operator marks cancelled (F7.10a)          | Matter-of-fact; **states the fixed fee is not refunded** (F7.12b) |
-| Cancellation countdown  | Through the reconsideration window (F7.12) | Neutral; the date service stops, and how to revoke                |
-| Closing statement       | Cancellation window closes (F7.12c)        | Final; usage charged, fee not refunded, deletion date             |
-| Calendar access failing | Bookings being refused (F2.7)              | Urgent, explains _why_ refusing beats double-booking              |
-| Recurring change        | Occurrence shifted or skipped (F5.2b)      | Informational; **states plainly that the customer was not told**  |
-| Test calls exhausted    | Activation stuck (F1.13)                   | Reassuring; not their fault, not charged, Ringly is on it         |
-| Stats digest            | Each billing period (F8.3)                 | Light; the only unsubscribable email                              |
+| Email                   | When                                       | Tone default                                                                                                                   |
+| ----------------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------ |
+| Email verification      | Contact email entered (F1.11)              | Functional; one link, nothing else                                                                                             |
+| Welcome / now live      | Activation completes (F1.12a)              | Welcoming; **states the number is now taking customer calls**                                                                  |
+| Upcoming charge         | Before each period's fixed fee             | Neutral; no action needed                                                                                                      |
+| Payment failed          | First decline (F7.11)                      | Calm, **leads with "your service is still running"**                                                                           |
+| Payment follow-up       | Through the grace period                   | Firmer, counts down to the date service stops                                                                                  |
+| Suspension notice       | Day 7 (F10.3)                              | Direct, **leads with "nothing has been deleted"**                                                                              |
+| Deletion warning        | 48 hours before deletion (F10.3a)          | Unambiguous; itemises exactly what is destroyed                                                                                |
+| Cap reached             | $500 reached (F7.9b)                       | **Good news** — they earned it, the rest is on Ringly                                                                          |
+| Cancellation confirmed  | Operator marks cancelled (F7.10a)          | Matter-of-fact; **states the fixed fee is not refunded** (F7.12b)                                                              |
+| Cancellation countdown  | Through the reconsideration window (F7.12) | Neutral; the date service stops, and how to revoke                                                                             |
+| Closing statement       | Cancellation window closes (F7.12c)        | Final; usage charged, fee not refunded, deletion date                                                                          |
+| Calendar access failing | Bookings being refused (F2.7)              | Urgent, explains _why_ refusing beats double-booking                                                                           |
+| Recurring change        | Occurrence shifted or skipped (F5.2b)      | Informational; **states plainly that the customer was not told**                                                               |
+| Test calls exhausted    | 5th test call, not activated (F1.13a)      | States plainly that the number has stopped answering, that they are not charged, and that activating turns it back on (F1.13b) |
+| Stats digest            | Each billing period (F8.3)                 | Light; the only unsubscribable email                                                                                           |
 
 **Operator-facing email**
 
@@ -1090,10 +1147,10 @@ messages from what looks like one company (F7.21).
 
   **Broken now — a customer is being turned away as you read this**
 
-  | Condition            | Trigger                                       | Operator action                                                       |
-  | -------------------- | --------------------------------------------- | --------------------------------------------------------------------- |
-  | **Bookings failing** | An open calendar incident (F2.7)              | Get them to reconnect the calendar; every caller meanwhile is refused |
-  | **Activation stuck** | 10 test calls placed, never confirmed (F1.13) | Investigate — they are waiting on Ringly, and are not being charged   |
+  | Condition            | Trigger                                                                               | Operator action                                                                                                 |
+  | -------------------- | ------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+  | **Bookings failing** | An open calendar incident (F2.7)                                                      | Get them to reconnect the calendar; every caller meanwhile is refused                                           |
+  | **Activation stuck** | 5 test calls used, never confirmed (F1.13a) — **their number is no longer answering** | Investigate; then reset the allowance and rebind (F10.1c). They are waiting on Ringly and are not being charged |
 
   **About to lose the business**
 
@@ -1129,11 +1186,18 @@ messages from what looks like one company (F7.21).
 
 ### F10 — Account lifecycle, suspension and data retention
 
-- **F10.1** A business that **never activates** is removed entirely after **10
-  days** — its rented number is released and all information about it is deleted.
-  It may place at most **10 test calls** before activating. Both limits exist
-  because an unactivated business is pure cost: a rented number and live call
-  minutes against no revenue, with no relationship to protect.
+- **F10.1** **An unactivated business is bounded twice, because it is pure
+  cost** — a rented number and live call minutes against no revenue, with no
+  relationship to protect:
+  - **five test calls**, after which the number stops answering (F1.13, F1.13a);
+  - **ten days**, after which the business is removed entirely — number released,
+    everything deleted.
+
+  **The two limits are independent and bite in either order.** A business can
+  exhaust its calls on day one and sit unbound for nine more, or never call at
+  all and be deleted on day ten with its allowance untouched. Only the operator
+  changes either (F10.1b, F10.1c).
+
 - **F10.1a** **A consumer has no direct route to Ringly**, and does not need
   one. A caller wanting their data removed asks the **business**, which is who
   they have a relationship with; Ringly is the business's service provider
@@ -1192,10 +1256,12 @@ messages from what looks like one company (F7.21).
   otherwise be deleted while the problem is being investigated. **Silence is not
   a pause:** absent an explicit operator action the default stands and an
   unactivated business is removed at day 10.
-- **F10.1c** **A business whose test calls were exhausted and then fixed gets its
-  allowance reset** by the operator, along with the paused clock (F10.1b). Without
-  a reset the business is unblocked in principle and still unable to confirm a
-  call in practice, which is the same dead end it was already in.
+- **F10.1c** **Resetting the allowance and rebinding the agent are one operator
+  action**, taken once the fault is fixed. A business whose five calls all failed
+  has an unbound number (F1.13a) **and** an exhausted allowance, so restoring one
+  without the other leaves it exactly as stuck as before — a phone that rings
+  nowhere, or an answering phone with no calls left to prove itself with. The
+  operator normally does this alongside pausing the clock (F10.1b).
 - **F10.2** **Cancellation is not self-serve in v3.** All business-initiated
   account actions — cancellation, deletion, reactivation — go through Ringly's
   **official contact email address**, which is the single supported channel.
@@ -1589,17 +1655,12 @@ dropped-call definition (F6.3), calendar-provider switching out of scope (R9).
   customer, because moving a live phone system is not a thing to do casually.
   The decision turns on how scheduled work is run (N8.3) and on whether the
   Next.js-native deployment is worth more than the container control.
-- **Q7 — Who sends the payment follow-up emails during grace and suspension?**
-  That they **must keep going through suspension is settled** (F7.11b-i) — the
-  open part is the sender. F7.20 and F7.21 assign the whole failure path to
-  Ringly and switch Stripe's dunning off, on the grounds that only Ringly can say
-  service continues seven days, that nothing has been deleted yet, and what goes
-  in forty-eight hours. **Turning Stripe's dunning back on would mean two
-  differently-worded emails from what looks like one company**, which is the
-  thing F7.21 exists to prevent. Options: keep it as specified (Ringly sends,
-  Stripe retries silently), or hand the plain "your card was declined" note to
-  Stripe and keep only the consequence-bearing ones. **Blocks nothing before
-  Phase 6**; the retries themselves are Stripe's either way (F7.20).
+- **Q7 — Resolved.** **Ringly sends every payment email, including through
+  suspension; Stripe retries the card and says nothing.** Suspension is Ringly's
+  concept — Stripe has no idea the agent has been unbound, that the period is
+  paused, or what is deleted in 48 hours — so the only sender who can write a
+  true email is Ringly. F7.20, F7.21 and F7.11b-i stand as written and Stripe's
+  dunning stays off.
 
 ---
 
@@ -1853,15 +1914,20 @@ false`, and **`is_test_call boolean not null default false`**.
 
   **`is_test_call` is written once, at the post-call webhook, as
   `business.billing_status = 'unbilled'`** — the account state at the moment the
-  call happened (F1.13a). There is no heuristic and no caller-ID check: before
+  call happened (F1.13c). There is no heuristic and no caller-ID check: before
   activation the number exists nowhere but in the owner's hand, so every call to
   it is a test call by construction.
 
   **It is stored rather than derived** for one reason: billing status is not
-  stable. Deriving "was this a test call" from today's status would flip all ten
+  stable. Deriving "was this a test call" from today's status would flip every one
   of a business's test calls to non-test the instant it activates, corrupting the
   F1.13 counter, every billable total (F7.6), and the analytics rollup at once.
   A fact about the past is written down at the time.
+
+  **The same handler enforces the allowance** (§2.4a.2): if this call is the
+  fifth, it unbinds the agent before returning, so the sixth is never answered.
+  The count is read from `calls`, not held on `businesses`, so a reset (F10.1c)
+  is an explicit allowance grant rather than a decrement anyone can lose track of.
 
   Calls are **not** linked to customers: there is no reliable way to identify one
   (F6.3), so no per-customer reporting exists and nothing needs the link. No
@@ -1872,6 +1938,11 @@ false`, and **`is_test_call boolean not null default false`**.
   billing (010) is three phases later: `contact_email`, `contact_email_verified_at`,
   `test_call_confirmed_at`, `activated_at` (F1.11, F1.12). The **payment-method**
   leg of the checklist is read from Stripe in Phase 6, not stored here.
+- **`businesses.test_call_allowance int not null default 5`** (F1.13). A column
+  rather than a constant so the platform default can move without a deploy and so
+  the operator's reset (F10.1c) is a write to one row rather than a special case
+  in the counting logic. Calls used are counted from `calls`; this is the
+  ceiling they are counted against.
 - **`businesses` gains the two horizons** — `booking_horizon_days default 70`
   and `materialisation_horizon_days default 90` (F2.9, F5.2) — for the same
   reason: Phases 3, 4 and 8 read them, and none of those depends on billing.
@@ -2116,7 +2187,7 @@ POST /api/activate            -- the Activate button, and nothing else
 **`billing_status` moves off `unbilled` here and nowhere else in onboarding.**
 No background job promotes a business, no call count trips it, no operator action
 does it. That single write is what every downstream billing decision keys
-on — including whether the call arriving a second later is a test call (F1.13a).
+on — including whether the call arriving a second later is a test call (F1.13c).
 
 ### 2.4a.2 The two ways it stops, and what the user sees
 
@@ -2132,41 +2203,61 @@ actually granted.
 - The **account exists but cannot activate**, and is never charged. It sits at
   `unbilled` under the 10-day clock like any other unactivated business.
 
-**Test calls exhausted without confirmation** (F1.13). The counter is
-`count(calls) where is_test_call`; the tenth is the last.
+**Test calls exhausted without activation** (F1.13). The counter is
+`count(calls) where is_test_call`; **the fifth is the last**, and the allowance
+is a platform config value, not a literal.
 
-- **Nothing decides whether a call is a test** (F1.13a). `is_test_call` is
+- **Nothing decides whether a call is a test** (F1.13c). `is_test_call` is
   written at the post-call webhook as `billing_status = 'unbilled'`, and that is
   the entire rule. The number was bought minutes ago and published nowhere, so
   before activation there is no other kind of call it could be.
-- **Reaching ten does not activate anything** (F1.13, F1.12b). It is a ceiling
-  on Ringly's exposure to an unactivated business, not a threshold that promotes
-  one. The eleventh inbound call is **still answered** — refusing to answer a
-  phone is worse than the cost of a call — is **still a test call**, is **still
-  free**, and does not extend the allowance. The account stays `unbilled` and
-  stuck until the operator acts.
-- The business is **emailed**: the number is not active, Ringly is looking into
-  it, and they will hear back. They are never charged.
-- The failure is raised on the **operator dashboard** and emailed to the operator
-  (F9.12, "activation stuck").
-- **Recovery is operator-led**: the operator **pauses the 10-day clock**
-  (F10.1b) — otherwise the business is deleted underneath the investigation — and
-  **resets the allowance** (F10.1c) once the fault is fixed, since an unpaused
-  business with no calls left is in the same dead end it started in.
+- **The unbind happens in the same post-call handler that writes the fifth
+  record**, not on a sweeper pass. A timer-based check would leave a window in
+  which calls six and seven are answered and paid for, which is the exact cost
+  the limit exists to stop.
+
+```
+post-call webhook, business is `unbilled`:
+  write the call with is_test_call = true
+  if count(calls where is_test_call) >= test_call_allowance:
+      unbind the Retell agent from the number      -- §2.10.1, same mechanism
+      email the business; alert the operator       -- F9.12 "activation stuck"
+```
+
+- **Unbound means the sixth call is never answered**, so it costs nothing. A
+  recorded "sorry, not active" message would still be a connected call and would
+  still be billed to Ringly by the telephony provider — the refusal has to happen
+  before the agent picks up (F1.13a).
+- **The number stays rented and stays in `takenNumbers`** (F10.4a). Unbinding
+  never makes a number reusable, and an unactivated business's unbound number
+  looks exactly like an orphan unless that rule holds (§2.10.1).
+- **Activation still works and rebinds** (F1.13b). If all three checklist items
+  are green the Activate button is live, and pressing it binds the agent back
+  before charging. A business that has decided to pay is never held behind an
+  allowance that exists to cap free usage.
+- **Otherwise recovery is operator-led**: pause the 10-day clock (F10.1b) so the
+  business is not deleted underneath the investigation, then **reset the
+  allowance and rebind together** (F10.1c) — either alone leaves it stuck.
 
 ### 2.4a.3 Decisions worth stating
 
 - **Nothing in step 8 blocks anything else in step 8.** The test-call counter
-  runs independently of email verification and of the card; a business can burn
-  test calls before Ringly holds any payment detail at all. That is intended —
-  ten calls is a bounded, cheap cost against a much larger risk of losing someone
-  at the point of asking for a card.
-- **Activation requires all three.** The card is obvious. The confirmed test call
-  is obvious. The **verified email** is the one that looks skippable and is not:
-  it receives the 48-hour warning before deletion (F10.3a), so activating on an
-  unverified address builds in a silent failure of the one notice that must
-  always arrive.
-- **Activation and first payment are the same event.** Confirming completes
+  runs independently of email verification and of the card; a business can spend
+  its whole allowance before Ringly holds any payment detail at all. That is
+  intended — **five** calls is a bounded, cheap cost against a much larger risk of
+  losing someone at the point of asking for a card.
+- **Five, not more, and the sixth is refused rather than answered** (F1.13a).
+  The allowance has to be small enough that a business which never intends to pay
+  cannot run a free receptionist on it, and refusing outright is the only way the
+  cap actually caps: a connected call is billed to Ringly whatever the agent says
+  during it.
+- **Activation requires all three, and works even with the allowance spent.** The
+  card is obvious. The confirmed test call is obvious. The **verified email** is
+  the one that looks skippable and is not: it receives the 48-hour warning before
+  deletion (F10.3a), so activating on an unverified address builds in a silent
+  failure of the one notice that must always arrive. **Exhausting the allowance
+  never blocks activation** (F1.13b) — it rebinds the number instead.
+- **Activation and first payment are the same event.** Pressing Activate is
   period 1's charge; there is no separate activation fee (F7.1).
 - **Provisioning runs behind the value screen** (F1.9), so the Retell round-trip
   is never a blocking form step.
@@ -2686,17 +2777,26 @@ never pauses anything**.
 
 ### 2.10.1 What withdrawing service actually does
 
-Suspension and dormancy both **unbind the Retell agent from the number**. The
+**Unbinding the Retell agent from the number is the one mechanism for stopping
+service**, used at three different moments for three different reasons. The
 number stays rented to that business; it simply stops being answered. Rebinding
-on return restores service on the same number, which is the whole point of
-holding it (F10.4).
+restores service on the same number, which is the whole point of holding it
+(F10.4).
 
-- **Unbind** on `active → suspended` (day 7) and on `cancelling → dormant`
-  (window close).
-- **Rebind** on any return to `active` — paying out of suspension (F7.10b), or
-  coming back from dormancy (F7.12e).
-- **Release** only at deletion — day 10 for a business that never activated,
-  day 60 otherwise.
+| Unbind when                                                              | Why                                                                             | Rebind when                                                              |
+| ------------------------------------------------------------------------ | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| **The 5th test call ends** and the business is still `unbilled` (F1.13a) | Free calls are pure cost, and a refusal message would still be a connected call | It **activates** (F1.13b), or the operator resets the allowance (F10.1c) |
+| `active → suspended`, day 7 (F10.3)                                      | Unpaid, and the meter pauses with it (F7.11b)                                   | It pays (F7.10b)                                                         |
+| `cancelling → dormant`, window close (F7.12b)                            | It left; the number is held in case it returns                                  | It returns (F7.12e)                                                      |
+
+- **Release** — as distinct from unbind — happens **only at deletion**: day 10
+  for a business that never activated, day 60 otherwise (§2.9.4 step 6).
+- **The unactivated case is the only one driven by a call**, not by a clock or a
+  payment, so it fires inline in the post-call webhook rather than on a sweeper
+  pass (§2.4a.2). Every other trigger is a scheduled transition.
+- **Only the suspension case touches billing.** An unactivated business has no
+  period to pause and no card to charge, so unbinding it is purely a cost
+  control; a dormant one already settled on the way out.
 
 **Unbinding and pausing the meter are one transaction, not two steps that happen
 to run together** (F7.11b). The moment the agent stops answering, the billing
@@ -2724,7 +2824,9 @@ keep them apart, and all three are required:
    row is what protects the number, so releasing first means a crash mid-teardown
    leaves a row whose number is gone — visible and recoverable — rather than an
    unprotected number a concurrent signup can be handed.
-3. **A test covers it directly**: a suspended business's number must not be
+3. **Tests cover it directly**, one per way of reaching an unbound number:
+   neither a **suspended** business's number, a **dormant** one's, nor an
+   **unactivated business that spent its five test calls** (F1.13a) may be
    returned by `selectReusableNumber` while its row exists.
 
 Getting this wrong hands a suspended business's phone number — the one printed on
@@ -2734,13 +2836,22 @@ of the system except the business it happened to.
 **The chain, end to end.** A number is unavailable to anyone else from the moment
 it is provisioned until the moment its business is deleted:
 
-| Business state                | Row exists? | In `takenNumbers`? | Number answers?    | Reassignable?                |
-| ----------------------------- | ----------- | ------------------ | ------------------ | ---------------------------- |
-| `unbilled`, `active`, `grace` | yes         | yes                | yes                | **no**                       |
-| `suspended` (day 7–60)        | yes         | yes                | no — agent unbound | **no**                       |
-| `cancelling`                  | yes         | yes                | yes                | **no**                       |
-| `dormant` (60 days)           | yes         | yes                | no — agent unbound | **no**                       |
-| deleted (day 60)              | **no**      | no                 | —                  | released, gone from the pool |
+| Business state                           | Row exists? | In `takenNumbers`? | Number answers?    | Reassignable?                |
+| ---------------------------------------- | ----------- | ------------------ | ------------------ | ---------------------------- |
+| `unbilled`, allowance remaining          | yes         | yes                | yes                | **no**                       |
+| `unbilled`, **allowance spent** (F1.13a) | yes         | yes                | no — agent unbound | **no**                       |
+| `active`, `grace`                        | yes         | yes                | yes                | **no**                       |
+| `suspended` (day 7–60)                   | yes         | yes                | no — agent unbound | **no**                       |
+| `cancelling`                             | yes         | yes                | yes                | **no**                       |
+| `dormant` (60 days)                      | yes         | yes                | no — agent unbound | **no**                       |
+| deleted (day 10 or 60)                   | **no**      | no                 | —                  | released, gone from the pool |
+
+**Note the second row.** An unactivated business with a spent allowance is the
+newest way to reach an unbound number, and it is the one most likely to be missed
+by `selectReusableNumber`: the business never paid, never activated, and its
+number answers nothing — which is very nearly the definition of an orphan the
+function is looking for. **The row exists, so the number is taken.** That is the
+only test.
 
 **The row is what protects the number, and the row survives the whole dormancy.**
 It is deleted only at the end, together with the release — which answers the
@@ -3186,7 +3297,7 @@ designed for.
 | F1.7a–c scope decline       | §2.4a.1 steps 4–6, §2.4a.2                                                          |
 | F1.11 contact email         | 005 (`contact_email`, `contact_email_verified_at`), §2.12                           |
 | F1.12–F1.12a checklist      | §2.4a.1 steps 8–9, §2.4a.3; 005 (`test_call_confirmed_at`, `activated_at`)          |
-| F1.13, F1.13a test calls    | §2.4a.2; 005 (`is_test_call`, written from `unbilled` at post-call); F9.12          |
+| F1.13–F1.13d test calls     | §2.4a.2 (inline unbind at the 5th); §2.10.1; 005 (`is_test_call`); F9.12            |
 | F2.1a disclosure            | §2.15 (appended by Ringly at provisioning, not editable)                            |
 | F2.2–F2.3a booking          | §2.5.2 steps 1–8; 005 exclusion constraint                                          |
 | F2.4 identifying an appt    | §2.5.6                                                                              |
