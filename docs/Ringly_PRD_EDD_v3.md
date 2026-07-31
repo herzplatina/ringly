@@ -546,7 +546,7 @@ period _n+1_ begins 30 days after period _n_.
 | Payment reminder        | Through the grace period              | Firmer, counts down to the date service stops                    |
 | Suspension notice       | Day 7 (F10.3)                         | Direct, **leads with "nothing has been deleted"**                |
 | Deletion warning        | 48 hours before deletion (F10.3a)     | Unambiguous; itemises exactly what is destroyed                  |
-| Cap reached             | $500 reached (F7.9)                   | **Good news** — they earned it, the rest is on Ringly            |
+| Cap reached             | $500 reached (F7.9b)                  | **Good news** — they earned it, the rest is on Ringly            |
 | Cancellation confirmed  | Operator marks cancelled (F7.10a)     | Matter-of-fact; states refund, final charge, deletion date       |
 | Calendar access failing | Bookings being refused (F2.7)         | Urgent, explains _why_ refusing beats double-booking             |
 | Recurring change        | Occurrence shifted or skipped (F5.2b) | Informational; **states plainly that the customer was not told** |
@@ -582,7 +582,7 @@ period _n+1_ begins 30 days after period _n_.
   platform overhead, immaterial per tenant) and Google Places (one-off at
   onboarding, considered covered by the first $100). **WhatsApp messaging cost is
   added to this model when WhatsApp ships.**
-- **F9.6** **Operator alerts**: a business reaching its cap (F7.9), and payment
+- **F9.6** **Operator alerts**: a business reaching its cap (F7.9b), and payment
   failures. Delivered by **email** initially. _TBD: move operator alerting to
   Slack; pending implementation._
 - **F9.7** Refreshed **daily**, and available at all times. The current period is
@@ -811,7 +811,7 @@ failure modes are stated explicitly.
 
 ## 1.8 Decisions and open questions
 
-**Settled 2026-07-30:** pricing shape (F7), cap behaviour (F7.9/F7.12a), minute rounding (F7.7a), grace and suspension timeline (F10.3), email
+**Settled 2026-07-30:** pricing shape (F7), cap behaviour (F7.9a/F7.12d), minute rounding (F7.7a), grace and suspension timeline (F10.3), email
 provider Resend, 90-day recurrence horizon, occurrence-clash handling (F5.2a),
 price at occurrence time and duration locked (F3.4), Ringly storing neither
 transcripts nor recordings (F10.6), retention for the life of the relationship
@@ -1290,7 +1290,7 @@ Ringly-specific consequence on a Ringly-specific timeline (F7.21).
 **Why we do not use Stripe's proration.** Stripe prorates by the second, credits
 the customer balance rather than the card unless told otherwise, and — decisively
 — has no way to express "the total for this period may never exceed $500"
-(F7.12a). Since the clamp has to be ours regardless, the whole calculation stays
+(F7.12d). Since the clamp has to be ours regardless, the whole calculation stays
 ours and Stripe is used only to _execute_ the resulting refund and invoice.
 
 **Billing period boundaries.** A period starts at **midnight local time** in the
