@@ -409,16 +409,80 @@ period _n+1_ begins 30 days after period _n_.
 > Widening billing to all connected minutes — the expected next model — becomes a
 > new policy row, not a deploy.
 
-### F8 — Email notifications
+### F8 — Email
 
-- **F8.1** Email is sent to the business contact address (F1.11).
-- **F8.2** **Billing email**: activation receipt, upcoming charge notice, invoice
-  issued, payment succeeded, payment failed, and approaching/at cap.
-- **F8.3** **Stats email**: a periodic digest of the F6.2 headline figures,
-  aligned to the business's 30-day billing period.
-- **F8.4** A business can unsubscribe from stats email. **Billing email is
-  transactional and cannot be unsubscribed.**
-- **F8.5** Email sending is idempotent — a retry never sends a duplicate.
+- **F8.1** Business email goes to the contact address collected at onboarding
+  (F1.11). Operator email goes to Ringly's own alert address.
+- **F8.2** **Every email Ringly can send is declared in one place** —
+  `src/emails/registry.ts`. If a message is not in that table it is not sent.
+  The table fixes, per email: audience, sending identity, subject line,
+  transactional status, and how its idempotency key is built.
+- **F8.3** **Templates are React Email components versioned in this repository**
+  (`src/emails/`). They are reviewed in pull requests like any other code, so a
+  change to what a customer reads goes through the same scrutiny as a change to
+  what the code does. No hosted template editor, no copy living in a vendor UI.
+- **F8.4** **Transactional email cannot be unsubscribed from.** A business
+  cannot opt out of being told its payment failed or its data is about to be
+  deleted. **Only the periodic stats digest is optional.**
+- **F8.5** Sending is **idempotent**: the key is written before the send, so a
+  retried worker can never send twice. Three key shapes, chosen per email:
+  - **per period** — at most once per business per billing period (receipts,
+    digests, cap notice);
+  - **per incident** — at most once per continuous failure, however many calls
+    it affects (calendar outage). An outage must never produce one email per
+    lost customer;
+  - **per event** — once per discrete occurrence (a shifted appointment, a
+    deletion warning).
+
+**Format defaults — every email**
+
+- **F8.6** Plain and utilitarian. No images, no web fonts, no columns, no
+  marketing voice. These are messages about money and service interruptions;
+  they should read like a utility bill and survive Gmail clipping and Outlook.
+- **F8.7** Structure is fixed: wordmark, one heading stating the situation, body
+  copy in plain language, a facts table for any figures, **at most one call to
+  action**, then the footer.
+- **F8.8** Every email states **what has happened, what it means for the reader,
+  and what happens next if they do nothing**. An email that leaves the reader
+  unsure whether they must act has failed.
+- **F8.9** Amounts always carry currency; dates are always absolute ("14 August"),
+  never relative ("in 3 days"), because delivery may be delayed.
+- **F8.10** Subject lines are under ~60 characters, state the situation rather
+  than tease it, and never use urgency the body does not justify.
+- **F8.11** **Separate sending identities per stream** — billing, service,
+  reports, operator alerts — so a digest nobody opens can never harm the
+  reputation of the address that tells someone their payment failed.
+
+**Business-facing email — the full set**
+
+| Email                   | When                                  | Tone default                                                     |
+| ----------------------- | ------------------------------------- | ---------------------------------------------------------------- |
+| Activation receipt      | First fixed fee charged (F7.1)        | Welcoming; confirms what was charged and what is free            |
+| Upcoming charge         | Before each period's fixed fee        | Neutral; no action needed                                        |
+| Payment succeeded       | Invoice settled                       | Neutral; itemised                                                |
+| Payment failed          | First decline (F7.11)                 | Calm, **leads with "your service is still running"**             |
+| Payment reminder        | Through the grace period              | Firmer, counts down to the date service stops                    |
+| Suspension notice       | Day 7 (F10.3)                         | Direct, **leads with "nothing has been deleted"**                |
+| Deletion warning        | 48 hours before deletion (F10.3a)     | Unambiguous; itemises exactly what is destroyed                  |
+| Cap reached             | $500 reached (F7.9)                   | **Good news** — they earned it, the rest is on Ringly            |
+| Cancellation confirmed  | Operator marks cancelled (F7.10a)     | Matter-of-fact; states refund, final charge, deletion date       |
+| Calendar access failing | Bookings being refused (F2.7)         | Urgent, explains _why_ refusing beats double-booking             |
+| Recurring change        | Occurrence shifted or skipped (F5.2b) | Informational; **states plainly that the customer was not told** |
+| Test calls exhausted    | Activation stuck (F1.13)              | Reassuring; not their fault, not charged, Ringly is on it        |
+| Stats digest            | Each billing period (F8.3)            | Light; the only unsubscribable email                             |
+
+**Operator-facing email**
+
+- **F8.12** Operator alerts are a different product from business email: read on
+  a phone, at an inconvenient moment. Each **leads with the business name and
+  the money at stake**, and says what happens if it is ignored. No reassurance,
+  no marketing voice.
+- **F8.13** The set: business hit its cap (with cost-to-serve and margin, so an
+  unprofitable tenant is visible immediately), payment failed, calendar
+  unreachable, activation stuck, business deleted.
+- **F8.14** These move to Slack later (F9.6). The format carries the same
+  information either way, so the move is a transport change rather than a
+  rewrite.
 
 ### F9 — Operator dashboard (Ringly-internal)
 
