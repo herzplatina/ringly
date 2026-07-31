@@ -108,6 +108,14 @@ Revised again 2026-07-31 — see below._
 > test mode with the other vendors faked, and assertions on projections rather
 > than tables. What the suite cannot prove is listed rather than glossed
 > (§2.20.3), and the vendor behaviour that needs a human is **action item A1**.
+> **§2.20.3 is the honest half**: requirements no test can hold, requirements only
+> a human can confirm, **scenarios that pass on something narrower than the
+> requirement they hold**, premises that are not behaviours at all, and the two
+> isolation rules enforced by lint rather than by tests.
+> **§2.20.3 is the honest half**: requirements no test can hold, requirements only
+> a human can confirm, **scenarios that pass on something narrower than the
+> requirement they hold**, premises that are not behaviours at all, and the two
+> isolation rules enforced by lint rather than by tests.
 >
 > **A final pass over the whole document** then fixed: an invariant that claimed
 > a business is never charged for an unanswered day, which the fixed-period model
@@ -4276,20 +4284,86 @@ test('suspension does not extend the period', async () => {
 })
 ```
 
-### 2.20.3 What end-to-end tests do not cover
+### 2.20.3 What the suite cannot prove
 
-Listed so the gaps are decisions rather than oversights:
+**A green suite is not a working product**, and the gap between the two is
+written down here rather than discovered at launch. Three kinds of thing sit
+outside end-to-end testing: **requirements no automated test can hold at all**,
+**scenarios in §2.21 that pass on something narrower than the requirement says**,
+and **claims that are premises rather than behaviours**.
 
-- **N2.1 scale** — 10,000 tenants × 10,000 customers needs a load harness, not an
-  E2E suite. A separate exercise before launch.
-- **N10 durability** — proved by a restore drill (N10.5), not by a test.
-- **F8.6–F8.10 email format** — "reads like a utility bill", "no urgency the body
-  does not justify". Assertable in part (currency present, dates absolute, subject
-  length); the rest is a review checklist.
-- **N3 latency** — measurable in the suite but meaningful only under production
-  load; the numbers here are smoke checks, not the real measurement.
-- **F2.6 filler speech and agent tone** — nothing to assert against a simulated
-  payload. Manual QA (§2.20.4).
+#### Requirements no end-to-end test can hold
+
+| Requirement                                           | Why not                                                                                                                                            | What covers it instead                                  |
+| ----------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------- |
+| **N2.1** 10k businesses × 10k customers               | A suite runs against a handful of rows. The target is a property of production data volume                                                         | **Action item A2** — a load exercise                    |
+| **N2.2** no degradation with platform size            | Needs two populations orders of magnitude apart                                                                                                    | A2                                                      |
+| **N2.3** background work sustains steady-state volume | Same — lag only appears under real throughput                                                                                                      | A2                                                      |
+| **N3** latency budgets                                | Measurable in CI, meaningless there: no network, no cold starts, no contention. A CI number that passes proves nothing about a caller's experience | Production monitoring; §1.7 tracks it                   |
+| **N4.1, N4.3, N4.4** serving cost                     | Cost is a bill, not an assertion                                                                                                                   | The operator dashboard (F9) is the instrument           |
+| **N10.1–N10.7** durability                            | Proving a backup means destroying something and restoring it. That is a drill, not a test                                                          | **Action item A3** — a restore drill                    |
+| **N8.1–N8.4** hosting portability                     | A constraint on decisions, not a behaviour. Nothing to execute                                                                                     | Code review; the §2.2a checklist                        |
+| **N6.2** PCI SAQ-A scope                              | A compliance posture, not an observable output                                                                                                     | The self-assessment questionnaire                       |
+| **F7.18** tax correctness                             | Stripe Tax computes it; asserting our own expectation would be re-implementing the thing we chose not to own                                       | Reconciliation against Stripe's reports                 |
+| **F2.1a** legal sufficiency of the disclosure         | Whether the wording satisfies all-party-consent statutes is a legal question                                                                       | Legal review before launch                              |
+| **§1.4** healthcare exclusion                         | Enforced by a schema constraint, which is testable — but that Ringly _has no BAA_ is a commercial fact                                             | Commercial decision, re-checked if a BAA is ever signed |
+| **F7.15** terms will change without a redesign        | An assertion about future work                                                                                                                     | Demonstrated the first time a policy row changes        |
+| **§1.7** success metrics                              | Outcomes over a population of real businesses                                                                                                      | Measured after launch                                   |
+| **R1–R22** risks                                      | Risks are not requirements                                                                                                                         | Reviewed, not executed                                  |
+
+#### Requirements only a human can confirm
+
+These are **faked in the suite**, so the tests prove Ringly's reaction to the
+fake — never the vendor's real behaviour. All of them belong to **action item
+A1** (§2.20.4).
+
+| Requirement                                          | The test proves                                                                             | The test does not prove                                   |
+| ---------------------------------------------------- | ------------------------------------------------------------------------------------------- | --------------------------------------------------------- |
+| **F2.1** agent describes services, prices, durations | The data is available to the agent                                                          | That it says them, correctly or intelligibly              |
+| **F2.1a** disclosure spoken on every call            | The disclosure is in the provisioned agent's configuration and not editable by the business | That a caller hears it, before anything of substance      |
+| **F2.4** voice-recognition errors are recoverable    | A corrected value re-runs the search                                                        | That the agent hears the correction in the first place    |
+| **F2.6** filler speech, no perceptible silence       | Nothing — there is no audio in a simulated payload                                          | The entire requirement                                    |
+| **F2.10** the agent tells a caller it cannot help    | The call is recorded as dropped                                                             | What the caller actually hears                            |
+| **F2.11** booking read back to the caller            | Nothing                                                                                     | The entire requirement                                    |
+| **F1.7a** granular consent can decline calendar      | Our scope check handles a declined grant                                                    | That Google presents the choice, or the shape it returns  |
+| **F2.7a** revoked credentials refuse booking         | We fail closed on an unauthorised result                                                    | That Google's revocation looks like our fake              |
+| **F8.11** four sending identities protect reputation | Four identities are configured and used                                                     | Deliverability, inbox placement, or spam classification   |
+| **F10.6, R10** provider retention TTL                | Retention is set on every provisioned agent                                                 | That the provider actually expires content at 30 days     |
+| **R2** tokens revoked after 7 days in Testing        | Nothing                                                                                     | The entire risk — it needs a real week and a real project |
+
+#### Scenarios that pass on something narrower than the requirement
+
+**These are the dangerous ones**, because they are green. Listed so nobody reads
+a passing suite as more than it is.
+
+| Scenario                                  | Passes on                                                                | Requirement actually says                                                                           |
+| ----------------------------------------- | ------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------- |
+| **96–103** dashboard metrics              | The correct numbers are produced                                         | Nothing about whether the chart is readable, correctly formed, or in the right units (§2.8a)        |
+| **112** dashboard within budget           | A query returns quickly against a small dataset                          | ≤500ms p95 at 10,000 tenants (F6.12)                                                                |
+| **220–222** email content                 | Currency present, dates absolute, subject length, required facts present | "Reads like a utility bill", "no urgency the body does not justify", tone per audience (F8.6–F8.12) |
+| **228** margin chart renders negatives    | The data marks a negative month                                          | That a diverging scale with a zero baseline makes it _visible_ (F9.2b)                              |
+| **232–233** view-as-business              | No business session is created and controls are absent                   | That it is visibly a borrowed view (F9.2e)                                                          |
+| **152** Stripe retries through suspension | Collection is not paused                                                 | That Stripe's real Smart Retries span 60 days (§2.9.3)                                              |
+| **256–258** latency                       | A handler returns                                                        | Anything about p95 under load (N3)                                                                  |
+| **267–268** rate limiting                 | A limit rejects                                                          | That the limit is set at a sensible level for real traffic (N9)                                     |
+
+#### Claims that are premises, not behaviours
+
+Stated in the PRD as reasoning, and **there is nothing to assert**: that a
+customer cannot be reliably identified (F6.3, F9.2d — the design's _response_ is
+testable, the claim is not); that a stale price is a rounding error while a stale
+conflict check is a double booking (§2.5.5); that holding a number is worth more
+to a business than the rental costs Ringly (F10.4); that pooling numbers saves
+nothing (F10.4b). Each is a judgement the design rests on. If one turns out to be
+wrong, tests will not be what tells us.
+
+#### Enforced at build time, not by this suite
+
+**N1.2** cross-tenant isolation and **§2.11** ops containment are partly held by
+tests (scenarios 245–247, 224–225) and partly by **lint rules** — that
+`createServiceClient` is not imported outside the tenant module, and that no
+tenant module transitively imports `lib/ops`. Those are static checks. They
+belong in CI beside the suite, not in it.
 
 ### 2.20.4 Action item: manual QA against the real vendors
 
@@ -4706,5 +4780,7 @@ _N6, N9 — 6 scenarios_
 | 268 | Passing the daily spend ceiling degrades enrichment to manual entry | N9.1  |
 | 269 | Nothing chargeable to Ringly happens before Google sign-in          | N9.3  |
 
-**Total: 269 scenarios.** Coverage of what is deliberately _not_ here is
-§2.20.3; the vendor behaviour no suite can prove is §2.20.4.
+**Total: 269 scenarios.** They are not the whole picture: **§2.20.3 lists what no
+suite can prove** — including the scenarios above that pass on something narrower
+than the requirement they hold. Read the two together before treating green as
+done.
