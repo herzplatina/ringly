@@ -290,31 +290,45 @@ two-things rule does not constrain them.
 **(1) Aggregate analysis of calls to Ringly**
 
 - **F6.1** Each business sees only its own data, always.
-- **F6.2** Reported for **both** groupings, side by side:
-  - each **calendar month** (June, July, August) — how a business thinks; and
-  - each **30-day billing period** — how they are charged.
-- **F6.3** **Four metrics, aggregate only.** There is no per-customer reporting:
+- **F6.2** **Two filters, in order, governing everything on the page:**
+  1. **Unit** — `calendar month` (how a business thinks) or `billing period`
+     (how it is charged). One or the other, never both at once.
+  2. **Range** — `current` · `past 3` · `past 6` · `past 12` of that unit. These
+     four and no others; an arbitrary date picker invites ranges that cross a
+     unit boundary and answer nothing.
+- **F6.3** **Five metrics, aggregate only.** There is no per-customer reporting:
   a customer cannot be reliably identified — names are not unique and one person
   rings from different numbers — so any per-customer figure would be a guess
   presented as a fact.
   - **total calls**
   - **average call duration**
+  - **median call duration**
   - **outcome breakdown**: booked / rescheduled / cancelled / enquiry-only /
-    dropped, as counts and percentages
+    dropped
   - **time of day** the calls arrived
-- **F6.3a** Plus **revenue booked** — an **estimate** for future appointments,
-  labelled as such, because price resolves at occurrence time (F3.4).
-- **F6.3b** **Time of day is a slice of the call count**, not a metric of its
-  own: it answers "when do these calls arrive", which is the only figure that
-  tells a business when it is missing people.
-- **F6.3c** **Enquiry-only and dropped are counted separately**, here and on the
+- **F6.3a** Plus **revenue booked** — an **estimate** wherever the range includes
+  future appointments, labelled as such, because price resolves at occurrence
+  time (F3.4).
+- **F6.3b** **Time of day is reported in six four-hour windows**, starting at
+  local midnight: 00–04, 04–08, 08–12, 12–16, 16–20, 20–24. Hourly resolution is
+  noise at these volumes; four-hour windows are the grain at which a business can
+  act — "we are missing calls in the evening".
+- **F6.3c** **Outcome and time of day cross each other through filters, not a
+  separate report.** The outcomes view filters by time window; the time-of-day
+  view filters by outcome. Both questions — how do evening calls end, when do
+  reschedules happen — are answered without either chart carrying two dimensions
+  at once.
+- **F6.3d** **Enquiry-only and dropped are counted separately**, here and on the
   operator's dashboard, even though neither is billable (F7.6). Collapsing them
   would hide the difference between an agent that answers questions well but does
   not convert, and one that is failing callers outright.
-- **F6.3d** **What the business pays Ringly does not appear here.** It lives in
-  the billing history section (F6.7–F6.8). The call analysis is about the work
-  done; the billing history is about the money, and mixing them makes both
-  harder to read.
+- **F6.3e** **Three separate trends across periods** — calls, appointments
+  booked, and revenue booked — each one chart, one column per period. Kept apart
+  rather than behind a measure toggle, so a period where calls rose and revenue
+  did not is visible at a glance instead of requiring two clicks to notice.
+- **F6.3f** **What the business pays Ringly is not among the call metrics.** It
+  lives in the billing history (F6.7). The call analysis is about the work done;
+  the billing history is about the money.
 - **F6.4** **"Dropped"** covers both a caller who hung up without a resolved
   outcome **and** a call the agent could not help with. If the caller did not get
   what they rang for, it is dropped. A completed enquiry — the caller asked
@@ -331,11 +345,17 @@ two-things rule does not constrain them.
 
 **(2) Billing history**
 
-- **F6.7** The business sees what it has paid Ringly, **per billing period**:
-  the fixed fee, the usage charged, the total, the date charged, and its status
-  (paid, failed, refunded). **"Refunded" is only ever a goodwill gesture made by
-  hand** — no rule in this document produces a refund, and none should be
-  built.
+- **F6.7** Billing history is **a table, not a chart** — one row per billing
+  period: **fixed fee · billable minutes · usage charge · total · % of the $500
+  cap · date charged · status**.
+  - **Billable minutes** are connected minutes on productive calls (F7.6);
+    enquiry-only and dropped calls consume none.
+  - **Status** is paid, failed, or refunded. **"Refunded" is only ever a goodwill
+    gesture made by hand** — no rule in this document produces a refund, and none
+    should be built.
+  - Minutes and money are different units, so nothing here is charted: a single
+    plot carrying both would need two axes, which is the one construction that
+    reliably misleads.
 - **F6.8** The current period shows usage accrued so far, the cap, and the next
   charge date.
 
@@ -713,16 +733,38 @@ delete the Stripe customer → delete Ringly's rows → write the departure reco
 - **F9.1** Visible **only to the operator**. No business owner may reach it by
   any route, with any credential. This is the single screen that reads across all
   tenants and is therefore treated as a walled garden (EDD §2.11, N1.1).
-- **F9.2** Per business, per calendar month: **net revenue** (charges received,
-  less payment-processor fees), **cost incurred** serving them, and the margin
-  between them.
-- **F9.2a** The same four call metrics the business sees (F6.3) — **total calls,
-  average duration, outcome breakdown, time of day** — plus the **cost of serving
-  those calls**. Every one is **filterable by business and grouped by business**:
-  the operator's question is always "which businesses, and how do they compare",
-  never "what happened overall".
-- **F9.2b** **No per-customer or unique-caller figures anywhere.** Same reason as
+- **F9.2** **Two filters, governing everything on the page:** a **range**
+  (`current calendar month` · `past 3` · `past 6` · `past 12`) and a **business
+  selector** listing every business active in that range, from which the operator
+  picks one, several, or all.
+- **F9.2a** **The main view is money, and it is a table** — one row per business:
+  **net revenue · cost · margin**, sortable on any column. With thousands of
+  businesses no chart distinguishes them; a table sorted by margin puts the ones
+  losing money at the top, which is the question the operator actually has.
+- **F9.2b** **Two charts.**
+  - **Margin over time**, one column per calendar month across the selected
+    range, aggregating whichever businesses are selected. Margin can go
+    **negative** (R8), so this chart has a **zero baseline** and distinguishes
+    positive from negative — a losing month must not render as merely a shorter
+    bar.
+  - **Outcomes × time of day**, grouping by one and filtering the other, exactly
+    as F6.3c does for the business.
+- **F9.2c** **No per-business call volume, duration, or outcome columns**, and no
+  platform-wide time-of-day chart. Those questions are answered by opening the
+  business's own dashboard (F9.2e), one click away and in the form the business
+  itself sees.
+- **F9.2d** **No unique-caller or per-customer figures anywhere.** Same reason as
   F6.3: a customer cannot be reliably identified, so the number would be a guess.
+- **F9.2e** **The operator can open any business's own dashboard**, exactly as
+  that business sees it, by picking the business from a **drop-down of business
+  names**. This is how a support conversation gets resolved — looking at the same
+  screen the person on the phone is describing.
+  - **Read-only.** Controls that belong to the business — editing services,
+    setting horizons, confirming a test call — are absent.
+  - **Visibly a borrowed view**, banner-marked with the business's name.
+  - **Not impersonation.** No business session is created and no business
+    credential is used; the page renders inside `/ops` from the operator's own
+    session (EDD §2.11).
 - **F9.3** Payment reliability per business — paid on time, late, failed,
   currently past due — so irregular payers are visible at a glance.
 - **F9.4** Platform totals: revenue, cost, and margin across all businesses.
@@ -751,9 +793,45 @@ delete the Stripe customer → delete Ringly's rows → write the departure reco
 - **F9.11** Shows the same **outcome definitions** the business sees (F6.5), so
   both sides of a conversation about the numbers are reading the same
   definitions.
-- **F9.12** Surfaces businesses needing attention: calendar access failing
-  (F2.7), test calls exhausted without confirmation (F1.13), payment failing, at
-  cap, and approaching final deletion.
+- **F9.12** **"Needs attention" is a table of named conditions, not a feeling.**
+  Every row is a business, the condition it is in, how long it has been in it, and
+  what the operator can do. Ordered by how little time is left to act.
+
+  **Broken now — a customer is being turned away as you read this**
+
+  | Condition            | Trigger                                       | Operator action                                                       |
+  | -------------------- | --------------------------------------------- | --------------------------------------------------------------------- |
+  | **Bookings failing** | An open calendar incident (F2.7)              | Get them to reconnect the calendar; every caller meanwhile is refused |
+  | **Activation stuck** | 10 test calls placed, never confirmed (F1.13) | Investigate — they are waiting on Ringly, and are not being charged   |
+
+  **About to lose the business**
+
+  | Condition                    | Trigger                             | Operator action                                             |
+  | ---------------------------- | ----------------------------------- | ----------------------------------------------------------- |
+  | **Deletion imminent**        | Inside the 48-hour warning (F10.3a) | Last chance; number and data go permanently at the deadline |
+  | **Suspended**                | Day 7+ of non-payment (F10.3)       | Their phone is not being answered; recoverable until day 60 |
+  | **Cancellation window open** | Requested, not yet settled (F7.12)  | They can still revoke; the window is short                  |
+  | **Unactivated, expiring**    | Approaching day 10 (F10.1)          | Pause the clock (F10.1b) or let it lapse                    |
+  | **Payment failed**           | Inside the 7-day grace (F7.11)      | Service still running; Stripe is retrying                   |
+
+  **Costing Ringly money**
+
+  | Condition           | Trigger                                  | Operator action                                               |
+  | ------------------- | ---------------------------------------- | ------------------------------------------------------------- |
+  | **At cap**          | Reached $500 for the period (F7.9b)      | Everything further is absorbed; check the pricing fits them   |
+  | **Negative margin** | Cost exceeded revenue for the range (R8) | The unbooked-call economics are not working for this business |
+
+  **Needs a human, or nothing will happen**
+
+  | Condition             | Trigger                                          | Operator action                                               |
+  | --------------------- | ------------------------------------------------ | ------------------------------------------------------------- |
+  | **Clock paused**      | An operator paused a lifecycle deadline (F10.1b) | Resolve and unpause — a paused clock never resumes itself     |
+  | **Dispute open**      | A chargeback was filed (F7.17)                   | Contest or concede by hand in Stripe; may outlast the account |
+  | **Debt on departure** | A settlement charge failed (F7.12f)              | Informational — recorded as owed, not pursued                 |
+
+  A business can appear under several conditions at once and is listed once per
+  condition, because they need different actions.
+
 - **F9.9** Shows **rented phone numbers that are not earning**: numbers held for
   businesses that never activated, are suspended, or are otherwise not paying the
   $100 minimum. Every such number is a standing cost with no revenue against it.
@@ -1255,33 +1333,44 @@ unchanged.
 
 ### 009 — analytics (F6, F9)
 
-One rollup table, because there is only one grain that matters.
-
 ```
 daily_business_stats(
   business_id, local_date,
   calls, duration_seconds_total,
-  calls_by_hour int[24],                       -- local hours
-  booked, rescheduled, cancelled, enquiry_only, dropped,
+  booked_by_window       int[6],   -- 00-04 04-08 08-12 12-16 16-20 20-24
+  rescheduled_by_window  int[6],   -- business-local windows (F6.3b)
+  cancelled_by_window    int[6],
+  enquiry_only_by_window int[6],
+  dropped_by_window      int[6],
   appointments_booked, appointments_rescheduled, appointments_cancelled,
   revenue_booked_cents,
   primary key (business_id, local_date))
 ```
 
-- **`local_date` is the business's local date** (N5.2, F6.11), which is what lets
-  the same rows serve calendar months _and_ 30-day billing periods (F6.2) —
-  daily granularity is the common denominator of two calendars that never align.
-- **`calls_by_hour` is a 24-element array of local hours.** Summing thirty to
-  ninety arrays elementwise is trivial in application code, and it keeps the
-  time-of-day slice in the same row as the count it slices.
-- **Average duration is derived, not stored**: `duration_seconds_total / calls`.
-  Storing an average makes it impossible to aggregate correctly across days.
-- **There is no per-customer table.** Earlier drafts had one; it is gone with the
-  requirement (F6.3). A customer cannot be reliably identified — names are not
-  unique and one person rings from several numbers — so any per-customer figure
-  would be a guess presented as a fact.
+- **The outcome × window grid is the storage shape**, because both dashboards
+  slice it in both directions (F6.3c, F9.2b). Everything else is derived: calls
+  by window is the elementwise sum of the five arrays, calls by outcome is the
+  sum within one, and `calls` is the sum of all thirty cells.
+- **Five columns rather than one 30-element array.** Same data, but
+  `rescheduled_by_window` reads as what it is, and a query wanting one outcome
+  touches one column.
+- **Windows are bucketed at rollup time from the business's local clock**
+  (N5.2) — not from UTC, and not recomputed at read time.
+- **`local_date` is the business's local date**, which lets the same rows serve
+  calendar months _and_ 30-day billing periods (F6.2), and trends across several
+  of either (F6.3e).
+- **Average duration is derived** (`duration_seconds_total / calls`). Storing an
+  average makes it impossible to aggregate across days.
 
-The **operator dashboard reads the same table** (F9.2a), grouped by business and
+**Median duration cannot come from this table** (F6.3). A median of daily medians
+is not the median, and no stored aggregate recovers the true one. It is computed
+**live from `calls` over the selected range** with `percentile_cont(0.5)` and an
+index on `(business_id, started_at)`. That is bounded by the range rather than by
+the tenant's history — a few thousand rows for a busy business over a month — so
+it stays inside the F6.12 budget. It is the only figure on either dashboard that
+touches raw calls, and the only one accepted as an exception to §2.8.
+
+The **operator dashboard reads the same table** (F9.2), grouped by business and
 summed into calendar months, plus `cost_records` and `billing_events` for the
 money. There is no second analytics pipeline.
 
@@ -1520,87 +1609,94 @@ transcript in the payload — the only moment Ringly ever sees it (F10.6).
 never be re-derived** (F6.6): if the classifier improves, history keeps its old
 labels and the dashboard says so rather than hiding it.
 
-**Five outcomes, not four.** `enquiry_only` and `dropped` stay distinct (F6.3c)
+**Five outcomes, not four.** `enquiry_only` and `dropped` stay distinct (F6.3d)
 even though neither is billable — the difference between an agent answering
 questions well but not converting, and one failing callers outright, is the most
 actionable signal on either dashboard.
 
 ## 2.8a Dashboard composition
 
-What each screen actually shows. Forms are chosen by the job the data does, not
-by variety: four of the eleven elements below are deliberately **not charts**.
+What each screen shows. Forms follow the job the data does — **five of the
+fourteen elements below are deliberately not charts**, because a single number is
+a tile and a thousand rows are a table.
 
 ### Business dashboard
 
-**Filters — one row, above everything**
+**Filters — one row above everything**
 
-| Control      | Options                                        |
-| ------------ | ---------------------------------------------- |
-| Period type  | **Calendar month** · **Billing period** (F6.2) |
-| Which period | The last 12 of the chosen type                 |
+| Control | Options                                     |
+| ------- | ------------------------------------------- |
+| Unit    | `Calendar month` · `Billing period`         |
+| Range   | `Current` · `Past 3` · `Past 6` · `Past 12` |
 
-**KPI row — stat tiles, no charts**
+**KPI row — five stat tiles**
 
-| Tile                | Value                            | Note                                                                |
-| ------------------- | -------------------------------- | ------------------------------------------------------------------- |
-| Total calls         | count                            | the headline figure                                                 |
-| Average duration    | `duration_seconds_total / calls` | mm:ss                                                               |
-| Appointments booked | count                            |                                                                     |
-| Revenue booked      | currency                         | labelled **estimate** where it includes future appointments (F6.3a) |
+Total calls · Average duration · **Median duration** · Appointments booked ·
+Revenue booked _(est.)_. Median is computed live (§2.4/009); the rest come from
+the rollup.
 
-A single number is a stat tile, never a one-bar chart.
+**Charts — five**
 
-**Charts — two**
+| #   | Chart                                       | Form                   | Why this form                                                                         |
+| --- | ------------------------------------------- | ---------------------- | ------------------------------------------------------------------------------------- |
+| 1   | Call outcomes, filterable by time window    | **Horizontal bars**, 5 | The labels ("enquiry-only", "rescheduled") do not fit under a column without rotating |
+| 2   | Calls by time of day, filterable by outcome | **Columns**, 6 windows | Short labels, and time reads left to right                                            |
+| 3   | Calls across periods                        | **Columns**            | One column per period                                                                 |
+| 4   | Appointments across periods                 | **Columns**            | Same axis as 3                                                                        |
+| 5   | Revenue across periods                      | **Columns**            | Same axis as 3, own y — different unit                                                |
 
-| Chart                    | Form                                                            | Why                                                                                                                                                |
-| ------------------------ | --------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Call outcomes**        | horizontal **stacked bar**, one bar = the period, five segments | The job is part-to-whole. Horizontal because the category names are long. Categorical colour in fixed order; legend always present at five series. |
-| **Calls by time of day** | **column chart**, 24 local hours                                | The job is comparing magnitude across an ordered scale — one hue, sequential, more-is-darker. Not categorical: the hours are not identities.       |
+Charts 3–5 are **small multiples**: same x-axis, same width, aligned, so a period
+where calls rose and revenue did not is visible without clicking anything. Their
+y-axes differ because the units differ, which is not the dual-axis problem —
+these are three plots, not two scales on one.
 
-**Billing history — a table, separate section** (F6.7–F6.8, F6.3d)
-
-Per period: fixed fee · usage · total · date charged · status. Above it, the
-current period's accrued usage against the $500 cap as a **meter**, not a pie.
+**Billing history — a table only** (F6.7). Fixed fee · billable minutes · usage
+charge · total · % of cap · charged on · status. Deliberately unplotted: minutes
+and money are different units, and one plot carrying both needs two axes.
 
 ### Operator dashboard
 
 **Filters — one row**
 
-| Control        | Options                    |
-| -------------- | -------------------------- |
-| Calendar month | last 12 (F9.8)             |
-| Business       | all · one · a selected set |
+| Control  | Options                                                    |
+| -------- | ---------------------------------------------------------- |
+| Range    | `Current calendar month` · `Past 3` · `Past 6` · `Past 12` |
+| Business | Every business active in that range — one, several, or all |
 
-**KPI row — platform totals**
+**KPI row** — Net revenue · Cost · Margin · Active businesses.
 
-Net revenue · cost · margin · active businesses.
+**Main view — a sortable table**, one row per business: net revenue · cost ·
+margin. Past about seven series colour stops distinguishing anything, so with
+thousands of businesses the table is the honest form; sorted by margin it answers
+the operator's actual question immediately.
 
-**The main view is a table, not a chart.** With thousands of businesses, more
-than about seven series stops being readable as colour; the table is the honest
-form. One row per business: **calls · avg duration · outcome split · revenue
-(net) · cost · margin**, sortable by any column. Margin is the column that gets
-looked at.
+**Charts — two**
 
-**Charts — three**
+| #   | Chart                  | Form                                                              | Why                                                                                                                                                |
+| --- | ---------------------- | ----------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | Margin over time       | **Columns**, one per calendar month, **zero baseline, diverging** | Margin goes negative (R8). A single-hue chart renders a losing month as a shorter bar; a diverging scale with a zero line renders it as what it is |
+| 2   | Outcomes × time of day | Bars or columns, by grouping                                      | Group one axis, filter the other — orientation follows label length                                                                                |
 
-| Chart                         | Form                                                 | Why                                                                                                         |
-| ----------------------------- | ---------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| **Revenue vs cost, by month** | **line**, two series, one axis                       | Both are currency, so they share a scale — never a second y-axis.                                           |
-| **Cost by business**          | horizontal **bar**, sequential, top N + "Other"      | Comparing magnitude across named things. Folding the tail into "Other" rather than generating more colours. |
-| **Calls by time of day**      | **column**, 24 hours, respecting the business filter | Same form as the business view, so the two read alike.                                                      |
+**Operational panels — tables** (F9.12, F9.9, F9.3): needs attention, idle
+numbers, payment reliability.
 
-**Operational panels** (F9.9, F9.12, F9.3) — tables, not charts: businesses
-needing attention, idle numbers, and payment reliability.
+**View as business** — a drop-down of names renders that business's dashboard
+read-only inside `/ops`, banner-marked. The same components as the business
+dashboard, fed by the ops data module rather than the tenant-scoped one (§2.11);
+no business session is created.
 
-### Rules both dashboards follow
+### Rules both follow
 
-- **Filters sit in one row above the charts**, never beside or below them.
+- **Horizontal bars where labels are long** (outcomes, business names);
+  **columns where they are short** (time windows, periods). That is the whole
+  orientation rule.
+- **Filters in one row above the charts**, never beside or below.
 - **Colour follows the entity, not its rank** — filtering to fewer businesses
   never repaints the survivors.
 - **Never two y-axes.** Two measures at different scales become two charts.
 - **Legend whenever there are two or more series**; a single-series chart is
   named by its title.
-- **A table view exists for every chart**, so nothing is conveyed by colour
+- **A table view exists behind every chart**, so nothing is conveyed by colour
   alone.
 - **Dark mode is designed, not flipped** — its own steps, checked against the
   dark surface.
