@@ -4,9 +4,11 @@ _Supersedes `Ringly_PRD_EDD_v2.md` (2026-07-01). Revised 2026-07-30 for
 multi-tenant scale, scheduling-provider independence, recurring appointments,
 the business analytics dashboard, Stripe billing, and email notifications._
 
-> **Status.** Part 1 (PRD) and Part 2 (EDD) are agreed design. Part 3 is the
-> delivery plan; nothing in §2.3 onward is built yet. What ships today is the v2
-> product plus the calendar conflict check (PR #2).
+> **Status.** Part 1 (PRD) is locked. Part 2 (EDD) was rewritten against it on
+> 2026-07-30 and supersedes the earlier design. **Almost none of it is built**:
+> what ships today is the v2 product plus the calendar conflict check (PR #2) and
+> the email templates (PR #4) — and §2.15 lists the places where that shipped code
+> contradicts this design. The delivery plan is §2.16.
 
 ---
 
@@ -697,7 +699,7 @@ delete the Stripe customer → delete Ringly's rows → write the departure reco
 
 - **F9.1** Visible **only to the operator**. No business owner may reach it by
   any route, with any credential. This is the single screen that reads across all
-  tenants and is therefore treated as a walled garden (EDD §2.9a, N1.1).
+  tenants and is therefore treated as a walled garden (EDD §2.11, N1.1).
 - **F9.2** Per business, per period: **net revenue** (charges received, less
   payment-processor fees), **cost incurred**, and the margin between them.
 - **F9.3** Payment reliability per business — paid on time, late, failed,
@@ -1037,684 +1039,764 @@ the buckets below.
 
 # Part 2 — Engineering Design (EDD)
 
-## 2.1 Architecture overview
+_Rewritten 2026-07-30 against the locked Part 1. Supersedes the earlier design,
+which predated fail-closed booking, the removal of reminders, versioned pricing
+policy, and the division of responsibility with Stripe._
+
+## 2.1 The four properties that shape everything
+
+Most of this design falls out of four requirements. Where a decision looks
+over-engineered, one of these is usually why.
+
+1. **A booking Ringly cannot verify is never written** (F2.7, N7.2). This is the
+   opposite of the usual "degrade gracefully" instinct and it propagates: the
+   provider interface cannot return a bare list, the call path cannot answer
+   before the check completes, and "no busy intervals" must be a different value
+   from "I could not find out".
+2. **One tenant's data must never reach another** (N1.1), while the code paths
+   that matter most — the Retell webhooks — run under a service role that
+   bypasses row-level security entirely. Isolation therefore cannot rest on RLS
+   alone.
+3. **The caller is on the phone** (N3). Every decision on the call path is
+   bounded by a hard timeout, and anything not needed to answer them happens
+   after the response.
+4. **The commercial terms will change** (F7.15) without rewriting history
+   (F7.16). Pricing is data with versions, not constants in code, and every
+   settled period remembers which version settled it.
+
+## 2.2 Architecture
 
 ```mermaid
 flowchart TB
-    Caller([Caller]) -->|PSTN| Retell[Retell voice agent]
-    Retell -->|signed webhooks| API[Next.js API routes on Vercel]
+    Caller([Caller]) -->|PSTN| Retell[Retell agent]
+    Retell -->|signed webhook| Fn[/api/webhooks/retell/functions/]
+    Retell -->|signed webhook| Post[/api/webhooks/retell/post-call/]
 
-    subgraph Hot["Call path — latency critical"]
-        API --> Cache[(Config cache<br/>business, hours, services)]
-        API --> DB[(Supabase Postgres<br/>RLS per tenant)]
-        API --> Sched[Scheduling provider<br/>interface]
+    subgraph Hot["Call path — hard latency budget, fail-closed"]
+        Fn --> Cache[(Tenant config cache)]
+        Fn --> DB[(Postgres · RLS per tenant)]
+        Fn --> Sched{{SchedulingProvider}}
     end
 
     Sched --> GCal[Google Calendar]
-    Sched -.planned.-> MS[Microsoft 365]
-    Sched -.planned.-> CalDAV[CalDAV]
-    Sched --> NoneP[None — Ringly is<br/>source of truth]
+    Sched -.later.-> MS[Microsoft 365 · CalDAV]
 
-    subgraph Cold["Off the call path"]
-        Worker[Scheduled workers] --> Rollup[Analytics rollups]
-        Worker --> Digest[Email digests]
-        Worker --> Series[Recurrence materialiser]
-        Worker --> Settle[Billing settlement]
+    Post --> DB
+    Post --> Cost[cost_records]
+    Post --> Usage[usage_records]
+
+    subgraph Cold["Workers — may be slow, must be idempotent"]
+        W1[Recurrence materialiser]
+        W2[Analytics rollup]
+        W3[Billing settlement]
+        W4[Lifecycle sweeper]
+        W5[Email dispatcher]
     end
+    DB --> Cold
 
-    DB --> Worker
-    Digest --> Email[Resend]
-    Settle --> Stripe2[Stripe]
+    W3 --> Stripe[Stripe]
+    Stripe -->|signed webhook| Hook[/api/webhooks/stripe/]
+    Hook --> DB
+    W5 --> Resend[Resend]
 
-    Owner([Business owner]) --> Dash[Dashboard]
-    Dash --> RollupT[(Pre-aggregated<br/>daily stats)]
-    Dash --> Stripe[Stripe billing]
-    Stripe -->|webhooks| API
+    Owner([Business owner]) --> Dash[/dashboard/]
+    Op([Operator]) --> Ops[/ops/ — walled garden]
+    Dash --> Roll[(daily_business_stats)]
+    Ops --> Econ[(daily_business_economics)]
 ```
 
-The governing split: **the call path touches cache, one database, and at most one
-external scheduler, each with a hard timeout.** Everything else — rollups,
-digests, recurrence expansion, billing settlement — runs on scheduled workers and
-may be slow.
+**The split that matters:** the call path touches a cache, one database, and one
+external calendar, each under a hard timeout. Everything else — settlement,
+rollups, recurrence, lifecycle, email — runs on scheduled workers where slowness
+is survivable and idempotency is mandatory.
 
-**One deliberate exception to "degrade rather than fail":** the scheduling
-provider. If its busy intervals cannot be read, the booking is refused out loud
-(F2.7, N7.2). Every other dependency degrades quietly; this one does not.
+## 2.3 Multi-tenancy
 
-## 2.2 Multi-tenancy model
+**Shared schema, shared database, row-level isolation.** Rejected:
+database-per-tenant (10,000 databases makes fixed cost scale with tenants,
+violating N4.1) and schema-per-tenant (migration cost scales with tenants).
 
-**Decision: shared schema, shared database, row-level tenant isolation.**
+### 2.3.1 Two isolation mechanisms, because one is not enough
 
-Rejected alternatives: database-per-tenant (10k databases is unmanageable and
-multiplies fixed cost, violating N4.1) and schema-per-tenant (migration cost
-scales with tenants). Shared-schema with RLS is the only option that keeps fixed
-cost flat per tenant (N4.1) while satisfying N1.1.
+**RLS** covers everything reached with the user's own credentials — the
+dashboard, the settings pages. Policies stay as today: `owner_user_id =
+auth.uid()` on `businesses`, and membership via a `security definer stable`
+helper elsewhere so the planner evaluates it once per statement rather than once
+per row.
 
-Implementation:
-
-- `business_id` is present on every tenant-scoped table and is the **leading
-  column of every composite index**, so each tenant's working set is contiguous
-  and query cost scales with the tenant, not the platform (N2.2).
-- RLS policies stay as today (`owner_user_id = auth.uid()` directly on
-  `businesses`, membership subquery elsewhere) but the subquery moves into a
-  `security definer` function marked `stable` so the planner caches it per
-  statement instead of re-running per row.
-- **The service-role path is the real isolation risk** (N1.2). Retell webhooks
-  resolve the tenant from the dialled number and then use a service-role client
-  that bypasses RLS entirely. Mitigation: a single `tenantScoped(db, businessId)`
-  helper that every webhook query goes through, plus tests asserting cross-tenant
-  reads return nothing. This is the pattern already used ad hoc in the functions
-  route; v3 makes it structural.
-- High-volume tables (`calls`, `appointments`) are **range
-  partitioned by month** once volume justifies it, so old partitions can be
-  detached and archived cheaply. Partitioning is deferred until measured, but the
-  primary keys are chosen now so it stays possible without a rewrite.
-
-## 2.3 Data model changes
-
-Migrations `005`–`010`, in dependency order.
-
-**005 — tenancy and integrity hardening**
-
-- Composite indexes leading with `business_id` on `appointments`, `calls`,
-  `customers`.
-- Replace the ad-hoc `(business_id, starts_at)` unique index with a
-  `tstzrange` **exclusion constraint** so overlapping active appointments are
-  impossible at the database level, closing the check-then-write race noted in
-  PR #2. Requires `btree_gist`.
-- `security definer stable` helper for RLS membership.
-
-**006 — service versioning (F3.4)**
-
-- `service_versions(id, service_id, business_id, name, price_cents, duration_minutes, effective_from, effective_to)`.
-- `appointments.service_version_id` records the version in force at booking.
-- `services` keeps current values for display; edits insert a new version.
-
-**007 — scheduling providers (F4)**
-
-- `businesses.scheduling_provider text not null default 'google'`
-  (`google | microsoft | caldav | none`).
-- `scheduling_credentials(business_id, provider, encrypted_payload, status, last_error_at)` —
-  replaces the single `google_refresh_token` column; provider-shaped payload.
-- `businesses.external_calendar_id` generalises `google_calendar_id`.
-- `appointments.external_event_id` generalises `google_calendar_event_id`.
-
-**008 — recurring appointments (F5.1–F5.3)**
-
-- `appointment_series(id, business_id, customer_id, service_id, rrule text, timezone, starts_at_local time, dtstart, until, status)`.
-- `appointments.series_id`, `appointments.occurrence_date`, unique per
-  `(series_id, occurrence_date)` so materialisation is idempotent.
-- Occurrence rows are ordinary appointments — every existing conflict and
-  calendar path works on them unchanged.
-
-**009 — analytics (F6)**
-
-- `calls` gains `started_at`, `ended_at`, `duration_seconds`, `transcript`
-  (mirrored per §2.8a), `end_reason`, `is_billable`, and widens `outcome` to
-  include `dropped`. No `recording_url` column — signed URLs expire and must be
-  fetched on demand.
-- `daily_business_stats(business_id, local_date, calls, unique_callers, avg_duration_seconds, booked, rescheduled, cancelled, enquiry_only, dropped, revenue_booked_cents)` —
-  primary key `(business_id, local_date)`, `local_date` computed in the
-  business's timezone (N5.2).
-
-**010 — billing and email (F7, F8)**
-
-- `businesses.contact_email`, `stripe_customer_id`, `stripe_subscription_id`,
-  `billing_status` (`unbilled | active | grace | suspended | capped | cancelled`),
-  `activated_at`, `suspended_at`, `purge_after`, `cap_cents` (default 50000).
-- `billing_periods(id, business_id, seq, starts_at, ends_at, timezone, pricing_policy_id, cap_cents, fixed_fee_cents, fixed_fee_charged_at, usage_settled_at, status)` —
-  `pricing_policy_id` pins the terms the period was settled under (F7.16), so a
-  later change to the fee or cap cannot retroactively alter a closed invoice.
-  **authoritative** period boundaries (§2.9). Explicit rows, not arithmetic over
-  `activated_at`, because cancellation, reactivation and payment failure all
-  break that arithmetic and periods must be immutable for reconciliation.
-- `pricing_policy(id, version, effective_from, fixed_fee_cents, cap_cents, per_minute_cents, per_reminder_cents, billable_outcomes text[])` —
-  the complete commercial terms as one versioned row (F7.8, F7.15). Superseding
-  terms insert a new version; existing rows are never edited.
-  `billable_outcomes` holds the F7.6 predicate as data, so widening billing to
-  every connected minute becomes a new row rather than a deploy.
-- `billing_events(id, business_id, stripe_event_id unique, kind, amount_cents, fee_cents, occurred_at, payload)` —
-  immutable ledger (F7.14); `stripe_event_id` unique for webhook idempotency;
-  `fee_cents` from the Stripe balance transaction so revenue is net (F9.2).
-- `usage_records(id, business_id, billing_period_id, occurred_at, kind, quantity_seconds, quantity, unit_cents, amount_cents, call_id)` —
-  connected time is stored in **seconds**; the round-up to whole minutes happens
-  once at period close (F7.7a), never per row. Records reference a period id
-  rather than being bucketed by date arithmetic.
-  `kind` is `connected_minutes` in v3; the column exists so reminder units can be
-  added in v2 without a migration. Per-tenant attribution (N4.4) and the input to
-  the cap check (F7.9).
-- `email_log(id, business_id, kind, idempotency_key unique, sent_at, status)` — F8.5.
-
-**011 — operator dashboard (F9)**
-
-- `cost_records(id, business_id, occurred_at, source, kind, amount_cents, call_id)` —
-  `source` = `retell` in v1 (`whatsapp` when it ships). `kind` in
-  (`call`, `number_rental`). Populated from the post-call webhook and a monthly
-  rental job (F9.5).
-- `daily_business_economics(business_id, local_date, revenue_net_cents, cost_cents, calls, billable_calls)` —
-  primary key `(business_id, local_date)`; the daily refresh behind F9.7.
-- No RLS policy is added for these tables. They are reachable **only** through
-  the ops data module under a service role (§2.9a); tenant-facing code has no
-  path to them.
-
-## 2.4 Scheduling provider abstraction (F4.2)
-
-One interface, implemented per provider. Booking logic depends only on this:
+**RLS does not cover the webhooks**, which is where nearly all writes happen.
+Retell posts to us; we resolve the tenant from the dialled number and then use a
+service-role client that bypasses RLS by design. That is the real exposure
+(N1.2), and the mitigation is structural:
 
 ```ts
-type BusyInterval = { starts_at: string; ends_at: string };
+// The only way webhook code is allowed to reach the database.
+function tenantScoped(db: ServiceClient, businessId: string): TenantDb;
+```
+
+`TenantDb` exposes the same query surface with `business_id` already bound. A
+webhook handler cannot express a cross-tenant query because it never holds the
+unscoped client. Lint forbids importing `createServiceClient` outside
+`lib/db/tenant.ts` and `lib/ops/`.
+
+**Tests are part of the mechanism, not a check on it** (N1.2): every webhook
+function is exercised with two seeded businesses, asserting that a call arriving
+for one can neither read nor write the other's rows.
+
+### 2.3.2 Physical layout
+
+`business_id` leads every composite index, so a tenant's working set is
+contiguous and query cost tracks the tenant rather than the platform (N2.2).
+`calls` and `appointments` are the tables that grow without bound — at the N2.1
+target, order 24M `calls` rows a year — and their primary keys are chosen now so
+monthly range partitioning stays available without a rewrite. Partitioning is
+deferred until measured.
+
+## 2.4 Data model
+
+Migrations are forward-only and immutable. Numbering continues from `004`.
+
+### 005 — foundations
+
+Everything Phase 1 needs; nothing that depends on a later decision.
+
+- **`btree_gist`**, then replace the `(business_id, starts_at)` unique index with
+  a range exclusion constraint, so overlapping active appointments are impossible
+  at the database rather than merely unlikely:
+
+  ```sql
+  alter table appointments add constraint appointments_no_overlap
+    exclude using gist (
+      business_id with =,
+      tstzrange(starts_at, ends_at, '[)') with &&
+    ) where (status in ('booked','rescheduled'));
+  ```
+
+  This closes the check-then-write race that the application check alone cannot
+  (two callers, same slot, same instant). **It also means the materialiser and
+  the booking path must handle a rejected insert as a real outcome** (F2.3a,
+  F5.2a), not an unexpected error.
+
+- **Drop what v3 removed:** the `reminders` table and its policy;
+  `customers.whatsapp_consent_status`, `whatsapp_consent_at`,
+  `whatsapp_consent_call_id`; `businesses.whatsapp_number`,
+  `whatsapp_sender_status`, `onboarding_step`; `no_show` from the appointment
+  status check; `clinic` from the `business_type` check.
+- **`calls` gains** `started_at`, `ended_at`, `duration_seconds`, `end_reason`,
+  `outcome` widened to include `dropped`, and `is_billable boolean not null
+default false`. No `transcript` and no `recording_url` — Ringly stores neither
+  (F10.6), and a stored recording URL would rot because Retell's are signed.
+- **Composite indexes** leading with `business_id` on `appointments`, `calls`,
+  `customers`.
+- **`tenant_id_of(uuid)`** — the `security definer stable` RLS helper.
+
+### 006 — service versioning (F3.4)
+
+```
+service_versions(id, service_id, business_id, name, price_cents,
+                 duration_minutes, effective_from, effective_to)
+appointments.duration_minutes          -- locked at booking/materialisation
+```
+
+Price is **not** stored on the appointment: F3.4 resolves it at occurrence time,
+so it is looked up from `service_versions` for the date in question, falling back
+to the last known version if the service was deleted. Duration **is** stored,
+because a duration that moved would silently overlap neighbouring bookings.
+
+### 007 — scheduling credentials (F4)
+
+```
+businesses.scheduling_provider text not null default 'google'
+businesses.external_calendar_id text
+appointments.external_event_id text
+scheduling_credentials(business_id pk, provider, encrypted_payload,
+                       status, last_ok_at, last_error_at, last_error)
+```
+
+Generalises `google_calendar_id`, `google_calendar_event_id` and
+`google_refresh_token`. There is **no `none` provider** — a calendar is mandatory
+(F4.1).
+
+### 008 — recurrence (F5)
+
+```
+appointment_series(id, business_id, customer_id, service_id, rrule, timezone,
+                   dtstart, until, status)
+appointments.series_id, appointments.occurrence_date
+unique (series_id, occurrence_date)
+```
+
+The unique key is what makes materialisation idempotent. Occurrences are ordinary
+appointment rows, so conflict checking, calendar sync and analytics work on them
+unchanged.
+
+### 009 — analytics (F6)
+
+```
+daily_business_stats(business_id, local_date, calls, unique_caller_hashes,
+                     duration_seconds_total, duration_seconds_p50,
+                     booked, rescheduled, cancelled, enquiry_only, dropped,
+                     appointments_booked, revenue_booked_cents,
+                     primary key (business_id, local_date))
+```
+
+`local_date` is computed in the **business's** timezone (N5.2, F6.11).
+`unique_caller_hashes` stores the distinct set as hashes rather than a count, so
+a _monthly_ unique-caller figure can be computed correctly from daily rows
+instead of double-counting anyone who rang on two days.
+
+### 010 — billing (F7)
+
+```
+pricing_policy(id, version unique, effective_from,
+               fixed_fee_cents, cap_cents, per_minute_cents,
+               per_reminder_cents, billable_outcomes text[])
+
+billing_periods(id, business_id, seq, starts_at, ends_at, timezone,
+                pricing_policy_id, status, fixed_fee_charged_at,
+                usage_settled_at, cancellation_requested_at,
+                free_from, unique (business_id, seq))
+
+usage_records(id, business_id, billing_period_id, call_id, occurred_at,
+              kind, quantity_seconds, unit_cents, amount_cents)
+
+billing_events(id, business_id, stripe_event_id unique, kind,
+               amount_cents, fee_cents, occurred_at, payload)
+
+cost_records(id, business_id, call_id, occurred_at, source, kind, amount_cents)
+
+businesses.contact_email, stripe_customer_id, stripe_subscription_id,
+          billing_status, activated_at, booking_horizon_days,
+          materialisation_horizon_days
+```
+
+Three deliberate choices:
+
+- **`billing_periods` rows are authoritative**, not arithmetic over
+  `activated_at`. Cancellation, suspension and reactivation all break
+  `activated_at + n × 30 days`, and a settled period must be immutable for
+  reconciliation (F7.16).
+- **`pricing_policy_id` is pinned per period**, so changing the fee or the cap
+  cannot retroactively alter a closed invoice (F7.16). `billable_outcomes` holds
+  the F7.6 predicate as data, so widening billing to every connected minute is a
+  new policy row rather than a deploy (F7.15).
+- **`usage_records.quantity_seconds`** — seconds, not minutes. The round-up to
+  whole minutes happens once at settlement (F7.7a), never per row.
+
+### 011 — lifecycle and operator (F9, F10)
+
+```
+lifecycle_deadlines(business_id pk, kind, due_at, paused_at, paused_by, reason)
+departed_businesses(business_id pk, name, joined_at, left_at, ended_by,
+                    owed_at_departure_cents, lifetime_net_revenue_cents)
+calendar_incidents(id, business_id, opened_at, closed_at, last_error,
+                   notified_at)
+email_log(id, business_id, kind, idempotency_key unique, sent_at, status)
+daily_business_economics(business_id, local_date, revenue_net_cents,
+                         cost_cents, calls, billable_calls,
+                         primary key (business_id, local_date))
+```
+
+**`lifecycle_deadlines` exists because the operator can pause a clock** (F10.1b).
+A deadline computed on the fly from `created_at + 10 days` cannot be paused; a
+stored `due_at` with a nullable `paused_at` can. Every lifecycle transition in
+§2.10 reads from this table.
+
+`departed_businesses` and `daily_business_economics` carry **no consumer data**
+and no RLS policy — they are reachable only through the ops module (§2.11).
+
+## 2.5 The call path
+
+### 2.5.1 Budget
+
+| Segment                              | p95     |
+| ------------------------------------ | ------- |
+| Webhook handler, end to end          | ≤ 400ms |
+| — tenant config (cache hit)          | ≤ 5ms   |
+| — own appointments (Postgres)        | ≤ 80ms  |
+| — scheduling provider                | ≤ 250ms |
+| Hard ceiling, after which we give up | 1500ms  |
+
+Retell's own budget is ~600ms, so a 400ms handler keeps a turn near one second.
+`speak_during_execution` covers the gap audibly (F2.6), with per-tool filler
+phrasing — "let me check the diary for you" — rather than one generic line.
+
+### 2.5.2 Booking, in order
+
+```
+1  verify signature (Retell SDK)                      — reject unsigned
+2  resolve tenant config from cache by dialled number — 1 read, not 3 queries
+3  validate: parseable time · inside opening hours (F2.8)
+           · within booking_horizon_days (F2.9)
+4  ┌ own appointments overlapping the window  ┐ in parallel, both under budget
+   └ provider busy intervals (§2.6)           ┘
+5  if provider check did NOT succeed → refuse, apologise, open incident  (F2.7)
+6  if conflicting → refuse, offer nearest open slots either side         (F2.3)
+7  INSERT — exclusion constraint may still reject (race)                 (F2.3a)
+8  respond to the caller
+── after the response ──────────────────────────────────────────────────
+9  create the calendar event, store external_event_id
+10 (post-call webhook) outcome, duration, is_billable, usage, cost
+```
+
+Steps 1–8 are the budget. Steps 9–10 are not (N3.2). The **conflict read cannot
+move after the response** — that is the whole point of fail-closed — but the
+calendar _write_ can and does.
+
+### 2.5.3 Fail-closed, concretely
+
+The shipped code returns `[]` for both "nothing is busy" and "I could not find
+out", which is exactly the R1 defect. The interface returns a result:
+
+```ts
+type BusyLookup =
+  | { ok: true; intervals: BusyInterval[] }
+  | { ok: false; reason: "unreachable" | "timed_out" | "unauthorised" };
+```
+
+The booking path refuses on `ok: false` — no row written, quiet apology to the
+caller (F2.7). An `unauthorised` result additionally marks
+`scheduling_credentials.status`, which is what surfaces "reconnect your calendar"
+on the dashboard.
+
+### 2.5.4 Incidents, so an outage sends one email
+
+A calendar outage fails every call while it lasts. Emailing per failure would
+send a business dozens of identical messages during the worst hour of its week.
+`calendar_incidents` is opened on the first failure and closed on the first
+success; the email is sent once, when the incident opens (F2.7). The dashboard
+banner is a function of "is an incident open", so it clears itself.
+
+### 2.5.5 Tenant config cache
+
+A read-through cache keyed by **dialled number**, holding the slow-changing
+tenant configuration: business, timezone, opening hours, active services with
+current prices and durations, provider, horizons, billing status.
+
+- **TTL 60s**, and **explicitly invalidated on write** by the settings, hours and
+  services endpoints — so an edit reaches the next caller immediately in the
+  normal case and within 60s if invalidation is missed (F3.2).
+- **Configuration only.** Never appointments, never busy intervals. A stale
+  conflict check books someone over a real appointment; a stale price is a
+  rounding error.
+- One mechanism serving three requirements: propagation (F3.2), latency (N3),
+  and not re-reading the same rows on every call (N4.2).
+
+### 2.5.6 Identifying an existing appointment (F2.4)
+
+Reschedule and cancel search **appointments**, not customers: name plus date plus
+time plus service, all matching. Caller ID is not used — customers ring from
+other phones. A relative day resolves to the **next** such day, and the agent
+reads the full date back before acting. For an occurrence of a series the agent
+asks explicitly whether the caller means this one or all of them.
+
+This is weaker than caller-ID matching and knowingly so (R12): the tuple is
+narrow enough that collisions are rare, since two appointments cannot share a
+slot.
+
+## 2.6 Scheduling providers
+
+```ts
+type ProviderCapabilities = {
+  excludeEventById: boolean; // can we ask it to ignore one event?
+  expandsRecurrence: boolean; // does it return occurrences or rules?
+};
 
 interface SchedulingProvider {
-  readonly id: "google" | "microsoft" | "caldav" | "none";
-  getBusyIntervals(
+  readonly id: "google" | "microsoft" | "caldav";
+  readonly capabilities: ProviderCapabilities;
+  getBusy(
     ctx: TenantContext,
-    window: { from: string; to: string },
+    window: Window,
     opts: { excludeExternalEventId?: string; signal: AbortSignal },
-  ): Promise<BusyInterval[]>;
+  ): Promise<BusyLookup>;
   createEvent(
     ctx: TenantContext,
     appt: AppointmentView,
   ): Promise<string | null>;
   updateEvent(
     ctx: TenantContext,
-    externalEventId: string,
+    eventId: string,
     appt: AppointmentView,
   ): Promise<void>;
-  deleteEvent(ctx: TenantContext, externalEventId: string): Promise<void>;
+  deleteEvent(ctx: TenantContext, eventId: string): Promise<void>;
 }
 ```
 
-- The **Google implementation already exists** in all but name — PR #2's
-  `getCalendarBusyIntervals` has exactly this shape, including the
-  `excludeExternalEventId` and `AbortSignal` parameters. Extracting it is a
-  refactor, not a rewrite.
-- **There is no `none` provider.** A calendar is mandatory (F4.1), so every
-  business has exactly one real provider — Google at launch.
-- `getBusyIntervals` must
-  distinguish _"nothing is busy"_ from _"I could not find out"_, and the booking
-  path must refuse on the latter (F2.7, F4.5). Returning `[]` for both — which is
-  what the shipped code does — is precisely the R1 defect. The interface
-  therefore returns a result type, not a bare array.
-- Every implementation must honour the `AbortSignal` and the N3 timeout. A
-  provider that cannot answer within budget is treated as absent.
-- **Provider capability differences are declared, not discovered**: whether a
-  provider can exclude an event by id, expand recurrences, or report
-  free/busy without event detail. Booking logic branches on declared capability.
+- **Google is the only implementation at launch** (F4.2) and already exists in
+  all but name: PR #2's `getCalendarBusyIntervals` has this shape, including the
+  exclusion parameter and the `AbortSignal`. Extracting it is a refactor; the
+  return type is the only real change.
+- **Capabilities are declared, not discovered.** `excludeEventById` matters
+  because a provider that cannot exclude an event makes an appointment collide
+  with its own calendar entry when rescheduled — the bug PR #2 fixed for Google
+  by moving from `freebusy` to `events.list`.
+- **Every implementation must honour the signal and the budget.** A provider that
+  cannot answer in time returns `{ ok: false, reason: "timed_out" }`. Slow is
+  failed (N3.1).
+- **Retention is set explicitly at provisioning** — 30 days for recordings, at
+  least 30 for transcripts (F10.6) — never inherited from a default.
 
-## 2.5 Call path and latency budget (N3, F2.6)
+## 2.7 Recurrence
 
-Current measured shape of one `book_appointment` turn: 3–4 Supabase round trips
-plus 2 Google round trips (token exchange + API call), all sequential.
+**Materialiser**, hourly. For each active series, ensure occurrences exist to the
+business's `materialisation_horizon_days` (90 by default, 30–365, F5.2).
+Idempotent via `(series_id, occurrence_date)`.
 
-Target shape:
+**Clash handling** (F5.2a) is the interesting part, because the 005 exclusion
+constraint makes a clash a _rejected insert_ rather than something to check for:
 
-1. **Resolve tenant config from cache** by dialled number — business, timezone,
-   hours, active services, provider. One cache read replaces three database
-   queries. Cache is authoritative for ≤60s (F3.2).
-2. **Conflict check**: one database read (own appointments) issued in parallel
-   with one provider read, both under the N3 ceiling. Already the shape built in
-   PR #2 — `Promise.all` over the two sources, single day-wide window.
-3. **Respond**, then do calendar writes and analytics after the response.
-   Already partly true (`syncAfterBooking` is fire-and-forget). This applies only
-   to the _write_: the conflict _read_ must complete before we answer, because a
-   booking we could not verify is refused (F2.7).
+```
+try insert at the usual time
+  └ rejected → search same day, ±2h, nearest first
+        ├ found → insert there,      record "shifted"
+        └ none  → skip the occurrence, record "skipped"
+```
 
-**Filler speech (F2.6).** Retell's `speak_during_execution` is already set on
-every booking tool, so the agent talks while we work; v3 adds per-tool filler
-phrasing appropriate to the operation ("let me check the diary for you") and
-enables backchannelling. Retell's own end-to-end budget is ~600ms, so our 400ms
-handler target keeps a turn inside roughly one second.
+**Owner notification is batched per run, not per occurrence** (F5.2b). A business
+that closes a weekday permanently would otherwise receive one email per skipped
+occurrence for the next 90 days.
 
-## 2.6 Caching and config propagation (N4.2, F3.2)
+The horizon (90) exceeds the caller booking limit (70) deliberately: the limit
+constrains what a _caller may request_, the horizon keeps a standing series
+populated ahead of it (F2.9a).
 
-A read-through cache keyed by dialled number, holding the tenant's slow-changing
-configuration. TTL 60s, and **explicitly invalidated on write** by the services,
-hours, and business settings endpoints — so an edit reaches the next caller
-immediately in the normal case, and within 60s even if invalidation is missed.
-This single mechanism serves three requirements at once: F3.2 propagation, N3
-latency, and N4.2 cost.
+## 2.8 Analytics
 
-The cache never holds appointment or calendar data — only configuration. Busy
-intervals are always read live, because a stale conflict check books someone over
-a real appointment.
+Raw `calls` are never scanned per dashboard request (F6.12, N4.3). A nightly
+per-tenant rollup writes `daily_business_stats` keyed by the business's local
+date; the dashboard reads a bounded number of pre-aggregated rows and computes
+today live from that tenant's own rows only — bounded by tenant size, not
+platform size (N2.2).
 
-> Note: caching Google **access tokens** was considered and is **deliberately out
-> of scope** by owner decision. The per-lookup token exchange is an accepted cost.
+**Both groupings come from the same daily rows** (F6.2): calendar months by
+summing on `local_date`, billing periods by summing between
+`billing_periods.starts_at` and `ends_at`. Storing daily and aggregating upward
+is what makes two different calendars possible from one table.
 
-## 2.7 Recurrence (F5)
+**Outcome derivation happens once, at the post-call webhook**, from the
+transcript in the payload — which is the only moment Ringly ever sees it (F10.6).
+`outcome`, `end_reason` and `is_billable` are persisted then. **Outcomes can
+never be re-derived** (F6.6): if the classifier improves, history keeps its old
+labels, and the dashboard says so rather than hiding it.
 
-- **Materialiser** (scheduled, hourly): for every active series, ensure
-  occurrences exist for a rolling 90-day horizon. Idempotent via the
-  `(series_id, occurrence_date)` unique key.
-- **Clash handling** (F5.2a): an occurrence whose slot is taken is shifted to the
-  nearest free slot **on the same day within ±2 hours**, and otherwise skipped.
-  The 005 exclusion constraint makes the clash a hard failure rather than a
-  silent double-book, so the materialiser must handle the rejection explicitly
-  rather than assume the insert succeeds.
-- **Owner notification** (F5.2b) goes out per affected occurrence. Because a
-  business that closes a weekday could generate one email per skipped occurrence,
-  notifications are **batched per materialiser run**, not sent per row.
-- Occurrence rows are ordinary appointments, so conflict checking, calendar sync
-  and analytics work on them unchanged.
-- **Horizon vs booking limit.** The materialiser looks 90 days ahead while a
-  caller may only book 70 (F2.9). This is deliberate: the 70-day limit constrains
-  what a _caller_ may request, and the wider horizon keeps a standing series
-  populated ahead of it.
+`dropped` covers both a caller who hung up unresolved and a call the agent could
+not help with (F6.4).
 
-## 2.8 Analytics (F6)
+## 2.9 Billing
 
-Raw `calls` rows are never scanned per dashboard request (N4.3, F6.5). A nightly
-per-tenant rollup writes `daily_business_stats` keyed by the business's **local**
-date (N5.2, F6.6); the dashboard reads a bounded number of pre-aggregated rows.
-Today-so-far is computed live from that tenant's own rows only, which is bounded
-by tenant size, not platform size (N2.2).
+The most stateful part of the system, and the one where a wrong transition costs
+real money. Modelled explicitly rather than inferred from timestamps.
 
-`dropped` (F6.3) is derived at call end: a call that reached no terminal outcome
-and was ended by the caller. This requires the post-call webhook to record
-`ended_at` and an end reason, which it does not do today.
+### 2.9.1 Business billing states
 
-## 2.8a Transcripts, recordings and deletion (F10.5-F10.7)
+```
+        ┌──────────── activate (F1.12) ─────────────┐
+        │                                            ▼
+  unbilled                                        active ──── cancel request ───▶ cancelling
+        ▲                                       │     ▲                              │
+        │                          charge fails │     │ pays                         │ window closes
+        │                                       ▼     │                              ▼
+        └──── (never activated: deleted d10) ── grace ─┴──── suspended ──────▶ dormant
+                                                  │ d7            │ d60            │ d60
+                                                  └───────────────┴────────────────┴──▶ deleted
+```
 
-**Ringly stores neither.** `calls` keeps `retell_call_id`; transcripts and
-recordings are fetched from Retell on demand, which is what
-`calls/[callId]/transcript/route.ts` already does. Consequences to build around:
+| State        | Calls answered? | Usage billed? | Exit                                                       |
+| ------------ | --------------- | ------------- | ---------------------------------------------------------- |
+| `unbilled`   | test only       | no            | activate → `active`; else deleted at day 10                |
+| `active`     | yes             | yes           | charge fails → `grace`; cancel → `cancelling`              |
+| `grace`      | yes             | **yes**       | pays → `active`; day 7 → `suspended`                       |
+| `suspended`  | **no**          | no            | pays → `active` (fee charged that day); day 60 → `deleted` |
+| `cancelling` | yes             | **no**        | revokes → `active`; window closes → `dormant`              |
+| `dormant`    | no              | no            | returns → `active` (new period); day 60 → `deleted`        |
 
-- **Never persist a recording URL.** Retell's URLs are signed and expire; a
-  stored column would rot silently. Request it at view time, every time.
-- **Retention is set explicitly at agent provisioning** - 30 days for recordings,
-  at least 30 days for transcripts - and never left to a default (R10).
-- **Outcome derivation does not depend on storage.** The post-call webhook
-  carries the transcript in its payload, so `outcome`, `end_reason` and
-  `is_billable` are derived and persisted at that moment. Only the transcript
-  _text_ is transient.
-- **Deletion is one-sided** (F10.5): Ringly purges its own rows and issues **no**
-  deletion call to Retell. Retell's 30-day TTL expires long before the earliest
-  Ringly deletion, so provider-held content is already gone.
-- **What this costs:** transcript _search_ (F6.4) is impossible over data we do
-  not hold, and no call history older than 30 days is available to anyone.
+Two transitions carry the rules most easily got wrong:
 
-## 2.8b Data inventory — everything Ringly stores
+- **`grace` → `active`** charges the outstanding amount **on the restore day**,
+  not at settlement (F7.10b), and the grace usage stays billable — service given
+  is service billed.
+- **`cancelling` → `active`** makes the window's usage **billable retroactively**
+  (F7.12a). The free window is a concession for leaving; without this, cancel-
+  then-revoke is a way to take a free week and stay.
 
-Retention cannot be reasoned about without knowing what exists. This is the
-complete v3 picture: today's tables with their v3 changes, plus the tables v3
-adds. **Retention per table is not yet agreed** — the "Holds PII?" column is what
-that decision should turn on.
+**A cancellation request while not `active` does not open a window** (F7.11a): a
+business in `grace` or `suspended` is treated as non-paying, and the suspension
+clock keeps running.
 
-**Tenant configuration** — created at onboarding, changes rarely.
+### 2.9.2 Settlement
 
-| Table                    | Fields                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | PII                                     |
-| ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------- |
-| `businesses`             | `id`, `owner_user_id`, `name`, `business_type`, `address`, `formatted_address`, `timezone`, `latitude`, `longitude`, `google_place_id`, `website_url`, `public_phone`, `retell_phone_number`, `retell_agent_id`, `retell_llm_id`, `external_calendar_id`, `greeting_script`, `onboarding_status`, `contact_email`, `stripe_customer_id`, `stripe_subscription_id`, `billing_status`, `activated_at`, `suspended_at`, `purge_after`, `cap_cents`, `booking_horizon_days`, `materialisation_horizon_days`, `created_at`, `updated_at` | Business contact details (not consumer) |
-| `business_hours`         | `id`, `business_id`, `day_of_week`, `is_closed`, `hours_ranges`, `updated_at`                                                                                                                                                                                                                                                                                                                                                                                                                                                       | No                                      |
-| `services`               | `id`, `business_id`, `name`, `description`, `price_cents`, `duration_minutes`, `source`, `active`, `created_at`                                                                                                                                                                                                                                                                                                                                                                                                                     | No                                      |
-| `service_versions`       | `id`, `service_id`, `business_id`, `name`, `price_cents`, `duration_minutes`, `effective_from`, `effective_to`                                                                                                                                                                                                                                                                                                                                                                                                                      | No                                      |
-| `scheduling_credentials` | `business_id`, `provider`, `encrypted_payload`, `status`, `last_error_at`                                                                                                                                                                                                                                                                                                                                                                                                                                                           | Secrets (encrypted)                     |
+Exactly three triggers (F7.9a): a period ending normally, a cancellation window
+closing, and final deletion. All three run the same function, which is
+**idempotent on `billing_periods.usage_settled_at`** — a re-run settles nothing
+twice.
 
-**Operational records** — the working data of the product.
+```
+sum(usage_records.quantity_seconds for the period)   -- seconds, not minutes
+  → ceil to whole minutes                            -- once, here (F7.7a)
+  → × pricing_policy.per_minute_cents                -- the pinned version
+  → total = fixed_fee + usage
+  → clamp total to pricing_policy.cap_cents          -- $500 incl. fee (F7.9)
+  → charge the difference, or record it owed if the charge fails (F7.12f)
+```
 
-| Table                | Fields                                                                                                                                                                                                      | PII                            |
-| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------ |
-| `customers`          | `id`, `business_id`, `phone_number`, `name`, `email`, `created_at`                                                                                                                                          | **Yes — consumer**             |
-| `appointments`       | `id`, `business_id`, `customer_id`, `service_id`, `service_version_id`, `series_id`, `occurrence_date`, `starts_at`, `ends_at`, `status`, `external_event_id`, `source_call_id`, `created_at`, `updated_at` | Indirect (links to a customer) |
-| `appointment_series` | `id`, `business_id`, `customer_id`, `service_id`, `rrule`, `timezone`, `dtstart`, `until`, `status`                                                                                                         | Indirect                       |
-| `calls`              | `id`, `business_id`, `retell_call_id`, `from_number`, `outcome`, `end_reason`, `is_test_call`, `is_billable`, `started_at`, `ended_at`, `duration_seconds`, `created_at`                                    | **Yes — caller number**        |
+Usage past the cap is **recorded in full and charged short**: Ringly needs the
+true number for margin (F9), the business is never charged more than $500.
 
-**Money** — must survive for reconciliation.
+### 2.9.3 Stripe
 
-| Table             | Fields                                                                                                                                                                    | PII                             |
-| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------- |
-| `pricing_policy`  | `id`, `version`, `effective_from`, `fixed_fee_cents`, `cap_cents`, `per_minute_cents`, `per_reminder_cents`, `billable_outcomes`                                          | No                              |
-| `billing_periods` | `id`, `business_id`, `seq`, `starts_at`, `ends_at`, `timezone`, `pricing_policy_id`, `cap_cents`, `fixed_fee_cents`, `fixed_fee_charged_at`, `usage_settled_at`, `status` | No                              |
-| `usage_records`   | `id`, `business_id`, `billing_period_id`, `occurred_at`, `kind`, `quantity_seconds`, `quantity`, `unit_cents`, `amount_cents`, `call_id`                                  | No                              |
-| `billing_events`  | `id`, `business_id`, `stripe_event_id`, `kind`, `amount_cents`, `fee_cents`, `occurred_at`, `payload`                                                                     | Payment metadata (no card data) |
-| `cost_records`    | `id`, `business_id`, `occurred_at`, `source`, `kind`, `amount_cents`, `call_id`                                                                                           | No                              |
+Everything below exists to stop both systems acting on the same event (F7.20).
 
-**Derived and operational** — rebuildable or transient.
+| Setting                     | Value                    | Without it                                           |
+| --------------------------- | ------------------------ | ---------------------------------------------------- |
+| Subscription interval       | `day` × 30               | `month` drifts to calendar months                    |
+| Billing anchor              | 09:00 local, day 1       | midnight ± DST moves the charge to the previous date |
+| Dunning emails              | **off**                  | two payment-failure emails from one company          |
+| Receipts, payment-succeeded | **on**, Ringly-branded   | Ringly duplicates what Stripe does better            |
+| `proration_behavior`        | `none`                   | Stripe prorates by the second and ignores the cap    |
+| Billing thresholds          | **not configured**       | invoices early, alongside our cap logic              |
+| Customer portal             | **disabled**             | businesses self-cancel, bypassing F10.2              |
+| Smart Retries               | schedule spans 60 days   | gives up before the deletion boundary                |
+| End of dunning              | leave subscription alone | Stripe ends the relationship on its schedule         |
+| Statement descriptor        | `RINGLY`                 | unrecognised charges become disputes                 |
 
-| Table                      | Fields                                                                                                                                                                  | PII                 |
-| -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------- |
-| `daily_business_stats`     | `business_id`, `local_date`, `calls`, `unique_callers`, `avg_duration_seconds`, `booked`, `rescheduled`, `cancelled`, `enquiry_only`, `dropped`, `revenue_booked_cents` | No — aggregate      |
-| `daily_business_economics` | `business_id`, `local_date`, `revenue_net_cents`, `cost_cents`, `calls`, `billable_calls`                                                                               | No — aggregate      |
-| `email_log`                | `id`, `business_id`, `kind`, `idempotency_key`, `sent_at`, `status`                                                                                                     | Business email only |
+**Ringly's own `billing_periods` are authoritative**; Stripe executes payments.
+Where the two disagree about when a period started, ours wins.
 
-**Deleted in v3** — `reminders` entirely; `customers.whatsapp_consent_status`,
-`whatsapp_consent_at`, `whatsapp_consent_call_id`; `businesses.whatsapp_number`,
-`whatsapp_sender_status`, `onboarding_step`, `google_refresh_token` (moves to
-`scheduling_credentials`); `no_show` from the appointment status enum; `clinic`
-from `business_type`.
+Webhooks are verified with `stripe.webhooks.constructEvent` — the vendor's own
+verifier, never hand-rolled — and every event is recorded in `billing_events`
+keyed on `stripe_event_id`, which is both the audit trail (F7.14) and the
+idempotency key for redelivery.
 
-**Not stored anywhere:** card details (Stripe only), call recordings and
-transcripts (Retell only, 30-day retention), call audio of any kind.
+**Usage is written locally first** and pushed to Stripe's meter asynchronously,
+so a Stripe outage never blocks a call (N7.1).
 
-**Retention, decided (F10.8):** nothing is aged out while a business is active.
-Every table above lives for the life of the relationship and is destroyed 30 days
-after it ends, however it ended. The only 30-day clock is on what Ringly does
-_not_ store — transcripts and recordings, held by Retell.
+### 2.9.4 Teardown, in order (F7.19, F10.10)
 
-**Two additions to the list:**
+```
+1  capture lifetime net revenue and outstanding balance   ← from Stripe
+2  cancel subscription
+3  void open invoices
+4  detach payment method
+5  delete Stripe customer
+6  delete Ringly's rows
+7  write departed_businesses
+```
 
-- `departed_businesses(business_id, name, joined_at, left_at, ended_by, owed_at_departure_cents, lifetime_net_revenue_cents)` —
-  survives the purge (F10.9). Business identity and money only; **no consumer
-  data**, and the schema must keep it that way.
-- `usage_records.call_id` and `cost_records.call_id` can stay non-nullable, since
-  calls now outlive every period they are billed in. The earlier concern about
-  orphaning billing evidence disappears with the TTL that caused it.
+Steps 1 and 7 bracket the rest for a reason: net revenue comes from Stripe
+balance transactions that step 5 destroys, and `business_id` is needed for step 7
+after step 6 has removed the row that holds it. Doing 6 before 2–5 leaves a saved
+card in Stripe belonging to nobody.
 
-**Scale consequence.** Keeping everything means the largest tables grow without
-bound for a long-lived tenant: at the §1.7 target, `calls` accrues on the order
-of 24M rows a year across the platform. This does not threaten correctness, but
-it is why §2.2 keeps monthly range partitioning available and why the dashboard
-reads rollups (§2.8) rather than raw rows — retention is no longer what protects
-dashboard latency, so the rollups now carry that load alone.
+## 2.10 Lifecycle and retention
 
-## 2.9 Billing (F7)
+**Every deadline is a stored row, not a computed offset.** `lifecycle_deadlines`
+holds `due_at` with a nullable `paused_at`, because the operator can pause a
+clock (F10.1b) and an expression like `created_at + interval '10 days'` cannot be
+paused. The sweeper acts only on rows that are due and not paused; **silence
+never pauses anything**.
 
-**Stripe, using Customers + Setup Intents + a 30-day recurring price + usage
-meters.** Verified capabilities in §2.15.
+**Lifecycle sweeper**, hourly:
 
-| Requirement                         | Mechanism                                                                                                                                                      |
-| ----------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| F7.1 $100 in advance, every 30 days | Subscription with `interval: day, interval_count: 30`, billed at period start. **Not** `interval: month` — see the drift note below.                           |
-| F7.2 card stored                    | `SetupIntent` with `usage: off_session`, attached to the Customer                                                                                              |
-| F7.3 no card liability              | Card entered into Stripe Elements; never reaches our servers. We store `stripe_customer_id` and `payment_method_id` only. Keeps us at SAQ-A.                   |
-| F7.4 usage in arrears               | Metered price on the same subscription, invoiced at period end                                                                                                 |
-| F7.5 one usage unit                 | A single Stripe **meter**: `connected_minutes`. A `reminders_sent` meter is added in v2.                                                                       |
-| F7.6 productive calls only          | Our own predicate over call outcome, evaluated post-call; only productive calls emit a usage record                                                            |
-| F7.8, F7.15 terms configurable      | A versioned `pricing_policy` row holds the fixed fee, cap, per-unit rates **and the set of billable outcomes**. Changing terms inserts a new version.          |
-| F7.16 history reproducible          | `billing_periods.pricing_policy_id` pins each period to the terms it was settled under                                                                         |
-| F7.9 cap                            | Enforced **by us** before emitting usage, not by Stripe. On reaching: stop accruing, keep serving, alert operator                                              |
-| F7.11 failed charge                 | `invoice.payment_failed` webhook → notify (F8.2) → **Stripe Smart Retries**, configured per the three settings below                                           |
-| F7.12 cancellation                  | **Ringly computes** the refund and the final usage total, clamps to the cap, then executes both through Stripe. Stripe's own proration is deliberately unused. |
-| F7.14 immutable record              | `billing_events`, keyed by `stripe_event_id` for idempotency                                                                                                   |
+| Deadline kind         | Set when                | Action at `due_at`                             |
+| --------------------- | ----------------------- | ---------------------------------------------- |
+| `unactivated_expiry`  | number provisioned      | release number, delete everything (F10.1)      |
+| `grace_expiry`        | first charge fails      | `grace` → `suspended` (F7.11)                  |
+| `suspended_expiry`    | suspension begins       | delete (F10.3)                                 |
+| `cancellation_window` | cancellation requested  | settle, stop service, `cancelling` → `dormant` |
+| `dormancy_expiry`     | service stops           | delete (F7.12e)                                |
+| `final_warning`       | 48h before any deletion | send the warning (F10.3a)                      |
 
-Usage is written locally to `usage_records` first — the source of truth for our
-own reporting and unit economics (N4.4) — and pushed to Stripe's meters
-asynchronously, so a Stripe outage never blocks a call.
+`final_warning` is a **separate deadline**, not a branch inside the deletion job,
+so that "nothing is deleted without 48 hours' notice" (F10.3a) is enforced by the
+schedule rather than by remembering to check.
 
-**Stripe configuration, exhaustively (F7.20).** Every setting below exists to
-stop both systems acting on the same thing:
+**Retention** (F10.8) is one rule: nothing is aged out while a business is
+active; everything goes when the relationship ends, on the clock the ending sets
+— day 10 unactivated, day 60 suspended, 60 days after service stops for a
+cancellation. There is no field-level expiry and no rolling deletion.
 
-| Setting                        | Value                        | Why                                                              |
-| ------------------------------ | ---------------------------- | ---------------------------------------------------------------- |
-| Smart Retries schedule         | Spans the full 30 days       | Default gives up well before the deletion boundary               |
-| End-of-dunning behaviour       | Leave the subscription alone | Otherwise Stripe ends the relationship on its schedule, not ours |
-| Dunning emails                 | **Off**                      | Ringly owns the whole failure path (F7.21)                       |
-| Receipts and payment-succeeded | **On**, Ringly-branded       | Stripe knows everything these need; Ringly sends none            |
-| `proration_behavior`           | `none`                       | Stripe prorates by the second and cannot enforce the cap         |
-| Billing thresholds             | **Not configured**           | Would invoice early, alongside our own cap logic                 |
-| Customer portal                | **Disabled**                 | Would let a business self-cancel, bypassing F10.2                |
-| Branding                       | Logo, colours, business name | So Stripe-sent mail reads as Ringly                              |
+**Transcripts and recordings are never stored** (F10.6). They stay with Retell on
+a 30-day TTL set per agent at provisioning, are fetched on demand by signed URL,
+and **Ringly issues no deletion call** (F10.5) — the TTL expires long before the
+earliest Ringly deletion.
 
-The **48-hour final warning (F10.3a) is always ours** — Stripe has no concept of
-the deletion that follows, so it cannot be delegated. Nor can the suspension
-notice, the grace-period reminders, or the first failure notice: each states a
-Ringly-specific consequence on a Ringly-specific timeline (F7.21).
+## 2.11 The operator surface
 
-**Why we do not use Stripe's proration.** Stripe prorates by the second, credits
-the customer balance rather than the card unless told otherwise, and — decisively
-— has no way to express "the total for this period may never exceed $500"
-(F7.12d). Since the clamp has to be ours regardless, the whole calculation stays
-ours and Stripe is used only to _execute_ the resulting refund and invoice.
-
-**Billing period boundaries.** A period starts at **midnight local time** in the
-business's timezone on the activation day and runs **30 local days** (DST-aware,
-so a period may be 719 or 721 hours). The Stripe subscription is anchored at
-**09:00 local on day 1**, not midnight — Stripe advances by a fixed 720 hours, so
-a DST transition would otherwise drift the charge onto the previous calendar
-date. Decoupling the charge moment from the period boundary makes that
-impossible.
-
-**`billing_periods` rows are authoritative**, not arithmetic over an activation
-date. Cancellation, reactivation and payment failures all break
-`activation + n × 30 days`, and periods must be immutable for reconciliation
-(F7.14). Stripe is the payment executor; our table is the record.
-
-**Three further consequences worth stating plainly:**
-
-1. **The billing date drifts backwards through the calendar.** 30-day periods
-   give 12.17 periods a year, not 12, so a business signing up on 1 January is
-   billed 31 January, 2 March, 1 April… and pays **$1,216.67** a year rather than
-   $1,200. This is what was asked for and Stripe supports it directly; it is
-   recorded because it surprises customers, not because it is wrong. Switching to
-   `interval: month` anchored on the signup day would give calendar-stable dates
-   and exactly 12 charges.
-2. **The cap is enforced by Ringly, not Stripe.** Stripe's billing thresholds can
-   invoice early at a monetary threshold, but "stop charging and keep serving at
-   a loss" is a Ringly-side policy. We check the accrued total before writing
-   each usage record and stop at $400 of usage ($500 including the fixed fee).
-3. **Timezone position — resolves the N5.2 conflict.** Usage is metered and
-   displayed in the **business's** timezone; the invoice period is **Stripe's**.
-   The dashboard labels which it is showing. Any other combination produces
-   invoices that disagree with the dashboard.
-
-## 2.9a Operator dashboard (F9)
-
-A separate application surface, not a privileged view of the business dashboard:
+`/ops` is a **separate application surface**, not a privileged view of the
+business dashboard, because it is the one place a cross-tenant query is
+legitimate (F9.1) and therefore the one place it must be contained.
 
 - **Route namespace `/ops/*`**, excluded from every tenant-facing layout.
-- **Its own data access module.** Tenant-facing code never imports it; it never
-  imports tenant-scoped helpers. The one place a cross-tenant query is legitimate
-  is the one place it is allowed to exist.
-- **Authorisation by operator allowlist** (env-configured user ids), checked in
-  the proxy _and_ in every `/ops` handler. Not a role column on a tenant table —
-  nothing a compromised business account could set.
-- **Tests assert** an authenticated business owner gets 404 from every `/ops`
-  route, and that no tenant-facing route can reach the ops data module.
-- **Cost attribution (F9.5):** per-call Retell cost captured at the post-call
-  webhook — preferring a cost field on the call object where Retell supplies one,
-  otherwise `duration × configured_rate`. Number rental is a monthly per-business
-  line. Both land in `cost_records`.
-- **Net revenue (F9.2)** from Stripe balance transactions, which carry the
-  processing fee, so margin is net rather than gross.
-- **Daily refresh (F9.7)** via the §2.8 rollup worker, writing
-  `daily_business_economics`.
-- **Reported by calendar month (F9.8).** The daily rows are keyed by UTC date and
-  summed into calendar months, deliberately _not_ into business billing periods —
-  no two businesses share a period, so per-period figures cannot be aggregated
-  into anything an accountant recognises. Revenue counts money **settled in
-  Stripe**, not accrued; cost counts spend **incurred**, not projected.
-- **Idle-number view (F9.9).** Retell numbers are reconciled against businesses
-  with an active paid period; anything held without one is listed with its age
-  and monthly rental. This reuses `listPhoneNumbers` and the orphan-detection
-  logic already in `src/lib/retell.ts`.
+- **Its own data module** (`lib/ops/`). Tenant code never imports it; it never
+  imports `tenantScoped`. Lint enforces both directions.
+- **Authorisation by env-configured operator allowlist**, checked in the proxy
+  _and_ in every handler. Not a role column on a tenant table — nothing a
+  compromised business account could grant itself.
+- **Tests assert** that an authenticated business owner receives 404 from every
+  `/ops` route, and that no tenant-facing module transitively imports `lib/ops`.
 
-## 2.10 Email (F8)
+**Economics** (F9.2–F9.5): `cost_records` are written at the post-call webhook,
+preferring a cost field on Retell's call object where present and otherwise
+`duration × configured_rate`; number rental is a monthly per-business line.
+Revenue is **net of Stripe fees**, taken from balance transactions.
+`daily_business_economics` is refreshed daily and **reported by calendar month**
+(F9.8) — no two businesses share a billing period, so per-period figures cannot
+be summed into anything an accountant recognises.
 
-**Provider: Resend** (decided 2026-07-30). Chosen for React Email — templates
-live in this repo and are reviewed like any other code — a small API surface that
-keeps the abstraction thin, and price parity with the alternatives at this
-volume. Postmark was the runner-up on transactional deliverability; SES was
-rejected as 10–20× cheaper but materially more operational work (warmup, bounce
-and complaint handling) at a scale where the saving is noise.
+**Controls** (F9.9–F9.13): set and clear cancelled status (the only place that
+exists), pause an unactivated clock, and see idle numbers — Retell numbers
+reconciled against businesses with an active paid period, each a standing cost
+with no revenue against it.
 
-Operator alerting (F9.6) uses the same path initially. _TBD: move operator alerts
-to Slack; pending implementation._
+## 2.12 Email
 
-Design: one `sendEmail(kind, businessId, payload)` entry point writing an
-`email_log` row **before** sending, so a retried worker cannot double-send
-(F8.5). The idempotency key takes one of **three shapes** depending on the email
-— per billing period, per incident, or per discrete event — because "once"
-means something different for a receipt, a calendar outage, and a single shifted
-appointment. The per-incident shape is what stops an outage generating one email
-per lost customer.
+**Resend**, with templates as React Email components in this repository (F8.3) —
+already built in PR #4 — so a change to what a customer reads is reviewed like a
+change to what the code does.
 
-Ringly sends only what Stripe does not (F8.3a): the whole failure path plus
-operational and reporting mail. Receipts and payment-succeeded are Stripe's.
-Transactional mail is always sent; the stats digest honours an unsubscribe flag
-(F8.4).
+```ts
+sendEmail(kind: EmailKind, businessId: string, payload): Promise<void>
+```
 
-## 2.11 Cost model (N4)
+Writes `email_log` **before** sending, keyed by an idempotency key whose shape
+depends on the email (F8.5): **per period** for receipts and digests, **per
+incident** for calendar failures, **per event** for a shifted occurrence or a
+deletion warning. The per-incident shape is what stops an outage generating one
+email per lost customer.
 
-| Lever                       | Mechanism                                                               |
-| --------------------------- | ----------------------------------------------------------------------- |
-| Fixed cost per tenant       | Shared schema, shared database, no per-tenant infrastructure            |
-| Call-path third-party spend | Config cache (§2.6); one provider call per turn (already done in PR #2) |
-| Dashboard cost              | Pre-aggregated rollups (§2.8)                                           |
-| Background work cost        | Batched scheduled workers, `SKIP LOCKED`, no external queue             |
-| Enrichment spend            | Cache Places lookups by `place_id`; single call on submit               |
-| Attribution                 | `usage_records` per business (N4.4)                                     |
+**Ringly sends only what Stripe does not** (F8.3a). Stripe owns receipts and
+payment-succeeded; Ringly owns the entire failure path, because only Ringly knows
+that service continues seven days, that nothing has been deleted yet, and what
+exactly is destroyed in forty-eight hours (F7.21).
 
-## 2.12 Security (N6)
+Every declared kind is **type-linked to a template**, so adding one without
+writing it fails the build rather than failing at send time.
 
-Unchanged foundations: signature verification on every webhook (Retell today,
-Stripe added), encrypted provider tokens, RLS. New: the `tenantScoped` helper
-(§2.2) as the single service-role query path, and Stripe webhook signature
-verification using the Stripe SDK's own verifier — per project rule, the vendor's
-implementation, never hand-rolled.
+## 2.13 Cost model
 
-## 2.13 Risks
+| Lever                       | Mechanism                                              |
+| --------------------------- | ------------------------------------------------------ |
+| Fixed cost per tenant       | Shared schema, shared database, no per-tenant infra    |
+| Call-path third-party spend | Config cache (§2.5.5); one provider call per turn      |
+| Dashboard cost              | Pre-aggregated rollups (§2.8)                          |
+| Background work             | Batched workers, `SKIP LOCKED`, no external queue      |
+| Enrichment spend            | Cache Places by `place_id`; one call on submit         |
+| Attribution                 | `cost_records` and `usage_records` per business (N4.4) |
 
-- **R1 — Shipped code fails open; the product now requires fail-closed.** PR #2
-  deliberately treats a calendar error, timeout, or expired token as an empty
-  calendar and books anyway. F2.7 and N7.2 now require the opposite: refuse the
-  booking and tell the caller. **This is a specification change, not only a bug
-  fix** — `getCalendarBusyIntervals` must distinguish "no busy intervals" from
-  "could not determine busy intervals", and the booking path must refuse on the
-  latter. Phase 1.
-- **R2 — LAUNCH BLOCKER: Google OAuth verification is not done.** While the app
-  is in _Testing_, Google revokes refresh tokens after **7 days**. Combined with
-  a mandatory calendar (F4.1) and fail-closed booking (F2.7), that means **every
-  business stops taking bookings one week after signing up**, permanently, until
-  it re-consents. This is no longer a degradation — it is the product ceasing to
-  work for every customer on a 7-day timer.
+Deliberately **not** done: caching Google access tokens. Every lookup pays a
+token exchange; accepted by owner decision.
 
-  Ringly **cannot launch to a single paying business** before sensitive-scope
-  verification completes, and that review runs for **weeks**. Submitting it is
-  independent of every engineering phase and should not wait on any of them.
+## 2.14 Security
 
-  _Owner: Shipra. Target: weekend of 2026-08-01. **Status: not started.**_
+Unchanged foundations: signature verification on every inbound webhook (Retell
+and now Stripe, each with the vendor's own verifier), encrypted provider
+credentials (N6.1), RLS on tenant tables.
 
-- **R3 — Cross-tenant leakage via service role.** Mitigated by §2.2; must be
-  test-enforced (N1.2).
-- **R4 — Migration risk.** 005's exclusion constraint fails to apply if any
-  overlapping appointments already exist; needs a data audit first.
-- **R5 — Provider capability mismatch.** Not every provider can exclude an event
-  by id or expand recurrences; §2.4 declares capabilities rather than assuming
-  parity.
-- **R6 — Cost of correctness.** Live busy-checks on every turn are a real
-  third-party spend. Accepted: a stale conflict check is worse than its cost.
-- **R7 — Resolved.** Reminders are out of v3 entirely (F5, §1.9). Recurring
-  appointments remain; nothing notifies the customer.
-- **R12 — Caller authentication is weaker than caller ID.** F2.4 identifies a
-  caller by name plus appointment details rather than by calling number. Anyone
-  who knows a customer's name and appointment time can therefore reschedule or
-  cancel it. This is a deliberate trade for usability — customers ring from
-  different phones and withhold numbers — but it is an authentication weakening
-  and should be revisited if abuse appears.
-- **R13 — Appointments edited directly in the provider's calendar drift.** If an
-  owner moves a Ringly-created event inside Google, Ringly still holds the
-  original time. Conflict checks stay correct (busy intervals are read live), and
-  no reminder will go out with the wrong time because there are no reminders. But
-  a caller ringing about that appointment is quoted the old time, and Ringly's DB
-  briefly protects a slot that is now free. Judged acceptable; sync-back is not
-  built.
-- **R14 — A business changing its hours or timezone.** Existing appointments may
-  fall outside new hours, and a timezone change shifts every stored local time.
-  Judged rare and not handled.
-- **R9 — A business switching calendar provider is out of scope.** Migrating
-  `external_event_id` between providers is not designed and not built. Judged
-  unlikely in practice; recorded because the real world may disagree, and the
-  fallback (orphan the old events, re-sync forward only) should be a conscious
-  decision if it happens.
-- **R10 — Our retention promise depends on a provider setting.** Retell holds
-  transcripts and recordings for a **per-agent, configurable 1 day to 2 years**.
-  Two consequences: every agent Ringly provisions must have retention set
-  explicitly rather than inherited, and F10.5's day-30 deletion is incomplete
-  unless it also deletes Retell-side data. Mirroring transcripts into our own
-  database (§2.8a) removes the first dependency.
-- **R11 — PHI and the missing BAA.** The "clinic" persona means callers will
-  disclose health information over the phone. Retell is HIPAA-capable but
-  **requires a signed BAA before PHI is transmitted**, and Ringly has none. This
-  is a launch blocker for healthcare tenants, not a technical risk.
-- **R8 — Unbooked calls are pure cost.** Only productive calls are billable
-  (F7.6) while every call costs Retell minutes. At Retell's $0.13–0.31/min
-  all-in, the $100 fixed fee covers roughly 320–770 minutes of unbilled calling
-  before a business is loss-making. Accepted for now; F9 exists partly to measure
-  exactly this, and the stated next pricing model (all connected minutes) is the
-  remedy.
+Added by this design: `tenantScoped` as the single service-role query path
+(§2.3.1), the `/ops` allowlist (§2.11), and the fact that **card data never
+touches Ringly** (F7.3) — Stripe Elements collects it, we store only identifiers,
+which keeps us at SAQ-A (N6.2).
 
-## 2.14 Delivery plan
+**PHI is out of scope** by product decision: healthcare businesses are excluded
+because Retell requires a signed BAA that Ringly does not hold (§1.4).
+
+## 2.15 What has to change in code that already exists
+
+The parts of the shipped system this design contradicts, so none of it is
+discovered late:
+
+| Today                                                                                                         | Must become                                                             |
+| ------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| `getCalendarBusyIntervals` returns `[]` on failure                                                            | Returns `BusyLookup`; booking refuses on failure (R1, F2.7)             |
+| Booking proceeds when the calendar is unreadable                                                              | Refuses, apologises, opens an incident                                  |
+| Webhooks use `createServiceClient` directly                                                                   | Only through `tenantScoped` (N1.2)                                      |
+| `reminders` table, WhatsApp consent columns, `record_whatsapp_consent` tool, consent step in the agent prompt | **Deleted** — and removing the consent step shortens every booking call |
+| Agent greeting has no recording disclosure                                                                    | Disclosure appended by Ringly, not editable (F2.1a)                     |
+| `business_type` includes `clinic`                                                                             | Removed (§1.4)                                                          |
+| `calls` has no duration, end reason, or billability                                                           | Captured at post-call (F6, F7.6)                                        |
+| `(business_id, starts_at)` unique index                                                                       | Range exclusion constraint (§2.4/005)                                   |
+| Agent answers with no booking-horizon or opening-hours check                                                  | Enforces both (F2.8, F2.9)                                              |
+
+## 2.16 Delivery plan
 
 Each phase is independently shippable. **Phase 1 is a prerequisite for
-everything and contains the one active defect (R1); phases 2–7 are independent of
-each other after it**, except where noted.
+everything**; the rest are independent of each other after it.
 
-| Phase                        | Scope                                                                                                                                                                                                                                                                             | Depends on   | Flag    |
-| ---------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------ | ------- |
-| **1 — Foundations**          | Migration 005; `tenantScoped` helper + isolation tests; **make the calendar check fail closed (R1)** and surface it per F2.7; **delete all reminder code, tables and policies**; drop `clinic` from `business_type`; capture call duration, end reason, outcome and per-call cost | —            | no      |
-| **2 — Catalogue + cache**    | 006; config cache (§2.6); F3 end to end                                                                                                                                                                                                                                           | 1            | no      |
-| **3 — Provider abstraction** | 007; extract `SchedulingProvider`; port Google behind it                                                                                                                                                                                                                          | 1            | no      |
-| **4 — Business dashboard**   | 009; rollups; F6 UI                                                                                                                                                                                                                                                               | 1            | no      |
-| **5 — Billing + email**      | 010; Stripe 30-day subscription, card on file, meters, cap; Resend; F7/F8                                                                                                                                                                                                         | 1, 4         | **yes** |
-| **6 — Recurrence**           | 008; materialiser; clash shift/skip; owner notification; F5                                                                                                                                                                                                                       | 1, 5 (email) | **yes** |
-| **7 — Operator dashboard**   | 011; `/ops` walled garden; economics rollup; F9                                                                                                                                                                                                                                   | 1, 4, 5      | **yes** |
+| Phase                        | Scope                                                                                                                                        | Needs   | Flag |
+| ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- | ------- | ---- |
+| **1 — Foundations**          | 005; `tenantScoped` + isolation tests; fail-closed booking and incidents (R1); delete reminders/WhatsApp; recording disclosure; call capture | —       | no   |
+| **2 — Catalogue + cache**    | 006; tenant config cache; F3 end to end                                                                                                      | 1       | no   |
+| **3 — Provider abstraction** | 007; extract `SchedulingProvider`; port Google behind it                                                                                     | 1       | no   |
+| **4 — Business dashboard**   | 009; rollup worker; F6                                                                                                                       | 1       | no   |
+| **5 — Billing**              | 010; state machine; settlement; Stripe config; F7                                                                                            | 1, 4    | yes  |
+| **6 — Lifecycle**            | 011 (deadlines); sweeper; teardown; departure record; F10                                                                                    | 1, 5    | yes  |
+| **7 — Recurrence**           | 008; materialiser; clash shift/skip; F5                                                                                                      | 1, 3    | yes  |
+| **8 — Operator dashboard**   | 011 (economics); `/ops` walled garden; F9                                                                                                    | 1, 4, 5 | yes  |
 
-### How the work is split across branches and PRs
+**Phases split by layer** — migration+types → backend → UI → enablement — because
+each merges green independently and a schema can land inert before anything uses
+it. Phase 5 additionally splits by concern (subscription, then usage and cap,
+then settlement), because "billing" as one PR is unreviewable.
 
-The rule: **one PR is one reviewable idea that leaves `main` deployable.** A
-phase is not a PR. Phases split by _layer_, in this order, because each layer is
-independently reviewable and the earlier ones are safe to merge before the later
-ones exist:
+Phases 1–4 need no flags: each is invisible to users or a strict improvement, and
+complete when merged. Phases 5–8 are flagged so incomplete work lives on `main`
+rather than on a long-lived branch.
 
-1. **Migration + types** — schema, generated types, no behaviour change. Merges
-   green and inert.
-2. **Backend** — services, repositories, jobs, webhooks, with unit and
-   integration tests.
-3. **UI** — the screens that consume it.
-4. **Enablement** — flip the feature flag on, once 1–3 are proven.
+## 2.17 Risks
 
-Phase 1 is small enough to be a single PR. Phases 4, 5 and 7 are each three or
-four PRs on that pattern. Phase 5 additionally splits _by concern_ — Stripe
-subscription, usage metering and cap, then email — because "billing" as one PR
-would be unreviewable.
+- **R1 — The shipped code fails open; the product requires fail-closed.** A
+  specification change, not only a bug fix. Phase 1.
+- **R2 — LAUNCH BLOCKER: Google OAuth verification not submitted.** Refresh
+  tokens are revoked after 7 days while the app is in _Testing_; with a mandatory
+  calendar and fail-closed booking, every business stops taking bookings a week
+  after signup. Weeks of review, independent of every engineering phase.
+- **R3 — Cross-tenant leakage via the service role.** Mitigated by §2.3.1; must
+  stay test-enforced.
+- **R4 — 005 cannot apply over existing overlapping appointments.** Needs a data
+  audit before the migration runs.
+- **R5 — Provider capability mismatch.** Declared, not assumed (§2.6).
+- **R6 — Live busy-checks cost real money per turn.** Accepted: a stale conflict
+  check is worse.
+- **R8 — Unbooked calls are pure cost.** At Retell's $0.13–0.31/min, $100 covers
+  roughly 320–770 minutes of unbillable calling. F9 exists partly to measure it.
+- **R9 — Switching calendar provider is out of scope.** Not designed, not built.
+- **R10 — Retention depends on a provider setting.** Retell's is per-agent, 1 day
+  to 2 years; must be set explicitly at provisioning, never inherited.
+- **R11 — PHI.** Resolved by excluding healthcare (§1.4).
+- **R12 — Caller authentication is weaker than caller ID** (§2.5.6). Deliberate;
+  revisit if abused.
+- **R13 — Appointments edited directly in the owner's calendar drift.** Conflict
+  checks stay correct (busy is read live); Ringly's stored time may not be.
+  Sync-back is not built.
+- **R14 — A business changing hours or timezone.** Rare, not handled.
+- **R15 — Long-running disputes outlive the business.** A chargeback resolving
+  after day 60 lands on a deleted account. Accepted, no special handling (F7.17).
 
-### Feature flags
+## 2.18 Verified vendor capabilities (2026-07-30)
 
-Flags exist so incomplete work can live on `main` instead of a long-lived branch:
-
-- **Phase 5 `billing`** — the highest-stakes flag. Until it flips, no customer is
-  charged; the whole path can be exercised against Stripe test mode on `main`.
-- **Phase 6 `recurring_appointments`** — recurrence changes what the agent offers
-  callers, so it stays dark until the materialiser and its clash handling are
-  proven against real calendars.
-- **Phase 7 `ops_dashboard`** — additionally gated by the operator allowlist, so
-  the flag is defence in depth rather than the control.
-
-Phases 1–4 need no flags: each is either invisible to users or a strict
-improvement to an existing screen, and each is complete when merged.
-
-## 2.15 Verified vendor capabilities (confirmed 2026-07-30)
-
-- **Stripe** — `SetupIntent` saves a card without charging and optimises later
-  off-session charges; off-session means future charges happen without the
-  customer present. Usage-based billing uses the **Meters** API (real-time,
-  idempotent via `identifier`); **billing thresholds** can invoice when accrued
-  usage reaches a monetary threshold. Stripe now positions **Metronome** as its
-  primary usage-based billing platform for new complex integrations — worth
-  evaluating at Phase 5 if metering outgrows Billing Meters.
-  Sources: [Setup Intents API](https://docs.stripe.com/payments/setup-intents),
-  [Save a payment method without charging](https://docs.stripe.com/payments/save-and-reuse),
-  [Usage-based pricing plans](https://docs.stripe.com/billing/subscriptions/usage-based/pricing-plans),
-  [Billing thresholds](https://docs.stripe.com/billing/subscriptions/usage-based/thresholds).
-- **Retell** — end-to-end response budget ≈600ms with streaming between STT, LLM
-  and TTS; **backchannelling** is configurable (enable, frequency, words);
-  `speak_during_execution` covers tool-call latency, though community reports
-  note fillers sometimes landing after completion rather than during — verify
-  behaviour when tuning F2.6.
-  Sources: [How real-time voice AI works](https://www.retellai.com/blog/how-real-time-voice-ai-works-stt-llm-tts),
-  [Backchanneling changelog](https://www.retellai.com/changelog/latest-features-call-analysis-backchanneling-and-python-custom-llm-update),
-  [Building a great voice agent](https://docs.retellai.com/blog/build-voice-agent).
-- **Retell data retention** — per-agent, configurable **1 day to 2 years**, for
-  transcripts, recordings and logs. Recording URLs are **signed** (so they expire
-  and must be fetched on demand, never stored). Retell is SOC 2 Type I/II, GDPR
-  and HIPAA capable, but **a signed BAA is required before transmitting PHI**
-  (R11). PII redaction is available per agent. If storage is disabled entirely,
-  the webhook's recording link expires ~10 minutes after delivery.
-  Sources: [Data storage settings](https://docs.retellai.com/accounts/privacy-disable),
-  [Security and compliance](https://docs.retellai.com/general/compliance),
-  [PII redaction](https://www.retellai.com/blog/introducing-retell-ai-pii-redaction-data-security-made-easy).
-- **Google Calendar `calendar.events`** — a **sensitive** scope; production use
-  requires verification, and refresh tokens are revoked after 7 days while the app
-  is in _Testing_ (R2).
-  Sources: [Sensitive scope verification](https://developers.google.com/identity/protocols/oauth2/production-readiness/sensitive-scope-verification),
-  [Manage App Audience](https://support.google.com/cloud/answer/15549945?hl=en).
+- **Stripe** — `SetupIntent` stores a card off-session; usage-based billing via
+  **Meters**; **billing thresholds** exist and are deliberately unused; dunning,
+  receipts, proration and the customer portal are each independently
+  configurable, which is what makes §2.9.3 possible. Disputes: **$15 fee,
+  non-refundable in the US**, 7–21 days to submit evidence, 2–3 months to
+  resolve.
+  [Setup Intents](https://docs.stripe.com/payments/setup-intents) ·
+  [Usage-based pricing](https://docs.stripe.com/billing/subscriptions/usage-based/pricing-plans) ·
+  [Thresholds](https://docs.stripe.com/billing/subscriptions/usage-based/thresholds) ·
+  [Disputes](https://stripe.com/payments/dispute-management)
+- **Retell** — ~600ms end-to-end budget; `speak_during_execution` and
+  configurable backchannelling cover tool latency; retention is **per-agent, 1
+  day to 2 years**; recording URLs are **signed and expire**, so they must be
+  fetched at view time; SOC 2, GDPR and HIPAA-capable but **PHI requires a BAA**.
+  Cost is $0.13–0.31/min all-in.
+  [Data storage](https://docs.retellai.com/accounts/privacy-disable) ·
+  [Compliance](https://docs.retellai.com/general/compliance) ·
+  [Latency](https://www.retellai.com/blog/how-real-time-voice-ai-works-stt-llm-tts)
+- **Google Calendar** — `calendar.events` is a **sensitive** scope requiring
+  verification; refresh tokens revoked after 7 days in _Testing_ (R2); granular
+  consent means calendar can be declined independently of sign-in (F1.7a);
+  `events.list` exposes event ids where `freebusy` does not, which is why the
+  former is used.
+  [Sensitive scope verification](https://developers.google.com/identity/protocols/oauth2/production-readiness/sensitive-scope-verification) ·
+  [App audience](https://support.google.com/cloud/answer/15549945?hl=en)
