@@ -1,3 +1,4 @@
+import { money } from "./format";
 import { Cta, EmailLayout, Facts, P } from "./layout";
 
 /**
@@ -8,8 +9,6 @@ import { Cta, EmailLayout, Facts, P } from "./layout";
  * Defaults set here are starting points, not decisions. Subject lines live in
  * `registry.ts` beside each template so they can be reviewed together.
  */
-
-const money = (cents: number) => `$${(cents / 100).toFixed(2)}`;
 
 // ── activation ──────────────────────────────────────────────────────────────
 
@@ -30,6 +29,7 @@ export function ActivationReceipt({
 }: ActivationReceiptProps) {
   return (
     <EmailLayout
+      dashboardUrl={dashboardUrl}
       preview={`Your Ringly receptionist is live — ${money(amountCents)} charged`}
       heading="Your receptionist is live"
     >
@@ -56,7 +56,6 @@ export function ActivationReceipt({
 // ── upcoming charge ─────────────────────────────────────────────────────────
 
 export type UpcomingChargeProps = {
-  businessName: string;
   amountCents: number;
   chargeDate: string;
   periodStart: string;
@@ -73,6 +72,7 @@ export function UpcomingCharge({
 }: UpcomingChargeProps) {
   return (
     <EmailLayout
+      dashboardUrl={dashboardUrl}
       preview={`${money(amountCents)} will be charged on ${chargeDate}`}
       heading="Your next payment"
     >
@@ -102,6 +102,7 @@ export type PaymentSucceededProps = {
   periodEnd: string;
   billableMinutes: number;
   invoiceUrl: string;
+  dashboardUrl: string;
 };
 
 export function PaymentSucceeded({
@@ -112,9 +113,11 @@ export function PaymentSucceeded({
   periodEnd,
   billableMinutes,
   invoiceUrl,
+  dashboardUrl,
 }: PaymentSucceededProps) {
   return (
     <EmailLayout
+      dashboardUrl={dashboardUrl}
       preview={`Payment received — ${money(totalCents)}`}
       heading="Payment received"
     >
@@ -141,6 +144,7 @@ export type PaymentFailedProps = {
   reason: string;
   graceEndsOn: string;
   updateCardUrl: string;
+  dashboardUrl: string;
 };
 
 export function PaymentFailed({
@@ -148,9 +152,11 @@ export function PaymentFailed({
   reason,
   graceEndsOn,
   updateCardUrl,
+  dashboardUrl,
 }: PaymentFailedProps) {
   return (
     <EmailLayout
+      dashboardUrl={dashboardUrl}
       preview={`We could not take ${money(amountCents)} — your service is still running`}
       heading="Your payment did not go through"
     >
@@ -175,6 +181,7 @@ export type PaymentReminderProps = {
   daysLeft: number;
   graceEndsOn: string;
   updateCardUrl: string;
+  dashboardUrl: string;
 };
 
 export function PaymentReminder({
@@ -182,9 +189,11 @@ export function PaymentReminder({
   daysLeft,
   graceEndsOn,
   updateCardUrl,
+  dashboardUrl,
 }: PaymentReminderProps) {
   return (
     <EmailLayout
+      dashboardUrl={dashboardUrl}
       preview={`${daysLeft} days before your number stops answering`}
       heading={`${daysLeft} days left to pay`}
     >
@@ -207,15 +216,18 @@ export type SuspensionNoticeProps = {
   amountCents: number;
   deletionDate: string;
   updateCardUrl: string;
+  dashboardUrl: string;
 };
 
 export function SuspensionNotice({
   amountCents,
   deletionDate,
   updateCardUrl,
+  dashboardUrl,
 }: SuspensionNoticeProps) {
   return (
     <EmailLayout
+      dashboardUrl={dashboardUrl}
       preview="Your number has stopped answering calls"
       heading="Your number has stopped answering"
     >
@@ -242,6 +254,7 @@ export type DeletionWarningProps = {
   deletionAt: string;
   appointmentCount: number;
   updateCardUrl: string;
+  dashboardUrl: string;
 };
 
 export function DeletionWarning({
@@ -250,9 +263,11 @@ export function DeletionWarning({
   deletionAt,
   appointmentCount,
   updateCardUrl,
+  dashboardUrl,
 }: DeletionWarningProps) {
   return (
     <EmailLayout
+      dashboardUrl={dashboardUrl}
       preview={`Final notice — ${businessName} will be deleted on ${deletionAt}`}
       heading="Final notice: your account will be deleted in 48 hours"
     >
@@ -292,6 +307,7 @@ export function CapReached({
 }: CapReachedProps) {
   return (
     <EmailLayout
+      dashboardUrl={dashboardUrl}
       preview={`You have reached ${money(capCents)} — the rest of the period is on us`}
       heading="You have hit your cap — the rest is on us"
     >
@@ -318,6 +334,7 @@ export type CancellationConfirmedProps = {
   refundCents: number;
   finalUsageCents: number;
   deletionDate: string;
+  dashboardUrl: string;
 };
 
 export function CancellationConfirmed({
@@ -325,9 +342,11 @@ export function CancellationConfirmed({
   refundCents,
   finalUsageCents,
   deletionDate,
+  dashboardUrl,
 }: CancellationConfirmedProps) {
   return (
     <EmailLayout
+      dashboardUrl={dashboardUrl}
       preview={`${businessName} has been cancelled`}
       heading="Your cancellation is confirmed"
     >

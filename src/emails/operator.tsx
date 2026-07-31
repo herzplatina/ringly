@@ -1,3 +1,4 @@
+import { money } from "./format";
 import { Cta, EmailLayout, Facts, P } from "./layout";
 
 /**
@@ -11,8 +12,6 @@ import { Cta, EmailLayout, Facts, P } from "./layout";
  * Destined for Slack (F9.6); until then the format is the same information in
  * an inbox, so the eventual move is a transport change rather than a rewrite.
  */
-
-const money = (cents: number) => `$${(cents / 100).toFixed(2)}`;
 
 // ── a business hit its cap ──────────────────────────────────────────────────
 
@@ -38,6 +37,7 @@ export function OpsCapReached({
   const bleeding = costToDateCents > capCents;
   return (
     <EmailLayout
+      dashboardUrl={opsUrl}
       preview={`${businessName} hit the cap — serving at cost until ${periodEnd}`}
       heading={`${businessName} has hit the cap`}
     >
@@ -89,6 +89,7 @@ export function OpsPaymentFailed({
 }: OpsPaymentFailedProps) {
   return (
     <EmailLayout
+      dashboardUrl={opsUrl}
       preview={`${businessName} payment failed (attempt ${attempt})`}
       heading={`${businessName} — payment failed`}
     >
@@ -134,6 +135,7 @@ export function OpsCalendarFailing({
 }: OpsCalendarFailingProps) {
   return (
     <EmailLayout
+      dashboardUrl={opsUrl}
       preview={`${businessName} is turning bookings away — calendar unreachable`}
       heading={`${businessName} cannot book anyone`}
     >
@@ -180,6 +182,7 @@ export function OpsActivationStuck({
 }: OpsActivationStuckProps) {
   return (
     <EmailLayout
+      dashboardUrl={opsUrl}
       preview={`${businessName} could not activate after ${attempts} test calls`}
       heading={`${businessName} is stuck in onboarding`}
     >
@@ -212,6 +215,7 @@ export type OpsBusinessDeletedProps = {
   phoneNumber: string;
   lifetimeRevenueCents: number;
   lifetimeCostCents: number;
+  opsUrl: string;
 };
 
 export function OpsBusinessDeleted({
@@ -221,9 +225,11 @@ export function OpsBusinessDeleted({
   phoneNumber,
   lifetimeRevenueCents,
   lifetimeCostCents,
+  opsUrl,
 }: OpsBusinessDeletedProps) {
   return (
     <EmailLayout
+      dashboardUrl={opsUrl}
       preview={`${businessName} deleted — number released`}
       heading={`${businessName} has been deleted`}
     >

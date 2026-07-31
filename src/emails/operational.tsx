@@ -1,3 +1,4 @@
+import { duration, money } from "./format";
 import { Cta, EmailLayout, Facts, P } from "./layout";
 
 /**
@@ -12,6 +13,7 @@ export type CalendarAccessFailingProps = {
   provider: string;
   since: string;
   reconnectUrl: string;
+  dashboardUrl: string;
 };
 
 export function CalendarAccessFailing({
@@ -19,9 +21,11 @@ export function CalendarAccessFailing({
   provider,
   since,
   reconnectUrl,
+  dashboardUrl,
 }: CalendarAccessFailingProps) {
   return (
     <EmailLayout
+      dashboardUrl={dashboardUrl}
       preview="Ringly cannot reach your calendar — bookings are being turned away"
       heading="We cannot reach your calendar"
     >
@@ -67,6 +71,7 @@ export function RecurringChange({
   const shifted = outcome === "shifted";
   return (
     <EmailLayout
+      dashboardUrl={dashboardUrl}
       preview={
         shifted
           ? `${customerName}'s repeat appointment was moved to ${newTime}`
@@ -108,15 +113,18 @@ export type TestCallsExhaustedProps = {
   businessName: string;
   phoneNumber: string;
   attempts: number;
+  dashboardUrl: string;
 };
 
 export function TestCallsExhausted({
   businessName,
   phoneNumber,
   attempts,
+  dashboardUrl,
 }: TestCallsExhaustedProps) {
   return (
     <EmailLayout
+      dashboardUrl={dashboardUrl}
       preview="Your number is not active yet — we are looking into it"
       heading="We could not get your number working"
     >
@@ -149,6 +157,7 @@ export type StatsDigestProps = {
   dropped: number;
   revenueBookedCents: number;
   dashboardUrl: string;
+  unsubscribeUrl: string;
 };
 
 export function StatsDigest({
@@ -165,21 +174,21 @@ export function StatsDigest({
   dropped,
   revenueBookedCents,
   dashboardUrl,
+  unsubscribeUrl,
 }: StatsDigestProps) {
-  const mins = Math.floor(avgDurationSeconds / 60);
-  const secs = avgDurationSeconds % 60;
   return (
     <EmailLayout
+      dashboardUrl={dashboardUrl}
       preview={`${booked} appointments booked from ${calls} calls`}
       heading={`${businessName} — ${periodStart} to ${periodEnd}`}
-      unsubscribable
+      unsubscribeUrl={unsubscribeUrl}
     >
       <P>Here is what your receptionist did over the last 30 days.</P>
       <Facts
         rows={[
           ["Calls answered", String(calls)],
           ["Unique callers", String(uniqueCallers)],
-          ["Average call", `${mins}m ${secs}s`],
+          ["Average call", duration(avgDurationSeconds)],
         ]}
       />
       <P>How those calls ended:</P>
@@ -192,9 +201,7 @@ export function StatsDigest({
           ["Dropped", String(dropped)],
         ]}
       />
-      <Facts
-        rows={[["Revenue booked", `$${(revenueBookedCents / 100).toFixed(2)}`]]}
-      />
+      <Facts rows={[["Revenue booked", money(revenueBookedCents)]]} />
       <P>
         Figures for appointments still in the future are estimates — a price can
         change before the appointment happens. Definitions of each outcome are

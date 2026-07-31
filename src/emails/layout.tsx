@@ -73,18 +73,22 @@ export type LayoutProps = {
   preview: string;
   heading: string;
   children: ReactNode;
+  /** Footer link back into the product. Required — every email offers a way in. */
+  dashboardUrl: string;
   /**
    * Transactional mail carries no unsubscribe link — a business cannot opt out
-   * of being told its payment failed. Only the periodic digest may.
+   * of being told its payment failed. Only the periodic digest may, and it must
+   * then supply a real unsubscribe URL.
    */
-  unsubscribable?: boolean;
+  unsubscribeUrl?: string;
 };
 
 export function EmailLayout({
   preview,
   heading,
   children,
-  unsubscribable = false,
+  dashboardUrl,
+  unsubscribeUrl,
 }: LayoutProps) {
   return (
     <Html lang="en">
@@ -98,14 +102,14 @@ export function EmailLayout({
           <Hr style={styles.hr} />
           <Text style={styles.footer}>
             Ringly — the AI receptionist for your business.{" "}
-            <Link style={styles.link} href="{{DASHBOARD_URL}}">
+            <Link style={styles.link} href={dashboardUrl}>
               Open your dashboard
             </Link>
           </Text>
-          {unsubscribable ? (
+          {unsubscribeUrl ? (
             <Text style={styles.footer}>
               You are receiving this because you asked for periodic reports.{" "}
-              <Link style={styles.link} href="{{UNSUBSCRIBE_URL}}">
+              <Link style={styles.link} href={unsubscribeUrl}>
                 Stop sending these
               </Link>
               .

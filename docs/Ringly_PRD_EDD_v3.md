@@ -174,8 +174,8 @@ _(Carried from v2; renumbered. v2 FR1–FR10 map to F1.1–F1.10.)_
 - **F2.7a** This applies however the calendar became unreachable — provider
   outage, timeout, revoked consent, or expired credentials. **There is no case in
   which Ringly books against a calendar it could not read.** A business that
-  chose to run with no calendar at all (F4.3) is unaffected, because there is
-  nothing to read.
+  is a mandatory part of the product (F4.1), so there is no configuration in
+  which booking proceeds unverified.
 - **F2.8** The agent answers **24 hours a day**, but appointments may only be
   **booked inside the business's opening hours** (F3, business_hours).
 - **F2.9** A one-off appointment may not be booked **more than 70 days ahead**.
@@ -211,21 +211,21 @@ _(Carried from v2; renumbered. v2 FR1–FR10 map to F1.1–F1.10.)_
 
 ### F4 — Scheduling integrations
 
-- **F4.1** A business connects **one** scheduling provider. Google Calendar is
-  the default and the only one that must exist at v3 launch.
-- **F4.2** The system is built so a further provider can be added **without
+- **F4.1** **A connected calendar is mandatory.** A business cannot activate, and
+  cannot take bookings, without one. Ringly refuses to book a time it has not
+  verified (F2.7), so a business with no calendar has no product.
+- **F4.2** **Google Calendar is the only supported provider at v3 launch**, and
+  is the default. Businesses on other systems are not served yet.
+- **F4.3** The system is built so a further provider can be added **without
   changes to booking logic** — provider-specific code lives behind one interface
   (EDD §2.4).
-- **F4.3** A business may choose **no external calendar**. Ringly's own records
-  are then the source of truth, and every other feature behaves identically.
 - **F4.4** Providers targeted after launch, in priority order: Microsoft 365 /
   Outlook, CalDAV (Apple/Fastmail), then vertical booking systems (Square
   Appointments, Acuity, Calendly).
-- **F4.5** **Losing or revoking provider access does not degrade to F4.3.** A
-  business that never connected a calendar has nothing to check; a business whose
-  calendar Ringly cannot read has something to check and cannot. The second case
-  **fails closed** under F2.7 and F2.7a. Calls are still answered and enquiries
-  still work — only booking stops — and the failure is surfaced loudly per F2.7.
+- **F4.5** **Losing or revoking provider access stops booking.** There is no
+  degraded mode that books without verification — the failure is handled by F2.7
+  and F2.7a. Calls are still answered and enquiries still work; only booking
+  stops, loudly.
 
 ### F5 — Recurring appointments
 
@@ -282,8 +282,9 @@ this list is deliberately absent, not merely unbuilt.
 - **F6.5** **Every outcome definition is shown on the dashboard itself**, in
   plain language, next to the figures it governs. A business must never have to
   guess what "dropped" counts.
-- **F6.6** **If a definition changes, the dashboard says so prominently** until
-  acknowledged, and states that figures before and after the change are not
+- **F6.6** **If a definition changes, the dashboard says so prominently** — a
+  notice the owner may or may not read, with no acknowledgement required and no
+  state to track. It states that figures before and after the change are not
   directly comparable. Historical calls are **not** reclassified — transcripts
   are not retained (F10.6), so outcomes cannot be re-derived. This is a permanent
   property of the design, explained on the dashboard rather than hidden.
@@ -563,9 +564,33 @@ period _n+1_ begins 30 days after period _n_.
     reviewed while the product is being proven; to be reduced once recordings are
     shown to behave.
   - **Transcripts: at least 30 days**, and never shorter than recordings.
-- **F10.7** Because retention lives with the provider, **call history older than
-  the retention window is not retrievable** — by the business or by Ringly. Any
-  requirement that depends on older calls (F6.4) must be read against this limit.
+- **F10.7** Because transcript and recording retention live with the provider,
+  **call content older than 30 days is not retrievable** — by the business or by
+  Ringly. Any requirement that depends on older call content must be read against
+  this limit.
+- **F10.8** **Retention of Ringly's own data**, by what it is rather than by
+  table:
+  - **Caller identity is removed after 30 days.** The caller's phone number on a
+    call record is the only consumer PII Ringly holds beyond an active
+    relationship, and it does not survive the month.
+  - **Appointments and customer records live for as long as the business is
+    active**, and are deleted with everything else 30 days after the business
+    ends (F10.3). A business's booking history is the record of its own trade;
+    ageing it out would damage the customer, not protect them.
+  - **Money records are never aged out** while a business is active. Invoices
+    must remain reproducible (F7.16) and disputes arrive late.
+  - **Aggregates are kept indefinitely.** They contain no personal data and are
+    what the dashboard reads once the underlying rows are gone.
+
+  > **Mechanism note.** "Caller identity is removed" is implemented by **clearing
+  > `calls.from_number`, not by deleting the call row.** Deleting rows would
+  > orphan or cascade into `usage_records` and `cost_records`, which reference
+  > them — taking billing evidence and cost attribution with it, inside the very
+  > window a business is most likely to query an invoice. The row survives
+  > without a number; the personal data does not survive at all. If the intent is
+  > instead that the whole row must go, `usage_records.call_id` and
+  > `cost_records.call_id` must become nullable with `on delete set null`, and
+  > invoice queries must stop depending on them.
 
 ---
 
@@ -954,9 +979,9 @@ interface SchedulingProvider {
   `getCalendarBusyIntervals` has exactly this shape, including the
   `excludeExternalEventId` and `AbortSignal` parameters. Extracting it is a
   refactor, not a rewrite.
-- The **`none` provider** returns `[]` busy and no-ops on writes — the correct
-  behaviour for a business that chose to run without a calendar (F4.3).
-- **A failing provider is not the `none` provider.** `getBusyIntervals` must
+- **There is no `none` provider.** A calendar is mandatory (F4.1), so every
+  business has exactly one real provider — Google at launch.
+- `getBusyIntervals` must
   distinguish _"nothing is busy"_ from _"I could not find out"_, and the booking
   path must refuse on the latter (F2.7, F4.5). Returning `[]` for both — which is
   what the shipped code does — is precisely the R1 defect. The interface
@@ -1112,12 +1137,17 @@ from `business_type`.
 **Not stored anywhere:** card details (Stripe only), call recordings and
 transcripts (Retell only, 30-day retention), call audio of any kind.
 
-**The retention question this table exists to answer:** only three tables hold
-consumer PII — `customers`, `calls.from_number`, and `appointments` by
-association. Everything else is either business data, money, or aggregate. A
-retention policy therefore has to decide how long those three live for an
-**active** business; the 30-day post-cancellation purge (F10.3) already covers
-inactive ones.
+**Retention, decided (F10.8):** only three places hold consumer PII —
+`customers`, `calls.from_number`, and `appointments` by association.
+`calls.from_number` is **cleared after 30 days**; `customers` and `appointments`
+live while the business is active and are destroyed 30 days after it ends
+(F10.3). Money tables and aggregates are never aged out. Everything else is
+business configuration and follows the business.
+
+**One accuracy consequence.** Unique-caller counts beyond 30 days come from the
+daily rollup, and a caller who rang on two different days counts twice in a
+monthly total. Exact monthly unique callers would need the numbers retained,
+which is the thing being deliberately given up.
 
 ## 2.9 Billing (F7)
 
@@ -1135,13 +1165,32 @@ meters.** Verified capabilities in §2.15.
 | F7.8, F7.15 terms configurable      | A versioned `pricing_policy` row holds the fixed fee, cap, per-unit rates **and the set of billable outcomes**. Changing terms inserts a new version.          |
 | F7.16 history reproducible          | `billing_periods.pricing_policy_id` pins each period to the terms it was settled under                                                                         |
 | F7.9 cap                            | Enforced **by us** before emitting usage, not by Stripe. On reaching: stop accruing, keep serving, alert operator                                              |
-| F7.11 failed charge                 | `invoice.payment_failed` webhook → notify (F8.2) → Stripe retry schedule                                                                                       |
+| F7.11 failed charge                 | `invoice.payment_failed` webhook → notify (F8.2) → **Stripe Smart Retries**, configured per the three settings below                                           |
 | F7.12 cancellation                  | **Ringly computes** the refund and the final usage total, clamps to the cap, then executes both through Stripe. Stripe's own proration is deliberately unused. |
 | F7.14 immutable record              | `billing_events`, keyed by `stripe_event_id` for idempotency                                                                                                   |
 
 Usage is written locally to `usage_records` first — the source of truth for our
 own reporting and unit economics (N4.4) — and pushed to Stripe's meters
 asynchronously, so a Stripe outage never blocks a call.
+
+**Using Stripe's dunning requires three settings, or it fights our timeline.**
+Retries are Stripe's (F7.11) — we do not build a retry loop — but Stripe's
+defaults do not match F10.3:
+
+1. **Retry schedule must span the full 30 days.** Stripe's default Smart Retries
+   give up well before day 30, after which it would stop trying while our
+   requirement says keep trying to the boundary.
+2. **End-of-dunning behaviour must be "leave the subscription alone."** Stripe
+   can cancel or mark unpaid when retries are exhausted; either would end the
+   relationship on Stripe's schedule rather than ours. Deletion at day 30 is
+   Ringly's decision, driven by `billing_periods`, not Stripe's.
+3. **Stripe's own customer emails must be off.** Stripe will otherwise send its
+   dunning notices alongside ours (F8.2), so a business receives two
+   differently-worded payment-failure emails from what appears to be the same
+   company.
+
+The **48-hour final warning (F10.3a) is always ours** — Stripe has no concept of
+the deletion that follows, so it cannot be delegated.
 
 **Why we do not use Stripe's proration.** Stripe prorates by the second, credits
 the customer balance rather than the card unless told otherwise, and — decisively
@@ -1319,7 +1368,7 @@ each other after it**, except where noted.
 | ---------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------ | ------- |
 | **1 — Foundations**          | Migration 005; `tenantScoped` helper + isolation tests; **make the calendar check fail closed (R1)** and surface it per F2.7; **delete all reminder code, tables and policies**; drop `clinic` from `business_type`; capture call duration, end reason, outcome and per-call cost | —            | no      |
 | **2 — Catalogue + cache**    | 006; config cache (§2.6); F3 end to end                                                                                                                                                                                                                                           | 1            | no      |
-| **3 — Provider abstraction** | 007; extract `SchedulingProvider`; port Google; add `none`                                                                                                                                                                                                                        | 1            | no      |
+| **3 — Provider abstraction** | 007; extract `SchedulingProvider`; port Google behind it                                                                                                                                                                                                                          | 1            | no      |
 | **4 — Business dashboard**   | 009; rollups; F6 UI                                                                                                                                                                                                                                                               | 1            | no      |
 | **5 — Billing + email**      | 010; Stripe 30-day subscription, card on file, meters, cap; Resend; F7/F8                                                                                                                                                                                                         | 1, 4         | **yes** |
 | **6 — Recurrence**           | 008; materialiser; clash shift/skip; owner notification; F5                                                                                                                                                                                                                       | 1, 5 (email) | **yes** |
