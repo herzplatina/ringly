@@ -103,11 +103,11 @@ _(Carried from v2; renumbered. v2 FR1–FR10 map to F1.1–F1.10.)_
 - **F1.8** The user is told their Google login is now their Ringly login.
 - **F1.9** Number purchase and agent provisioning run in the background.
 - **F1.10** No WhatsApp UI in onboarding.
-- **F1.11 (new)** Onboarding collects and verifies a **business contact email**,
+- **F1.11** Onboarding collects and verifies a **business contact email**,
   defaulted from the Google identity and editable. It is the destination for all
   billing email, including the 48-hour warning before deletion (F10.3a), so an
   unverified address is a silent single point of failure.
-- **F1.12 (new)** **Getting ready is a checklist of three tasks, presented
+- **F1.12** **Getting ready is a checklist of three tasks, presented
   together and completed in any order the business likes:**
   1. **verify the contact email** (F1.11);
   2. **make a test call and confirm it worked** — the owner's judgement, not
@@ -123,7 +123,7 @@ _(Carried from v2; renumbered. v2 FR1–FR10 map to F1.1–F1.10.)_
   charged, period 1 begins, and the business is told plainly that it is **now
   taking customer calls**. There is no separate activation fee (F7.1) — this
   charge is period 1's.
-- **F1.13 (new)** A business may place at most **10 test calls** before
+- **F1.13** A business may place at most **10 test calls** before
   activating. **If it exhausts them without confirming**, onboarding stops and:
   - the business is **emailed** to say the number has not been activated and
     Ringly is investigating and will come back to them;
@@ -918,10 +918,32 @@ delete the Stripe customer → delete Ringly's rows → write the departure reco
     good standing may come back and should find itself intact.
 - **F10.4a** **A number is never reassigned while any business still holds it.**
   Suspension and dormancy stop the number being answered, which makes it look
-  unused; it is not. A number becomes available to a new business **only after
-  deletion** — day 10 unactivated, day 60 otherwise — and never during a
-  suspension or dormancy period, however idle it appears.
-- **F10.5** **Ringly issues no deletion call to the telephony provider.**
+  unused; it is not. A number leaves a business **only at deletion** — day 10
+  unactivated, day 60 otherwise — and never during a suspension or dormancy
+  period, however idle it appears.
+- **F10.4b** **At deletion the number is handed back to the telephony provider,
+  not retained in a Ringly pool for the next business.** Recorded with its
+  reasoning so the question is settled:
+  - **There is no purchase price to save.** Retell numbers are a **$2/month
+    rental with no one-time purchase fee**, so holding one costs $2/month for as
+    long as it sits idle and buying a fresh one when needed costs the same $2/month
+    starting only when needed. Pooling is strictly more expensive, and it
+    manufactures exactly the cost F9.9 exists to surface.
+  - **A departed business's customers keep calling its number** — from saved
+    contacts, printed material, a vehicle, a stale listing. Reassigning it means
+    those callers reach **a different business's receptionist**, which answers as
+    that business and may book them an appointment at the wrong one.
+  - **Carriers quarantine numbers for a reason.** US rules require **at least 45
+    days** after disconnection before reassignment, and carriers commonly hold
+    30–90. Handing the number back makes that quarantine the provider's
+    responsibility and the provider's cost.
+  - **The residual risk is customer confusion, not regulatory.** Ringly is
+    inbound-only, so reassigned-number liability that attaches to outbound
+    callers does not reach it. That lowers the stakes; it does not change the
+    decision, because the cost argument alone already favours handing it back.
+- **F10.5** **Ringly issues no _data_ deletion call to the telephony provider.**
+  (Releasing the phone number at deletion is a separate action and does happen —
+  F10.4b.)
   Transcripts and recordings expire on their own **30-day TTL** (F10.6), which is
   never longer than the window before a business is deleted, so provider-held
   content is gone long before then without Ringly doing anything. Deletion covers
@@ -1902,7 +1924,7 @@ so a Stripe outage never blocks a call (N7.1).
 3  void open invoices
 4  detach payment method
 5  delete Stripe customer
-6  RELEASE the Retell number                              ← before the row goes
+6  HAND THE NUMBER BACK to Retell (rental ends)           ← before the row goes
 7  delete Ringly's rows
 8  write departed_businesses
 ```
@@ -1943,7 +1965,8 @@ holding it (F10.4).
   (window close).
 - **Rebind** on any return to `active` — paying inside the window (F7.10b), or
   coming back from dormancy (F7.12e).
-- **Release** only at deletion, day 60.
+- **Release** only at deletion — day 10 for a business that never activated,
+  day 60 otherwise.
 
 **Unbinding must never make a number reusable** (F10.4a). `selectReusableNumber`
 treats a Retell number with no inbound agent as orphaned, and an unbound number
@@ -1951,16 +1974,16 @@ belonging to a suspended or dormant business looks exactly like one. Three thing
 keep them apart, and all three are required:
 
 1. **`takenNumbers` is built from every business row that holds a number**,
-   whatever its billing status — `active`, `grace`, `suspended`, `cancelling` and
-   `dormant` alike. Filtering that query by status is the mistake to guard
-   against; the number is taken because the row exists, not because the business
-   is paying.
-2. **The number is released only at deletion**, in the same operation that
-   removes the row (§2.9.4 step 6), so there is never a window in which the row
-   is gone but the number is not yet released, or the reverse.
-3. **The number is released before the row is deleted** (§2.9.4 step 6), so
-   there is never an instant in which an unbound number has no row protecting it.
-4. **A test covers it directly**: a suspended business's number must not be
+   whatever its billing status — `unbilled`, `active`, `grace`, `suspended`,
+   `cancelling` and `dormant` alike. Filtering that query by status is the
+   mistake to guard against: a number is taken because the row exists, not
+   because the business is paying. _(The shipped `provision/route.ts` already
+   does this correctly and must not be "optimised" into a status filter.)_
+2. **The number is handed back before the row is deleted** (§2.9.4 step 6). The
+   row is what protects the number, so releasing first means a crash mid-teardown
+   leaves a row whose number is gone — visible and recoverable — rather than an
+   unprotected number a concurrent signup can be handed.
+3. **A test covers it directly**: a suspended business's number must not be
    returned by `selectReusableNumber` while its row exists.
 
 Getting this wrong hands a suspended business's phone number — the one printed on
@@ -1987,23 +2010,27 @@ has become available.
 survives deletion (F10.9); the phone number does not, because a record that
 outlives the business must never look like a claim on a number that has moved on.
 
-> **Open: what "released" should mean.** Two readings — hand the number back to
-> Retell, ending the rental, or keep it in Ringly's pool unbound for reuse. This
-> design assumes **handing it back**: it stops a cost with no revenue against it
-> (F9.9), and it avoids a departed business's customers reaching a _different_
-> business that inherited its number. `selectReusableNumber` then covers only its
-> original case — numbers bought during a provisioning that failed before binding.
+**"Released" means handed back to Retell** (F10.4b, decided 2026-07-30) — the
+number leaves Ringly's account entirely and the rental stops. It is **not** kept
+in a pool for the next business. The full reasoning is recorded at F10.4b; in
+short, Retell numbers rent at **$2/month with no purchase fee**, so pooling saves
+nothing and pays for idle numbers, and reassigning a number whose previous owner's
+customers still call it routes them to the wrong business.
+
+`selectReusableNumber` therefore keeps only its original purpose: numbers bought
+during a provisioning that failed **before binding**, which have no business row
+and never did. It is not a recycling mechanism for departed businesses.
 
 **Lifecycle sweeper**, hourly:
 
-| Deadline kind         | Set when                | Action at `due_at`                             |
-| --------------------- | ----------------------- | ---------------------------------------------- |
-| `unactivated_expiry`  | number provisioned      | release number, delete everything (F10.1)      |
-| `grace_expiry`        | first charge fails      | `grace` → `suspended` (F7.11)                  |
-| `suspended_expiry`    | suspension begins       | delete (F10.3)                                 |
-| `cancellation_window` | cancellation requested  | settle, stop service, `cancelling` → `dormant` |
-| `dormancy_expiry`     | service stops           | delete (F7.12e)                                |
-| `final_warning`       | 48h before any deletion | send the warning (F10.3a)                      |
+| Deadline kind         | Set when                | Action at `due_at`                               |
+| --------------------- | ----------------------- | ------------------------------------------------ |
+| `unactivated_expiry`  | number provisioned      | hand number back, then delete everything (F10.1) |
+| `grace_expiry`        | first charge fails      | `grace` → `suspended` (F7.11)                    |
+| `suspended_expiry`    | suspension begins       | delete (F10.3)                                   |
+| `cancellation_window` | cancellation requested  | settle, stop service, `cancelling` → `dormant`   |
+| `dormancy_expiry`     | service stops           | delete (F7.12e)                                  |
+| `final_warning`       | 48h before any deletion | send the warning (F10.3a)                        |
 
 `final_warning` is a **separate deadline**, not a branch inside the deletion job,
 so that "nothing is deleted without 48 hours' notice" (F10.3a) is enforced by the
@@ -2140,12 +2167,12 @@ billing (6) cannot be tested without it. It depends only on the foundations.
 
 **Phases split by layer** — migration+types → backend → UI → enablement — because
 each merges green independently and a schema can land inert before anything uses
-it. Phase 5 additionally splits by concern (subscription, then usage and cap,
+it. **Phase 6 additionally splits by concern** (subscription, then usage and cap,
 then settlement), because "billing" as one PR is unreviewable.
 
-Phases 1–4 need no flags: each is invisible to users or a strict improvement, and
-complete when merged. Phases 5–8 are flagged so incomplete work lives on `main`
-rather than on a long-lived branch.
+**Phases 1–5 need no flags:** each is invisible to users or a strict improvement,
+and complete when merged. **Phases 6–9 are flagged** so incomplete work lives on
+`main` rather than on a long-lived branch.
 
 ## 2.17 Risks
 
@@ -2162,6 +2189,9 @@ rather than on a long-lived branch.
 - **R5 — Provider capability mismatch.** Declared, not assumed (§2.6).
 - **R6 — Live busy-checks cost real money per turn.** Accepted: a stale conflict
   check is worse.
+- **R7 — Retired.** Reminders having no delivery channel ceased to be a risk when
+  reminders left v3 entirely (§1.9). The number is left unused rather than
+  reassigned, so references in earlier commits still resolve.
 - **R8 — Unbooked calls are pure cost.** At Retell's $0.13–0.31/min, $100 covers
   roughly 320–770 minutes of unbillable calling. F9 exists partly to measure it.
 - **R9 — Switching calendar provider is out of scope.** Not designed, not built.
