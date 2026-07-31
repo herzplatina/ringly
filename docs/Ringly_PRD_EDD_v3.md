@@ -406,9 +406,9 @@ charge failed first (F7.11).
   and clears a business's cancelled status from the operator dashboard** (F9.10).
   It is the single control that stops future charges.
 - **F7.10b** **Reactivating inside the same billing period resumes it.** Nothing
-  restarts and no new fixed fee is due for that period. If the period's $100
-  failed, it is charged **on the day service is restored**, not deferred to
-  settlement. That period's usage settles as normal on its last day, and includes
+  restarts and no new fixed fee is due for that period. Whatever is
+  outstanding — a failed fixed fee, an unsettled usage bill, or both — is charged
+  **on the day service is restored**, not deferred to settlement. That period's usage settles as normal on its last day, and includes
   everything served during the 7-day grace before suspension — service given is
   service billed.
 - **F7.10c** **Returning after a period has closed starts a new billing period**,
@@ -553,13 +553,13 @@ clamped figure becomes the debt on the departure record, uncollected.
 
 **If payment fails.** One clock, started by whichever charge failed first.
 
-| Day  |                                                                                              |
-| ---- | -------------------------------------------------------------------------------------------- |
-| 0–7  | Service continues and **this usage is billable**. Reminder emails.                           |
-| 7    | Suspended. Calls stop. Number retained. No free service.                                     |
-| 7–10 | Stripe retries. Paying restores service and charges the outstanding fee that day.            |
-| 10   | Retries stop. 48-hour warning.                                                               |
-| 12   | Number released, data deleted, debt recorded. No dormancy — a later return is a new account. |
+| Day  |                                                                                                   |
+| ---- | ------------------------------------------------------------------------------------------------- |
+| 0–7  | Service continues and **this usage is billable**. Reminder emails.                                |
+| 7    | Suspended. Calls stop. **Number and all data retained.**                                          |
+| 7–30 | **Recoverable at any point** — Stripe retries, and paying what is owed restores service that day. |
+| ~28  | 48-hour final warning.                                                                            |
+| 30   | Number released, data deleted, debt recorded permanently. A later return is a new account.        |
 
 **If the business cancels.** The window is **7 days or the end of the period,
 whichever comes first**. Through it service continues untouched and usage stops
@@ -737,17 +737,18 @@ delete the Stripe customer → delete Ringly's rows → write the departure reco
   **On payment failure** — the clock starts the day the _first_ charge fails,
   whether that was a fixed fee or a usage settlement:
 
-  | Day  | What happens                                                                                                                    |
-  | ---- | ------------------------------------------------------------------------------------------------------------------------------- |
-  | 0    | Charge fails. Service continues, usage keeps accruing, business emailed.                                                        |
-  | 0–7  | **Grace period.** Calls answered as normal. Reminder emails sent. This usage **is billable** — service given is service billed. |
-  | 7    | **Suspended.** Calls stop being answered; the number is retained. **No free service from here on.**                             |
-  | 7–10 | Suspended, payment **retried by Stripe** (F7.20). Paying restores service and charges the outstanding fee that day (F7.10b).    |
-  | 10   | Retries stop. **48-hour final warning by email**, itemising exactly what will be deleted.                                       |
-  | 12   | **Full stop.** Number released, Ringly-held data deleted, amount owed recorded permanently (F10.9).                             |
+  | Day  | What happens                                                                                                                                    |
+  | ---- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+  | 0    | Charge fails. Service continues, usage keeps accruing, business emailed.                                                                        |
+  | 0–7  | **Grace period.** Calls answered as normal. Reminder emails sent. This usage **is billable** — service given is service billed.                 |
+  | 7    | **Suspended.** Calls stop being answered; **the number and all data are retained.**                                                             |
+  | 7–30 | Suspended but **fully recoverable at any point**: Stripe keeps retrying, and paying the outstanding charges restores service that day (F7.10b). |
+  | ~28  | **48-hour final warning by email**, itemising exactly what will be deleted.                                                                     |
+  | 30   | **Full stop.** Number released, Ringly-held data deleted, amount owed recorded permanently (F10.9).                                             |
 
-  There is **no dormant window on this path** — a business that never paid is
-  removed at day 12 and a later return is a wholly new account with a new number.
+  Days 7–30 cost Ringly almost nothing — service has already stopped, and only
+  the number rental continues — so the window is long, because the business's
+  number is worth far more to them than the rental is to Ringly.
 
   **On a cancellation request** — a short window, then dormancy:
 
@@ -771,8 +772,9 @@ delete the Stripe customer → delete Ringly's rows → write the departure reco
   after service ends depends on why service ended:**
   - **Never activated** — removed at **day 10** (F10.1). No relationship to
     protect.
-  - **Non-payment or chargeback** — removed at **day 12** (F10.3), after a
-    7-day grace, 3 days of retries, and a 48-hour warning.
+  - **Non-payment or chargeback** — held to **day 30** (F10.3), recoverable
+    throughout by paying what is owed. Holding it costs Ringly only the rental;
+    releasing it early costs the business its identity.
   - **The business's own cancellation** — held a further **30 days** after
     service stops (F7.12e), fully recoverable, because a business that left in
     good standing may come back and should find itself intact.
@@ -800,7 +802,7 @@ delete the Stripe customer → delete Ringly's rows → write the departure reco
   - The **only** thing on a 30-day clock is what Ringly does **not** store:
     transcripts and recordings, held by the telephony provider (F10.6).
   - Everything Ringly holds is destroyed when the relationship is over, on the
-    clock the ending sets (F10.3, F10.4): **day 12** for non-payment, **30 days
+    clock the ending sets (F10.3, F10.4): **day 30** for non-payment, **30 days
     after service stops** for a business that cancelled, **day 10** for one that
     never activated.
   - There is no partial or rolling deletion, and no field-level expiry.
