@@ -340,8 +340,15 @@ this list is deliberately absent, not merely unbuilt.
 ### F7 — Billing and payments
 
 **Billing period.** A business's period is a **rolling 30 days from activation**,
-not a calendar month. Period 1 begins the moment the business activates (F1.12);
-period _n+1_ begins 30 days after period _n_.
+not a calendar month. Period 1 begins the day the business activates (F1.12);
+period _n+1_ begins the day after period _n_ ends.
+
+**The two charges never fall on the same day.** The fixed fee is taken on the
+**first** day of a period; that period's usage is settled on its **last** day.
+For a business activating on day 1: $100 on day 1, period-1 usage on day 30,
+$100 for period 2 on day 31. A card that has gone bad therefore fails one charge
+at a time, and there is only ever **one grace clock**, started by whichever
+charge failed first (F7.11).
 
 - **F7.1** A **$100 fixed fee** is charged **in advance** at the start of every
   30-day period, irrespective of usage. The first such charge is the activation
@@ -397,36 +404,46 @@ period _n+1_ begins 30 days after period _n_.
 - **F7.10a** Because cancellation arrives by email (F10.2), **the operator sets
   and clears a business's cancelled status from the operator dashboard** (F9.10).
   It is the single control that stops future charges.
-- **F7.10b** **Reactivating a suspended business resumes the current period; it
-  does not start a new one.** Any fixed fee that failed at the period's start
-  remains owed and is collected **at that period's settlement**, together with the
-  full usage accrued across the period — including usage from the days the
-  account was suspended, which were served.
+- **F7.10b** **Reactivating inside the same billing period resumes it.** Nothing
+  restarts and no new fixed fee is due for that period. If the period's $100
+  failed, it is charged **on the day service is restored**, not deferred to
+  settlement. That period's usage settles as normal on its last day, and includes
+  everything served during the 7-day grace before suspension — service given is
+  service billed.
+- **F7.10c** **Reactivating after the period has ended makes them a new
+  account.** A new billing period starts on the day they return and $100 is
+  charged that day. The old period is closed and settled on its own terms; there
+  is no reaching back into it.
 - **F7.11** A failed charge starts a **7-day grace period**. Through it Ringly
   **keeps answering calls and keeps accruing usage**, and emails the business
   about the failure. If payment has not cleared by day 7, the account is
   **suspended** (F10.3).
-- **F7.12** **Cancellation opens a 30-day reconsideration window; nothing is
-  settled until it closes.** On the request:
-  - **Service continues unchanged.** Calls are answered, bookings are taken, and
-    the phone number is not touched. A business that changes its mind must find
-    everything as it was.
-  - **Usage stops accruing.** From the request onward the business is billed for
-    nothing further, and Ringly absorbs the cost of serving them.
-  - **No refund is issued yet**, and no further fixed fee is charged (F7.10).
-- **F7.12a** **If the business resumes within the window**, the current billing
-  period continues **as though the cancellation never happened**: accrued usage
-  and any pending charges stand, and usage begins accruing again.
-- **F7.12b** **If the window closes**, the account is settled and deleted:
-  refund the unused portion of the $100 fixed fee, prorated at 1/30 per day with
-  the day of cancellation counted as used, rounded **down** to the cent; charge
-  the usage accrued **up to the cancellation request**; clamp the period total to
-  $500 (F7.9a). The refund is executed through Stripe; the **calculation is
-  Ringly's**, because Stripe's own proration cannot enforce the cap.
-- **F7.12c** The **48-hour final email** (F10.3a) for a cancelling business is
-  also its closing statement, and states: how many appointments Ringly booked in
-  the final billing period, the total finally charged for it, the refund amount,
-  and the date everything is deleted.
+- **F7.12** **Cancellation does not change the billing calendar.** It opens a
+  reconsideration window that runs **from the request to the end of the current
+  billing period** — no new period is created, no boundary moves, and the window
+  is however long is left in the period. On the request:
+  - **Service continues unchanged.** Calls are answered, bookings are taken, the
+    number is untouched. A business that changes its mind finds everything as it
+    was.
+  - **Usage stops being billed.** Nothing accrued from the request onward is ever
+    charged, even though the service is still being given. Ringly absorbs it.
+  - **Nothing is refunded or settled yet**, and no further fixed fee is charged
+    (F7.10).
+  - **Reminder emails run through the window**, telling the business what is
+    happening, when the cancellation takes effect, and what refund to expect.
+- **F7.12a** **Revoking inside the window erases it.** The period continues as
+  though the request never happened: usage resumes being billed from the moment
+  of revocation, and everything already accrued still stands.
+- **F7.12b** **If the window closes, the cancellation takes effect at period
+  end.** The period is settled: refund the unused portion of the $100 fixed fee,
+  prorated at 1/30 per day with the day of the request counted as used, rounded
+  **down** to the cent; charge the usage accrued **up to the request**; clamp the
+  period total to $500 (F7.9a). Service then stops. The refund is executed
+  through Stripe; the **calculation is Ringly's**, because Stripe's proration
+  cannot enforce the cap.
+- **F7.12c** Settlement produces a **closing statement email**: appointments
+  booked in the final period, the total charged, the refund due, and the date the
+  account and its data will be deleted.
 - **F7.12d** The total charged for a period **never exceeds $500**, including
   after a cancellation. Worked example: cancel on day 12 having accrued $470 of
   usage → `$100 − $60 refund + $470 = $510` → clamped to **$500**, so $460 of
@@ -620,18 +637,33 @@ period _n+1_ begins 30 days after period _n_.
   account actions — cancellation, deletion, reactivation — go through Ringly's
   **official contact email address**, which is the single supported channel.
   _(Self-serve cancellation is a v3.1 requirement — §1.9.)_
-- **F10.3** Suspension and deletion run over **30 days**, so a business always
-  has time to respond before anything irreversible happens. The two paths differ
-  sharply — non-payment withdraws service, cancellation does not:
+- **F10.3** The two paths differ sharply. **Non-payment withdraws service after
+  a week. Cancellation never withdraws it at all** — it runs out the period the
+  business already paid for.
 
-  | Day  | On payment failure                                                                                                        | On cancellation request                                                                                             |
-  | ---- | ------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
-  | 0    | Payment fails. Service continues, usage keeps accruing, business emailed.                                                 | Operator marks it cancelled (F7.10a). **Service continues unchanged. Usage stops accruing. No refund yet** (F7.12). |
-  | 0–7  | **Grace period.** Calls answered as normal. Reminder emails sent.                                                         | Service continues, free of charge. Reconsideration window open.                                                     |
-  | 7    | **Suspended.** Calls stop being answered; the number is retained. Recoverable by paying.                                  | Nothing changes — a cancelling business is never suspended.                                                         |
-  | 7–30 | Suspended, and payment **continues to be retried** (Stripe, F7.20). Any success restores service and the period (F7.10b). | Service continues. Resuming at any point restores billing as though nothing happened (F7.12a).                      |
-  | ~28  | **48-hour final warning by email**, stating exactly what will be deleted and when.                                        | Same, and doubles as the closing statement (F7.12c).                                                                |
-  | 30   | **Full stop.** Number released, all Ringly-held data deleted, amount owed recorded (F10.9). Irreversible.                 | Settled (F7.12b), refund issued, then the same full stop.                                                           |
+  **On payment failure** — the clock starts the day the _first_ charge fails,
+  whether that was a fixed fee or a usage settlement:
+
+  | Day  | What happens                                                                                                                                    |
+  | ---- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+  | 0    | Charge fails. Service continues, usage keeps accruing, business emailed.                                                                        |
+  | 0–7  | **Grace period.** Calls answered as normal. Reminder emails sent. This usage is billable — service given is service billed.                     |
+  | 7    | **Suspended.** Calls stop being answered; the number is retained. **No free service from here on.**                                             |
+  | 7–30 | Suspended, payment **retried by Stripe** (F7.20). Success inside the period restores service and charges the outstanding fee that day (F7.10b). |
+  | ~28  | **48-hour final warning by email**, itemising exactly what will be deleted.                                                                     |
+  | 30   | **Full stop.** Number released, Ringly-held data deleted, amount owed recorded permanently (F10.9).                                             |
+
+  **On a cancellation request** — the clock is the remaining billing period, not
+  a fixed 30 days:
+
+  | Point              | What happens                                                                                                    |
+  | ------------------ | --------------------------------------------------------------------------------------------------------------- |
+  | Request            | Operator marks it cancelled (F7.10a). **Service continues. Usage stops being billed. Nothing settled** (F7.12). |
+  | Until period end   | Reconsideration window. Service runs free. Reminder emails explain what happens and when (F7.12).               |
+  | Any time inside it | Revoking erases the request entirely; billing resumes (F7.12a).                                                 |
+  | **Period end**     | Cancellation takes effect. Period settled, refund issued, service stops. **Closing statement sent** (F7.12b–c). |
+  | + 28 days          | **48-hour final warning** before deletion.                                                                      |
+  | + 30 days          | Number released, Ringly-held data deleted (F10.8).                                                              |
 
 - **F10.3a** **Nothing is ever deleted without a 48-hour warning email first.**
   This applies to both paths and is not conditional on the business having read
