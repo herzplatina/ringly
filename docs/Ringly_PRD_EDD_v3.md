@@ -141,8 +141,15 @@ _(Carried from v2; renumbered. v2 FR1–FR10 map to F1.1–F1.10.)_
     match is refused and the caller is told what did not match.
   - Voice recognition errors are expected, so a caller may correct any detail and
     the search runs again against the corrected values.
-  - Caller ID is **not** the identifying factor: a customer may ring from a
-    different phone or withhold their number.
+  - Caller ID is **not** the identifying factor for _this lookup_: a customer
+    may ring from a different phone or withhold their number, and the search runs
+    over appointments rather than over customer records.
+  - **A customer's identity is nonetheless their phone number**, not their name —
+    names are not unique and two customers of one business may share one. A
+    customer who books from two different phones therefore becomes two customer
+    records, and Ringly cannot tell they are the same person. **Accepted:** it
+    inflates unique-caller counts and splits history, and there is no sound way
+    to merge on name alone.
   - **A relative day means the next one.** "Tuesday at 2" resolves to the
     **nearest future Tuesday** from the moment of the call. The agent then
     **states the full date back to the caller** and waits for confirmation before
@@ -180,9 +187,9 @@ _(Carried from v2; renumbered. v2 FR1–FR10 map to F1.1–F1.10.)_
   **booked inside the business's opening hours** (F3, business_hours).
 - **F2.9** A one-off appointment may not be booked **more than 70 days ahead**.
   The limit is **configuration, not a constant**: a platform default that the
-  **business can change from its own dashboard** (F6.13). Ringly enforces
-  platform minimum and maximum bounds around it, so no business can set a value
-  that makes materialisation or availability computation unreasonable.
+  **business can change from its own dashboard** (F6.13), bounded to **7–180
+  days** so no business can set a value that makes availability computation
+  unreasonable.
 - **F2.9a** The 70-day limit constrains **what a caller may request**. It does
   not constrain recurrence: a standing series is open-ended by nature, and its
   occurrences are materialised ahead by the system (F5.2), not requested by a
@@ -240,7 +247,7 @@ _(Carried from v2; renumbered. v2 FR1–FR10 map to F1.1–F1.10.)_
   moved, cancelled, or skipped without affecting the rest of the series. The
   horizon is **90 days by default and is configuration, not a constant**: a
   platform default the **business can change from its own dashboard** (F6.13),
-  within platform bounds, like F2.9.
+  bounded to **30–365 days**.
 - **F5.2a** If a generated occurrence lands on a slot that is already taken, it
   is **shifted to the nearest free slot on the same day, within ±2 hours** of its
   usual time. If nothing fits that window the occurrence is **skipped, not
