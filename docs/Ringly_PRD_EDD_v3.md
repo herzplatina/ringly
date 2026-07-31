@@ -812,9 +812,13 @@ interface SchedulingProvider {
   `getCalendarBusyIntervals` has exactly this shape, including the
   `excludeExternalEventId` and `AbortSignal` parameters. Extracting it is a
   refactor, not a rewrite.
-- The **`none` provider** returns `[]` busy and no-ops on writes (F4.3). It is
-  also what a failed provider degrades to (F4.5), which makes the degraded path
-  the same code as a supported configuration rather than a special case.
+- The **`none` provider** returns `[]` busy and no-ops on writes — the correct
+  behaviour for a business that chose to run without a calendar (F4.3).
+- **A failing provider is not the `none` provider.** `getBusyIntervals` must
+  distinguish _"nothing is busy"_ from _"I could not find out"_, and the booking
+  path must refuse on the latter (F2.7, F4.5). Returning `[]` for both — which is
+  what the shipped code does — is precisely the R1 defect. The interface
+  therefore returns a result type, not a bare array.
 - Every implementation must honour the `AbortSignal` and the N3 timeout. A
   provider that cannot answer within budget is treated as absent.
 - **Provider capability differences are declared, not discovered**: whether a
@@ -1109,15 +1113,15 @@ Each phase is independently shippable. **Phase 1 is a prerequisite for
 everything and contains the one active defect (R1); phases 2–7 are independent of
 each other after it**, except where noted.
 
-| Phase                        | Scope                                                                                                                                              | Depends on   | Flag    |
-| ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | ------------ | ------- |
-| **1 — Foundations**          | Migration 005; `tenantScoped` helper + isolation tests; fix R1 (surface degradation); capture call duration, end reason, outcome and per-call cost | —            | no      |
-| **2 — Catalogue + cache**    | 006; config cache (§2.6); F3 end to end                                                                                                            | 1            | no      |
-| **3 — Provider abstraction** | 007; extract `SchedulingProvider`; port Google; add `none`                                                                                         | 1            | no      |
-| **4 — Business dashboard**   | 009; rollups; F6 UI                                                                                                                                | 1            | no      |
-| **5 — Billing + email**      | 010; Stripe 30-day subscription, card on file, meters, cap; Resend; F7/F8                                                                          | 1, 4         | **yes** |
-| **6 — Recurrence**           | 008; materialiser; clash shift/skip; owner notification; F5                                                                                        | 1, 5 (email) | **yes** |
-| **7 — Operator dashboard**   | 011; `/ops` walled garden; economics rollup; F9                                                                                                    | 1, 4, 5      | **yes** |
+| Phase                        | Scope                                                                                                                                                                                                                                                                             | Depends on   | Flag    |
+| ---------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------ | ------- |
+| **1 — Foundations**          | Migration 005; `tenantScoped` helper + isolation tests; **make the calendar check fail closed (R1)** and surface it per F2.7; **delete all reminder code, tables and policies**; drop `clinic` from `business_type`; capture call duration, end reason, outcome and per-call cost | —            | no      |
+| **2 — Catalogue + cache**    | 006; config cache (§2.6); F3 end to end                                                                                                                                                                                                                                           | 1            | no      |
+| **3 — Provider abstraction** | 007; extract `SchedulingProvider`; port Google; add `none`                                                                                                                                                                                                                        | 1            | no      |
+| **4 — Business dashboard**   | 009; rollups; F6 UI                                                                                                                                                                                                                                                               | 1            | no      |
+| **5 — Billing + email**      | 010; Stripe 30-day subscription, card on file, meters, cap; Resend; F7/F8                                                                                                                                                                                                         | 1, 4         | **yes** |
+| **6 — Recurrence**           | 008; materialiser; clash shift/skip; owner notification; F5                                                                                                                                                                                                                       | 1, 5 (email) | **yes** |
+| **7 — Operator dashboard**   | 011; `/ops` walled garden; economics rollup; F9                                                                                                                                                                                                                                   | 1, 4, 5      | **yes** |
 
 ### How the work is split across branches and PRs
 
