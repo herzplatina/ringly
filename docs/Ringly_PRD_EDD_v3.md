@@ -319,7 +319,9 @@ two-things rule does not constrain them.
 
 - **F6.7** The business sees what it has paid Ringly, **per billing period**:
   the fixed fee, the usage charged, the total, the date charged, and its status
-  (paid, failed, refunded).
+  (paid, failed, refunded). **"Refunded" is only ever a goodwill gesture made by
+  hand** — no rule in this document produces a refund, and none should be
+  built.
 - **F6.8** The current period shows usage accrued so far, the cap, and the next
   charge date.
 
@@ -464,13 +466,15 @@ charge failed first (F7.11).
   amount is written to the departure record (F10.9) as owed. Ringly does not
   suspend, retry, or pursue a business whose service has already stopped —
   there is nothing left to withhold.
-- **F7.12e** **The account then lies dormant for 30 days, fully recoverable.**
+- **F7.12e** **The account then lies dormant for 60 days, fully recoverable.**
   Service has stopped, but **the phone number and every database record are
-  retained**. A business that returns inside those 30 days resumes on **its own
+  retained**. A business that returns inside those 60 days resumes on **its own
   number with its own history** — customers, appointments and past figures all
   intact — on a **new billing period starting that day, with $100 charged that
-  day**. Only after the 30 days is anything deleted, and a business returning
-  after that is a wholly new account with a new number.
+  day**. Only after the 60 days is anything deleted, and a business returning
+  after that is a wholly new account with a new number. Sixty days costs Ringly
+  only the number rental, and far less than losing a business to a number it can
+  no longer have.
 - **F7.12d** The total charged for a period **never exceeds $500**, cancellation
   or not. Worked example: a business accrues $470 of usage in a period →
   `$100 + $470 = $570` → clamped to **$500**, so $400 of usage is charged and $70
@@ -585,7 +589,7 @@ being billed.
   charged, **the $100 is not refunded**, service stops, and a closing statement
   goes out. There is **no refund on this path at all** — the fee is never
   returned and usage is only ever charged in arrears.
-- **Then 30 days dormant.** Number and every record retained. Come back inside it
+- **Then 60 days dormant.** Number and every record retained. Come back inside it
   and you resume on your own number with your own history, on a new period
   charged $100 that day. After it, everything is deleted and a return is a
   stranger.
@@ -715,6 +719,9 @@ delete the Stripe customer → delete Ringly's rows → write the departure reco
   reporting cannot be summed into anything meaningful for accounting. Only
   **money actually received into Stripe** counts as revenue, and only **real
   incurred cost** counts as cost — neither is accrued or projected.
+- **F9.13** The operator can **pause the 10-day unactivated clock** on an
+  individual business (F10.1b), and see which businesses are paused and since
+  when. A pause is an explicit act with a visible owner, never a side-effect.
 - **F9.10** The operator **sets and clears a business's cancelled status** here
   (F7.10a), since cancellation arrives by email. It is the control that stops
   future charges, and the only place it exists.
@@ -735,6 +742,12 @@ delete the Stripe customer → delete Ringly's rows → write the departure reco
   It may place at most **10 test calls** before activating. Both limits exist
   because an unactivated business is pure cost: a rented number and live call
   minutes against no revenue, with no relationship to protect.
+- **F10.1b** **The operator can pause the 10-day clock on any individual
+  business**, from the operator dashboard (F9.13). A business whose test calls
+  all failed (F1.13) is waiting on Ringly, not the other way round, and would
+  otherwise be deleted while the problem is being investigated. **Silence is not
+  a pause:** absent an explicit operator action the default stands and an
+  unactivated business is removed at day 10.
 - **F10.1a** **A consumer has no direct route to Ringly.** A caller wanting
   their data removed asks the business, which asks Ringly (F10.2). Ringly has no
   relationship with the caller and offers them no interface. Not a priority, and
