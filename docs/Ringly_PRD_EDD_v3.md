@@ -92,13 +92,16 @@ _(Carried from v2; renumbered. v2 FR1–FR10 map to F1.1–F1.10.)_
 - **F1.11 (new)** Onboarding collects and verifies a **business contact email**,
   defaulted from the Google identity and editable. It is required before
   activation and is the destination for all billing and stats email (F8).
-- **F1.12 (new)** Onboarding ends with a **test call** step. Activation (F7.1) is
-  only offered once the business has placed a successful test call to its number.
+- **F1.12 (new)** Onboarding ends with a **test call** step. The business calls
+  its own new number and then **confirms on the dashboard that the call worked**.
+  Success is the owner's judgement, not something Ringly infers — only they know
+  whether the agent actually sounded right. Confirmation is what fully activates
+  the number and starts billing (F7.1).
 - **F1.13 (new)** A business may place at most **10 test calls** before
-  activation (F10.1). **If all ten fail**, onboarding stops and:
-  - the business is **emailed** to say none of the test calls succeeded, their
-    number has therefore not been activated, and Ringly is investigating and will
-    come back to them;
+  confirming (F10.1). **If it exhausts them without confirming**, onboarding
+  stops and:
+  - the business is **emailed** to say the number has not been activated and
+    Ringly is investigating and will come back to them;
   - the failure is raised on the **operator dashboard** and **emailed to the
     operator**.
 
@@ -176,8 +179,10 @@ _(Carried from v2; renumbered. v2 FR1–FR10 map to F1.1–F1.10.)_
 - **F2.8** The agent answers **24 hours a day**, but appointments may only be
   **booked inside the business's opening hours** (F3, business_hours).
 - **F2.9** A one-off appointment may not be booked **more than 70 days ahead**.
-  The limit is **configuration, not a constant** — a platform default with an
-  optional per-business override, so it can move without a deploy.
+  The limit is **configuration, not a constant**: a platform default that the
+  **business can change from its own dashboard** (F6.13). Ringly enforces
+  platform minimum and maximum bounds around it, so no business can set a value
+  that makes materialisation or availability computation unreasonable.
 - **F2.9a** The 70-day limit constrains **what a caller may request**. It does
   not constrain recurrence: a standing series is open-ended by nature, and its
   occurrences are materialised ahead by the system (F5.2), not requested by a
@@ -233,8 +238,9 @@ _(Carried from v2; renumbered. v2 FR1–FR10 map to F1.1–F1.10.)_
   "every fourth Tuesday at 2"), described by a standard recurrence rule.
 - **F5.2** Occurrences are generated ahead of time so each can be individually
   moved, cancelled, or skipped without affecting the rest of the series. The
-  horizon is **90 days by default and is configuration, not a constant** — a
-  platform default with an optional per-business override, like F2.9.
+  horizon is **90 days by default and is configuration, not a constant**: a
+  platform default the **business can change from its own dashboard** (F6.13),
+  within platform bounds, like F2.9.
 - **F5.2a** If a generated occurrence lands on a slot that is already taken, it
   is **shifted to the nearest free slot on the same day, within ±2 hours** of its
   usual time. If nothing fits that window the occurrence is **skipped, not
@@ -248,40 +254,66 @@ _(Carried from v2; renumbered. v2 FR1–FR10 map to F1.1–F1.10.)_
 - **F5.3** Cancelling a series cancels its future occurrences and leaves past
   ones intact.
 
-### F6 — Business dashboard and analytics
+### F6 — Business dashboard
+
+The business-facing dashboard contains **exactly two things**. Anything not on
+this list is deliberately absent, not merely unbuilt.
+
+**(1) Aggregate analysis of calls to Ringly**
 
 - **F6.1** Each business sees only its own data, always.
-- **F6.2** The dashboard reports, over a selectable period (today / 7d / 30d /
-  custom):
+- **F6.2** Reported for **both** groupings, side by side:
+  - each **calendar month** (June, July, August) — how a business thinks; and
+  - each **30-day billing period** — how they are charged.
+- **F6.3** The figures are:
   - calls received, and unique callers;
   - call time-of-day distribution;
   - average and median call duration;
   - outcome breakdown as counts and percentages: **booked / rescheduled /
     cancelled / enquiry-only / dropped**;
-  - appointments booked, no-shows, and revenue booked.
-- **F6.3** **"Dropped"** covers both a caller who hung up without a resolved
+  - appointments booked, and revenue booked.
+- **F6.4** **"Dropped"** covers both a caller who hung up without a resolved
   outcome **and** a call the agent could not help with. If the caller did not get
   what they rang for, it is dropped. A completed enquiry — the caller asked
   something and got a useful answer — is reported separately.
-- **F6.4** **The business dashboard is aggregate-only.** A business cannot read
-  individual call transcripts or listen to recordings through Ringly, and cannot
-  search call content. This follows from storing neither (F10.6) and is a
-  deliberate product boundary, not a limitation to be worked around later.
-  Ringly's own developer inspects individual calls **in the Retell dashboard**,
-  not through Ringly.
-- **F6.5** Dashboard queries return in ≤ 500ms p95 regardless of tenant size,
+- **F6.5** **Every outcome definition is shown on the dashboard itself**, in
+  plain language, next to the figures it governs. A business must never have to
+  guess what "dropped" counts.
+- **F6.6** **If a definition changes, the dashboard says so prominently** until
+  acknowledged, and states that figures before and after the change are not
+  directly comparable. Historical calls are **not** reclassified — transcripts
+  are not retained (F10.6), so outcomes cannot be re-derived. This is a permanent
+  property of the design, explained on the dashboard rather than hidden.
+
+**(2) Billing history**
+
+- **F6.7** The business sees what it has paid Ringly, **per billing period**:
+  the fixed fee, the usage charged, the total, the date charged, and its status
+  (paid, failed, refunded).
+- **F6.8** The current period shows usage accrued so far, the cap, and the next
+  charge date.
+
+**Everything else**
+
+- **F6.9** The dashboard is **aggregate-only for calls**. A business cannot read
+  individual transcripts, listen to recordings, or search call content — Ringly
+  stores none of it (F10.6). Ringly's own developer inspects individual calls in
+  the Retell dashboard.
+- **F6.10** Figures cover **only appointments booked through Ringly**. Anything
+  the owner enters directly in their own calendar is respected for conflict
+  checking (F2.3) but never appears in Ringly's figures.
+- **F6.11** All figures are rendered in the business's own timezone, including
+  day, week and month boundaries for grouping.
+- **F6.12** Dashboard queries return in ≤ 500ms p95 regardless of tenant size,
   and their cost must not grow with total call volume across all tenants.
-- **F6.6** All figures are rendered in the business's own timezone, including day
-  and week boundaries for grouping.
-- **F6.7** A business can mark an appointment as a **no-show**. No-shows are
-  excluded from that business's own revenue figures, so the dashboard reflects
-  what they actually earned. **No-shows do not change what the business owes
-  Ringly** — the call that booked the appointment was productive (F7.6) and stays
-  billable.
-- **F6.8** The dashboard reports **only appointments booked through Ringly**.
-  Anything the owner enters directly in their own calendar is respected for
-  conflict-checking (F2.3) but never appears in Ringly's figures, because Ringly
-  has no canonical record of it.
+- **F6.13** From the dashboard a business can: confirm its test call succeeded
+  (F1.12), and set its own booking and recurrence horizons (F2.9, F5.2).
+
+> **No-shows are out of scope.** Ringly does not track, record, or report them.
+> A no-show is something the business observes in its own calendar and handles
+> itself; Ringly has no way to know it happened and no lever to pull. Blacklisting
+> repeat no-shows, or reminding them harder, are ideas for later — both depend on
+> a customer channel that does not exist.
 
 ### F7 — Billing and payments
 
@@ -322,9 +354,17 @@ period _n+1_ begins 30 days after period _n_.
   record for when reminders arrive.
 - **F7.9** A **$500 cap per period, inclusive of the $100 fixed fee** — so usage
   tops out at $400. On reaching the cap Ringly **continues to serve the business
-  and absorbs the cost**, stops accruing further charges for that period, and
-  **alerts the operator** (F9.6).
-- **F7.10** Billing repeats every 30 days with no action from the business.
+  and absorbs the cost**, stops accruing further charges for that period,
+  **alerts the operator** (F9.6), and **emails the business** to say it has used
+  enough to reach $500 and that everything for the rest of the period is on
+  Ringly. Hitting the cap is good news for the business and should read that way.
+- **F7.10** Billing repeats every 30 days with no action from the business —
+  **unless the business has asked to cancel**. A business marked cancelled is
+  **never charged again**, and resumes billing only if it explicitly withdraws
+  the cancellation.
+- **F7.10a** Because cancellation arrives by email (F10.2), **the operator sets
+  and clears a business's cancelled status from the operator dashboard** (F9.10).
+  It is the single control that stops future charges.
 - **F7.11** A failed charge starts a **7-day grace period**. Through it Ringly
   **keeps answering calls and keeps accruing usage**, and emails the business
   about the failure. If payment has not cleared by day 7, the account is
@@ -403,6 +443,15 @@ period _n+1_ begins 30 days after period _n_.
   reporting cannot be summed into anything meaningful for accounting. Only
   **money actually received into Stripe** counts as revenue, and only **real
   incurred cost** counts as cost — neither is accrued or projected.
+- **F9.10** The operator **sets and clears a business's cancelled status** here
+  (F7.10a), since cancellation arrives by email. It is the control that stops
+  future charges, and the only place it exists.
+- **F9.11** Shows the same **outcome definitions** the business sees (F6.5), so
+  both sides of a conversation about the numbers are reading the same
+  definitions.
+- **F9.12** Surfaces businesses needing attention: calendar access failing
+  (F2.7), test calls exhausted without confirmation (F1.13), payment failing, at
+  cap, and approaching final deletion.
 - **F9.9** Shows **rented phone numbers that are not earning**: numbers held for
   businesses that never activated, are suspended, or are otherwise not paying the
   $100 minimum. Every such number is a standing cost with no revenue against it.
@@ -418,16 +467,22 @@ period _n+1_ begins 30 days after period _n_.
   **official contact email address**, which is the single supported channel.
   _(Self-serve cancellation is a v3.1 requirement — §1.9.)_
 - **F10.3** Suspension and deletion run as **two phases**, so a business has time
-  to respond to warnings before anything irreversible happens:
+  to respond before anything irreversible happens:
 
-  | Day  | On payment failure                                                                                                        | On cancellation                                                                           |
-  | ---- | ------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
-  | 0    | Payment fails. Service continues, usage accrues, business emailed.                                                        | Business emails to cancel. Service stops. Refund and final usage invoice settled (F7.12). |
-  | 0–7  | **Grace period.** Calls answered as normal. Reminder emails sent.                                                         | —                                                                                         |
-  | 7    | **Suspended.** Calls stop being answered; the number is retained. Recoverable by paying.                                  | —                                                                                         |
-  | 7–30 | Suspended but fully recoverable.                                                                                          | Recoverable.                                                                              |
-  | 30   | **Phone number released. All data deleted** — appointments, customers, calls, transcripts, payment records. Irreversible. | Same.                                                                                     |
+  | Day  | On payment failure                                                                                                                      | On cancellation                                                                                                         |
+  | ---- | --------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+  | 0    | Payment fails. Service continues, usage accrues, business emailed.                                                                      | Business emails to cancel. Operator marks it cancelled (F7.10a). Service stops. Refund and final usage settled (F7.12). |
+  | 0–7  | **Grace period.** Calls answered as normal. Reminder emails sent.                                                                       | —                                                                                                                       |
+  | 7    | **Suspended.** Calls stop being answered; the number is retained. Recoverable by paying.                                                | —                                                                                                                       |
+  | 7–30 | Suspended, and **payment continues to be retried** on the schedule the pricing model implies. Any success restores service immediately. | Recoverable if the business withdraws its cancellation.                                                                 |
+  | ~28  | **48-hour final warning by email**, stating exactly what will be deleted and when.                                                      | Same.                                                                                                                   |
+  | 30   | **Full stop.** Phone number released, all Ringly-held data deleted. Irreversible.                                                       | Same.                                                                                                                   |
 
+- **F10.3a** **Nothing is ever deleted without a 48-hour warning email first.**
+  This applies to both paths and is not conditional on the business having read
+  earlier emails.
+- **F10.3b** A business that has asked to cancel is **not** retried for payment
+  (F7.10); the retry loop applies only to the non-payment path.
 - **F10.4** A business's telephone number is its public identity, printed on
   signage and listings. It is therefore **never released before day 30**, whatever
   the reason for suspension.
@@ -916,6 +971,66 @@ recordings are fetched from Retell on demand, which is what
   but the delete must still be issued, not assumed.
 - **What this costs:** transcript _search_ (F6.4) is impossible over data we do
   not hold, and no call history older than 30 days is available to anyone.
+
+## 2.8b Data inventory — everything Ringly stores
+
+Retention cannot be reasoned about without knowing what exists. This is the
+complete v3 picture: today's tables with their v3 changes, plus the tables v3
+adds. **Retention per table is not yet agreed** — the "Holds PII?" column is what
+that decision should turn on.
+
+**Tenant configuration** — created at onboarding, changes rarely.
+
+| Table                    | Fields                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | PII                                     |
+| ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------- |
+| `businesses`             | `id`, `owner_user_id`, `name`, `business_type`, `address`, `formatted_address`, `timezone`, `latitude`, `longitude`, `google_place_id`, `website_url`, `public_phone`, `retell_phone_number`, `retell_agent_id`, `retell_llm_id`, `external_calendar_id`, `greeting_script`, `onboarding_status`, `contact_email`, `stripe_customer_id`, `stripe_subscription_id`, `billing_status`, `activated_at`, `suspended_at`, `purge_after`, `cap_cents`, `booking_horizon_days`, `materialisation_horizon_days`, `created_at`, `updated_at` | Business contact details (not consumer) |
+| `business_hours`         | `id`, `business_id`, `day_of_week`, `is_closed`, `hours_ranges`, `updated_at`                                                                                                                                                                                                                                                                                                                                                                                                                                                       | No                                      |
+| `services`               | `id`, `business_id`, `name`, `description`, `price_cents`, `duration_minutes`, `source`, `active`, `created_at`                                                                                                                                                                                                                                                                                                                                                                                                                     | No                                      |
+| `service_versions`       | `id`, `service_id`, `business_id`, `name`, `price_cents`, `duration_minutes`, `effective_from`, `effective_to`                                                                                                                                                                                                                                                                                                                                                                                                                      | No                                      |
+| `scheduling_credentials` | `business_id`, `provider`, `encrypted_payload`, `status`, `last_error_at`                                                                                                                                                                                                                                                                                                                                                                                                                                                           | Secrets (encrypted)                     |
+
+**Operational records** — the working data of the product.
+
+| Table                | Fields                                                                                                                                                                                                      | PII                            |
+| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------ |
+| `customers`          | `id`, `business_id`, `phone_number`, `name`, `email`, `created_at`                                                                                                                                          | **Yes — consumer**             |
+| `appointments`       | `id`, `business_id`, `customer_id`, `service_id`, `service_version_id`, `series_id`, `occurrence_date`, `starts_at`, `ends_at`, `status`, `external_event_id`, `source_call_id`, `created_at`, `updated_at` | Indirect (links to a customer) |
+| `appointment_series` | `id`, `business_id`, `customer_id`, `service_id`, `rrule`, `timezone`, `dtstart`, `until`, `status`                                                                                                         | Indirect                       |
+| `calls`              | `id`, `business_id`, `retell_call_id`, `from_number`, `outcome`, `end_reason`, `is_test_call`, `is_billable`, `started_at`, `ended_at`, `duration_seconds`, `created_at`                                    | **Yes — caller number**        |
+
+**Money** — must survive for reconciliation.
+
+| Table             | Fields                                                                                                                                                                    | PII                             |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------- |
+| `pricing_policy`  | `id`, `version`, `effective_from`, `fixed_fee_cents`, `cap_cents`, `per_minute_cents`, `per_reminder_cents`, `billable_outcomes`                                          | No                              |
+| `billing_periods` | `id`, `business_id`, `seq`, `starts_at`, `ends_at`, `timezone`, `pricing_policy_id`, `cap_cents`, `fixed_fee_cents`, `fixed_fee_charged_at`, `usage_settled_at`, `status` | No                              |
+| `usage_records`   | `id`, `business_id`, `billing_period_id`, `occurred_at`, `kind`, `quantity_seconds`, `quantity`, `unit_cents`, `amount_cents`, `call_id`                                  | No                              |
+| `billing_events`  | `id`, `business_id`, `stripe_event_id`, `kind`, `amount_cents`, `fee_cents`, `occurred_at`, `payload`                                                                     | Payment metadata (no card data) |
+| `cost_records`    | `id`, `business_id`, `occurred_at`, `source`, `kind`, `amount_cents`, `call_id`                                                                                           | No                              |
+
+**Derived and operational** — rebuildable or transient.
+
+| Table                      | Fields                                                                                                                                                                  | PII                 |
+| -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------- |
+| `daily_business_stats`     | `business_id`, `local_date`, `calls`, `unique_callers`, `avg_duration_seconds`, `booked`, `rescheduled`, `cancelled`, `enquiry_only`, `dropped`, `revenue_booked_cents` | No — aggregate      |
+| `daily_business_economics` | `business_id`, `local_date`, `revenue_net_cents`, `cost_cents`, `calls`, `billable_calls`                                                                               | No — aggregate      |
+| `email_log`                | `id`, `business_id`, `kind`, `idempotency_key`, `sent_at`, `status`                                                                                                     | Business email only |
+
+**Deleted in v3** — `reminders` entirely; `customers.whatsapp_consent_status`,
+`whatsapp_consent_at`, `whatsapp_consent_call_id`; `businesses.whatsapp_number`,
+`whatsapp_sender_status`, `onboarding_step`, `google_refresh_token` (moves to
+`scheduling_credentials`); `no_show` from the appointment status enum; `clinic`
+from `business_type`.
+
+**Not stored anywhere:** card details (Stripe only), call recordings and
+transcripts (Retell only, 30-day retention), call audio of any kind.
+
+**The retention question this table exists to answer:** only three tables hold
+consumer PII — `customers`, `calls.from_number`, and `appointments` by
+association. Everything else is either business data, money, or aggregate. A
+retention policy therefore has to decide how long those three live for an
+**active** business; the 30-day post-cancellation purge (F10.3) already covers
+inactive ones.
 
 ## 2.9 Billing (F7)
 
