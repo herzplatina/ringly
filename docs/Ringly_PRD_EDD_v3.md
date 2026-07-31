@@ -3118,11 +3118,56 @@ summing on `local_date`, billing periods by summing between
 `billing_periods.starts_at` and `ends_at`. Storing daily and aggregating upward
 is the only way one table serves two calendars that never align.
 
-**Outcome derivation happens once, at the post-call webhook**, from the
-transcript in the payload — the only moment Ringly ever sees it (F10.6).
-`outcome`, `end_reason` and `is_billable` are persisted then. **Outcomes can
-never be re-derived** (F6.6): if the classifier improves, history keeps its old
-labels and the dashboard says so rather than hiding it.
+### 2.8.1 Outcome classification
+
+**An LLM call classifies the outcome, and it runs in batch on the cheapest
+model.** Nothing about the outcome is needed in real time — the rollup is
+nightly, settlement is up to thirty days out, and the dashboard is complete-to-
+last-night by design (F6.14) — so paying for low latency would be paying for
+something no requirement asks for.
+
+| Choice | Value                                      | Why                                                                                                                      |
+| ------ | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------ |
+| Model  | **`claude-haiku-4-5`**                     | Cheapest current model — $1/$5 per MTok. Classifying a transcript into one of five labels does not need a frontier model |
+| Mode   | **Batch API** (`/v1/messages/batches`)     | **50% off** on top of that. Latency is the only thing traded away and nothing here needs it                              |
+| Output | **Structured outputs** with an enum schema | The result must be one of five labels. A schema guarantees that instead of parsing prose and hoping                      |
+| Key    | `custom_id` = the call id                  | **Batch results come back in any order** — they must be keyed, never matched by position                                 |
+
+**Batch latency is up to 24 hours, usually under one.** That is compatible with
+every consumer of the outcome, with one caveat worth stating: **the cap alert
+(F7.9b) is as late as the classification**, because usage accrues from
+billability. A business crossing $500 may be told the next day rather than the
+same hour. Accepted — the cap is a per-period ceiling, not a real-time control.
+
+**The transcript is submitted, never stored** (F10.6). It goes from the post-call
+payload straight into the batch request; Ringly persists only the batch id and
+the `custom_id` mapping. There is no window in which a transcript sits in
+Ringly's database.
+
+> **This makes Anthropic a subprocessor for call content**, alongside Retell who
+> already holds it. Worth stating plainly rather than leaving implicit: caller
+> speech leaves Ringly's infrastructure to be classified. It is one more reason
+> healthcare stays out of scope (§1.4) — the PHI question would now involve two
+> vendors, not one.
+
+**A call has no outcome until its batch returns**, and every consumer must handle
+that:
+
+- **The nightly rollup only aggregates calls whose outcome has landed** (§2.8).
+  Rolling up an unclassified call would silently undercount it, and F6.6 forbids
+  re-deriving it later to fix the total.
+- **An unclassified call is not billable.** F7.6 makes billability a property of
+  the outcome, so an outcome Ringly could not determine cannot support a charge.
+  **Failing closed in the business's favour** is the same instinct as F2.7, and
+  the alternative — guessing, then billing on the guess — is worse than the
+  revenue it recovers.
+- **A batch entry that errors or expires is retried once, then left
+  unclassified** and raised to the operator. It is a defect, not a state to
+  design around.
+
+**Outcomes are still derived once and never re-derived** (F6.6). The transcript
+is gone after the batch, so a better classifier improves future calls only; the
+dashboard says so rather than hiding it (F6.6, `outcome_ruleset_version`).
 
 **Five outcomes, not four.** `enquiry_only` and `dropped` stay distinct (F6.3d)
 even though neither is billable — the difference between an agent answering
