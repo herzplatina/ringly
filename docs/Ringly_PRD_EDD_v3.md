@@ -404,6 +404,24 @@ period _n+1_ begins 30 days after period _n_.
   the cap, and the next charge date.
 - **F7.14** Every charge, refund, and failure is recorded immutably against the
   business for reconciliation.
+- **F7.15** **The commercial terms are expected to change** once real usage is
+  observed. The fixed fee, the cap, the per-unit rates, and **the definition of a
+  billable call** must all be changeable without a schema migration or a
+  redesign. What does **not** change: 30-day billing periods, the rule that data
+  lives as long as the relationship and is purged 30 days after it ends (F10.8),
+  and the two-phase 7-day-then-30-day suspension and revocation timeline
+  (F10.3).
+- **F7.16** A change to commercial terms **never rewrites history**. Each billing
+  period is settled under the terms in force when it ran, so past invoices remain
+  reproducible.
+
+> **Architectural consequence.** Pricing is **policy data, not code**: rates, the
+> cap, the fixed fee, and the set of outcomes that count as billable all live in
+> a versioned `pricing_policy` record with an effective date, and each
+> `billing_periods` row records which version it was settled under (EDD §2.9).
+> Widening billing to all connected minutes — the expected next model — becomes a
+> new policy row, not a deploy.
+
 - **F7.17** A **chargeback is treated exactly as non-payment** (F10.3): the
   7-day grace and suspension, then full revocation at day 30, with reminder
   emails throughout so the business can resolve it and recover.
@@ -437,23 +455,6 @@ period _n+1_ begins 30 days after period _n_.
   Ringly's data. Stripe's own dunning and receipt-on-failure emails are therefore
   **switched off**, or a business receives two differently-worded messages from
   what appears to be one company.
-
-- **F7.15** **The commercial terms are expected to change** once real usage is
-  observed. The fixed fee, the cap, the per-unit rates, and **the definition of a
-  billable call** must all be changeable without a schema migration or a
-  redesign. What does **not** change: 30-day billing periods, 30-day data
-  retention, and the two-phase 7-day-then-30-day suspension and revocation
-  timeline (F10.3).
-- **F7.16** A change to commercial terms **never rewrites history**. Each billing
-  period is settled under the terms in force when it ran, so past invoices remain
-  reproducible.
-
-> **Architectural consequence.** Pricing is **policy data, not code**: rates, the
-> cap, the fixed fee, and the set of outcomes that count as billable all live in
-> a versioned `pricing_policy` record with an effective date, and each
-> `billing_periods` row records which version it was settled under (EDD §2.9).
-> Widening billing to all connected minutes — the expected next model — becomes a
-> new policy row, not a deploy.
 
 ### F8 — Email
 
@@ -770,10 +771,11 @@ failure modes are stated explicitly.
 
 **Settled 2026-07-30:** pricing shape (F7), cap behaviour (F7.9/F7.12a), minute rounding (F7.7a), grace and suspension timeline (F10.3), email
 provider Resend, 90-day recurrence horizon, occurrence-clash handling (F5.2a),
-price at occurrence time and duration locked (F3.4), transcripts retained /
-recordings not (F10.6), operator cost model and calendar-month reporting (F9.5,
-F9.8), dropped-call definition (F6.3), calendar-provider switching out of scope
-(R9).
+price at occurrence time and duration locked (F3.4), Ringly storing neither
+transcripts nor recordings (F10.6), retention for the life of the relationship
+(F10.8), the departure record (F10.9), the Stripe division of responsibility
+(F7.20–F7.21), operator cost model and calendar-month reporting (F9.5, F9.8),
+dropped-call definition (F6.3), calendar-provider switching out of scope (R9).
 
 **Still open:**
 
@@ -781,35 +783,14 @@ F9.8), dropped-call definition (F6.3), calendar-provider switching out of scope
   (F7.8), so Phase 5 can be built and tested with a placeholder but cannot be
   switched on for real customers until set. The per-reminder rate is assumed
   $0.05.
-- **Q2 — Does F7.7 widen the billable set, or only remove caller exemptions?**
-  F7.6 bills only productive calls; F7.7 says no caller is exempt once activated.
-  Read together they mean "any caller, but still only productive outcomes". If
-  the intent was instead "every answered call is billable", that is a materially
-  larger revenue model and F7.6 should be retired now rather than later.
-  **This must be settled before Phase 5.**
+- **Q2 — Resolved.** Any caller, but only productive outcomes. F7.6 and F7.7
+  now state this directly: who is calling is irrelevant, the outcome is the only
+  test.
 - **Q3 — Ringly's cancellation email address** (F10.2). Needed for the dashboard
   and the transactional emails.
 - **Q4 — Resolved.** Reminders leave v3 entirely (§1.9).
-- **Q5 — No email's content is specified (Phase 5).** F8 names five categories,
-  but the requirements elsewhere trigger **fourteen distinct emails**, and not
-  one has a defined subject, field list, tone, or call to action:
-
-  _Billing (transactional, F8.4):_ activation receipt · upcoming charge notice ·
-  invoice issued · payment succeeded · payment failed · grace-period reminders ·
-  suspension notice (day 7) · retry notices (days 7–30) · **48-hour final
-  deletion warning (F10.3a)** · cap reached (F7.9) · cancellation confirmation
-  and refund (F7.12).
-  _Operational:_ calendar access failing (F2.7, one per incident) · recurring
-  occurrence shifted or skipped (F5.2b) · test calls exhausted (F1.13).
-  _Reporting:_ the stats digest (F8.3), the only unsubscribable one.
-
-  The 48-hour deletion warning is the highest-stakes of these — it is the last
-  thing a business sees before its number and data are destroyed — and currently
-  has no specified content at all. Two adjacent decisions belong with it:
-  whether templates are **React Email components versioned in this repo** (the
-  main reason Resend was chosen over Postmark), and whether the same content
-  requirement covers **operator-facing** email (cap alerts, payment failures,
-  test-call failures — the ones bound for Slack later, F9.6).
+- **Q5 — Resolved.** Every email is declared and templated (F8.2, F8.3), and the
+  division with Stripe settles which of them Ringly sends at all (F7.20, F8.3a).
 
 ---
 
@@ -1345,9 +1326,17 @@ Operator alerting (F9.6) uses the same path initially. _TBD: move operator alert
 to Slack; pending implementation._
 
 Design: one `sendEmail(kind, businessId, payload)` entry point writing an
-`email_log` row keyed by an idempotency key derived from `(kind, business, period)`
-**before** sending, so a retried worker cannot double-send (F8.5). Billing email is
-transactional and always sent; stats email honours an unsubscribe flag (F8.4).
+`email_log` row **before** sending, so a retried worker cannot double-send
+(F8.5). The idempotency key takes one of **three shapes** depending on the email
+— per billing period, per incident, or per discrete event — because "once"
+means something different for a receipt, a calendar outage, and a single shifted
+appointment. The per-incident shape is what stops an outage generating one email
+per lost customer.
+
+Ringly sends only what Stripe does not (F8.3a): the whole failure path plus
+operational and reporting mail. Receipts and payment-succeeded are Stripe's.
+Transactional mail is always sent; the stats digest honours an unsubscribe flag
+(F8.4).
 
 ## 2.11 Cost model (N4)
 
