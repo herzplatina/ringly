@@ -19,18 +19,19 @@ around the clock, discusses services and pricing, and books, reschedules and
 cancels appointments against the business's own calendar.
 
 v2 made a single business live in under three minutes. **v3 turns that into a
-business**: thousands of tenants, each with thousands of customers, each on their
-own calendar system and timezone, billed for what they use, and able to see and
-manage their own operation without talking to us.
+business**: thousands of tenants, each with thousands of customers, each in their
+own timezone, billed for what they use, and able to see and manage their own
+operation without talking to us. Google Calendar is the only scheduling system
+served at launch, behind an interface built so others can follow.
 
 ## 1.2 What changed from v2
 
 | Area         | v2                                   | v3                                                                |
 | ------------ | ------------------------------------ | ----------------------------------------------------------------- |
 | Tenancy      | Implicitly single-tenant assumptions | Explicit multi-tenant model, isolation and scale targets          |
-| Scheduling   | Google Calendar only                 | Provider abstraction; Google is one implementation of several     |
+| Scheduling   | Google Calendar only, hardwired      | Still Google only, but behind an interface others can plug into   |
 | Appointments | One-off only                         | One-off **and** recurring series                                  |
-| Reminders    | Deferred (`pg_cron` TODO)            | Still deferred — moved to v2 of the product with its channels     |
+| Reminders    | Deferred (`pg_cron` TODO)            | Still deferred — no near-term plan, see §1.9                      |
 | Services     | Set at onboarding                    | Editable any time; changes reach the agent for the next caller    |
 | Analytics    | None                                 | Per-business dashboard, plus an operator cost/revenue dashboard   |
 | Money        | None                                 | $100/30 days in advance, usage in arrears, $500 cap, card on file |
@@ -65,7 +66,7 @@ manage their own operation without talking to us.
 - Multi-location businesses (one location per business row).
 - Multi-staff / resource-level scheduling (one implicit calendar per business).
 - Non-US phone numbers and non-English calls.
-- Self-serve plan changes, coupons, refunds, dunning UI beyond Stripe's own.
+- Self-serve plan changes, coupons, and promotional pricing of any kind.
 - Customer-facing web booking. The phone is the only booking channel.
 
 ---
@@ -191,9 +192,9 @@ _(Carried from v2; renumbered. v2 FR1–FR10 map to F1.1–F1.10.)_
     successful calendar read.
 - **F2.7a** This applies however the calendar became unreachable — provider
   outage, timeout, revoked consent, or expired credentials. **There is no case in
-  which Ringly books against a calendar it could not read.** A business that
-  is a mandatory part of the product (F4.1), so there is no configuration in
-  which booking proceeds unverified.
+  which Ringly books against a calendar it could not read.** A connected calendar
+  is mandatory (F4.1), so there is no configuration in which booking proceeds
+  unverified.
 - **F2.8** The agent answers **24 hours a day**, but appointments may only be
   **booked inside the business's opening hours** (F3, business_hours).
 - **F2.9** A one-off appointment may not be booked **more than 70 days ahead**.
@@ -249,8 +250,8 @@ _(Carried from v2; renumbered. v2 FR1–FR10 map to F1.1–F1.10.)_
 
 > **Reminders are out of scope for v3.** There is no reminder channel, no
 > dispatcher, and no reminder billing. The whole of reminders — including
-> notifying a customer when their appointment changes (F5.2c) — is deferred to
-> v2 of the product (§1.9). Recurring appointments themselves remain in v3.
+> notifying a customer when their appointment changes (F5.2c) — is deferred with
+> no near-term plan (§1.9). Recurring appointments themselves remain in v3.
 
 - **F5.1** A caller can set up a **recurring** appointment in one call (e.g.
   "every fourth Tuesday at 2"), described by a standard recurrence rule.
@@ -274,8 +275,15 @@ _(Carried from v2; renumbered. v2 FR1–FR10 map to F1.1–F1.10.)_
 
 ### F6 — Business dashboard
 
-The business-facing dashboard contains **exactly two things**. Anything not on
-this list is deliberately absent, not merely unbuilt.
+The dashboard **reports exactly two things** — the aggregate shape of the calls
+Ringly handled, and what the business has paid for them. Anything else it might
+report is deliberately absent, not merely unbuilt.
+
+It also carries the **controls** a business needs: managing its service catalogue
+(F3.1), confirming its test call (F1.12), setting its booking and recurrence
+horizons (F2.9, F5.2), reconnecting a calendar (F1.7b), and the warnings raised
+when something is wrong (F2.7). Those are actions, not reporting, and the
+two-things rule does not constrain them.
 
 **(1) Aggregate analysis of calls to Ringly**
 
@@ -734,7 +742,7 @@ delete the Stripe customer → delete Ringly's rows → write the departure reco
 - **F10.2** **Cancellation is not self-serve in v3.** All business-initiated
   account actions — cancellation, deletion, reactivation — go through Ringly's
   **official contact email address**, which is the single supported channel.
-  _(Self-serve cancellation is a v3.1 requirement — §1.9.)_
+  _(Self-serve cancellation is deferred to soon after v3 — §1.9.)_
 - **F10.3** The two paths differ sharply. **Non-payment withdraws service after
   a week. Cancellation never withdraws it at all** — it runs out the period the
   business already paid for.
