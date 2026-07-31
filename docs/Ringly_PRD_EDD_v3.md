@@ -271,7 +271,10 @@ this list is deliberately absent, not merely unbuilt.
   - average and median call duration;
   - outcome breakdown as counts and percentages: **booked / rescheduled /
     cancelled / enquiry-only / dropped**;
-  - appointments booked, and revenue booked.
+  - appointments booked, and revenue booked. Revenue for **future**
+    appointments is an **estimate**, labelled as such: price resolves at
+    occurrence time (F3.4), so it can still change before the appointment
+    happens.
 - **F6.4** **"Dropped"** covers both a caller who hung up without a resolved
   outcome **and** a call the agent could not help with. If the caller did not get
   what they rang for, it is dropped. A completed enquiry — the caller asked
