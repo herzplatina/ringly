@@ -374,12 +374,22 @@ period _n+1_ begins 30 days after period _n_.
   per-connected-minute rate is **TBD** and must be settable without a deploy. A
   per-reminder rate (working assumption **$0.05**) is carried in the same policy
   record for when reminders arrive.
-- **F7.9** A **$500 cap per period, inclusive of the $100 fixed fee** — so usage
-  tops out at $400. On reaching the cap Ringly **continues to serve the business
-  and absorbs the cost**, stops accruing further charges for that period,
-  **alerts the operator** (F9.6), and **emails the business** to say it has used
-  enough to reach $500 and that everything for the rest of the period is on
-  Ringly. Hitting the cap is good news for the business and should read that way.
+- **F7.9** A **$500 cap per period, inclusive of the $100 fixed fee.** Usage
+  **keeps accruing past the cap** — it is recorded in full, because Ringly needs
+  the real number for cost and margin (F9). The cap is applied **at settlement**,
+  not during the period: whatever was accrued, the business is charged at most
+  $500 for the period.
+- **F7.9a** **Settlement happens at exactly three moments**, and the clamp is
+  applied at each:
+  1. **Normal period end** — the usual case.
+  2. **A cancellation completing** (F7.12), 30 days after it was requested.
+  3. **Final deletion for non-payment** (F10.3), where the clamped figure is what
+     the business is recorded as owing (F10.9) even though it is never collected.
+- **F7.9b** On first crossing the cap Ringly **continues to serve the business
+  and absorbs the excess**, **alerts the operator** (F9.6), and **emails the
+  business** to say it has used enough to reach $500 and that everything for the
+  rest of the period is on Ringly. Hitting the cap is good news for the business
+  and should read that way.
 - **F7.10** Billing repeats every 30 days with no action from the business —
   **unless the business has asked to cancel**. A business marked cancelled is
   **never charged again**, and resumes billing only if it explicitly withdraws
@@ -387,19 +397,40 @@ period _n+1_ begins 30 days after period _n_.
 - **F7.10a** Because cancellation arrives by email (F10.2), **the operator sets
   and clears a business's cancelled status from the operator dashboard** (F9.10).
   It is the single control that stops future charges.
+- **F7.10b** **Reactivating a suspended business resumes the current period; it
+  does not start a new one.** Any fixed fee that failed at the period's start
+  remains owed and is collected **at that period's settlement**, together with the
+  full usage accrued across the period — including usage from the days the
+  account was suspended, which were served.
 - **F7.11** A failed charge starts a **7-day grace period**. Through it Ringly
   **keeps answering calls and keeps accruing usage**, and emails the business
   about the failure. If payment has not cleared by day 7, the account is
   **suspended** (F10.3).
-- **F7.12** On **cancellation mid-period**: refund the unused portion of the $100
-  fixed fee, prorated at 1/30 per day with the day of cancellation counted as
-  used, rounded **down** to the cent. Usage accrued to the cancellation date is
-  charged. The refund is executed through Stripe programmatically; the
-  **calculation is Ringly's**, because Stripe's own proration cannot enforce the
-  F7.9 cap.
-- **F7.12a** The total charged for a period **never exceeds $500**, including
-  after a cancellation. Worked example: cancel on day 12 with $470 of usage →
-  `$100 − $60 refund + $470 = $510` → clamped to **$500**.
+- **F7.12** **Cancellation opens a 30-day reconsideration window; nothing is
+  settled until it closes.** On the request:
+  - **Service continues unchanged.** Calls are answered, bookings are taken, and
+    the phone number is not touched. A business that changes its mind must find
+    everything as it was.
+  - **Usage stops accruing.** From the request onward the business is billed for
+    nothing further, and Ringly absorbs the cost of serving them.
+  - **No refund is issued yet**, and no further fixed fee is charged (F7.10).
+- **F7.12a** **If the business resumes within the window**, the current billing
+  period continues **as though the cancellation never happened**: accrued usage
+  and any pending charges stand, and usage begins accruing again.
+- **F7.12b** **If the window closes**, the account is settled and deleted:
+  refund the unused portion of the $100 fixed fee, prorated at 1/30 per day with
+  the day of cancellation counted as used, rounded **down** to the cent; charge
+  the usage accrued **up to the cancellation request**; clamp the period total to
+  $500 (F7.9a). The refund is executed through Stripe; the **calculation is
+  Ringly's**, because Stripe's own proration cannot enforce the cap.
+- **F7.12c** The **48-hour final email** (F10.3a) for a cancelling business is
+  also its closing statement, and states: how many appointments Ringly booked in
+  the final billing period, the total finally charged for it, the refund amount,
+  and the date everything is deleted.
+- **F7.12d** The total charged for a period **never exceeds $500**, including
+  after a cancellation. Worked example: cancel on day 12 having accrued $470 of
+  usage → `$100 − $60 refund + $470 = $510` → clamped to **$500**, so $460 of
+  usage is charged and $10 is absorbed.
 - **F7.13** The business dashboard shows current-period usage, amount accrued,
   the cap, and the next charge date.
 - **F7.14** Every charge, refund, and failure is recorded immutably against the
@@ -576,10 +607,11 @@ period _n+1_ begins 30 days after period _n_.
 
 ### F10 — Account lifecycle, suspension and data retention
 
-- **F10.1** A business that has not activated releases its rented phone number
-  after **10 days**, and may place at most **10 test calls** before activation.
-  Both exist because an unactivated business is pure cost — a rented number and
-  live call minutes against no revenue.
+- **F10.1** A business that **never activates** is removed entirely after **10
+  days** — its rented number is released and all information about it is deleted.
+  It may place at most **10 test calls** before activating. Both limits exist
+  because an unactivated business is pure cost: a rented number and live call
+  minutes against no revenue, with no relationship to protect.
 - **F10.1a** **A consumer has no direct route to Ringly.** A caller wanting
   their data removed asks the business, which asks Ringly (F10.2). Ringly has no
   relationship with the caller and offers them no interface. Not a priority, and
@@ -588,29 +620,34 @@ period _n+1_ begins 30 days after period _n_.
   account actions — cancellation, deletion, reactivation — go through Ringly's
   **official contact email address**, which is the single supported channel.
   _(Self-serve cancellation is a v3.1 requirement — §1.9.)_
-- **F10.3** Suspension and deletion run as **two phases**, so a business has time
-  to respond before anything irreversible happens:
+- **F10.3** Suspension and deletion run over **30 days**, so a business always
+  has time to respond before anything irreversible happens. The two paths differ
+  sharply — non-payment withdraws service, cancellation does not:
 
-  | Day  | On payment failure                                                                                                                      | On cancellation                                                                                                         |
-  | ---- | --------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
-  | 0    | Payment fails. Service continues, usage accrues, business emailed.                                                                      | Business emails to cancel. Operator marks it cancelled (F7.10a). Service stops. Refund and final usage settled (F7.12). |
-  | 0–7  | **Grace period.** Calls answered as normal. Reminder emails sent.                                                                       | —                                                                                                                       |
-  | 7    | **Suspended.** Calls stop being answered; the number is retained. Recoverable by paying.                                                | —                                                                                                                       |
-  | 7–30 | Suspended, and **payment continues to be retried** on the schedule the pricing model implies. Any success restores service immediately. | Recoverable if the business withdraws its cancellation.                                                                 |
-  | ~28  | **48-hour final warning by email**, stating exactly what will be deleted and when.                                                      | Same.                                                                                                                   |
-  | 30   | **Full stop.** Phone number released, all Ringly-held data deleted. Irreversible.                                                       | Same.                                                                                                                   |
+  | Day  | On payment failure                                                                                                        | On cancellation request                                                                                             |
+  | ---- | ------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+  | 0    | Payment fails. Service continues, usage keeps accruing, business emailed.                                                 | Operator marks it cancelled (F7.10a). **Service continues unchanged. Usage stops accruing. No refund yet** (F7.12). |
+  | 0–7  | **Grace period.** Calls answered as normal. Reminder emails sent.                                                         | Service continues, free of charge. Reconsideration window open.                                                     |
+  | 7    | **Suspended.** Calls stop being answered; the number is retained. Recoverable by paying.                                  | Nothing changes — a cancelling business is never suspended.                                                         |
+  | 7–30 | Suspended, and payment **continues to be retried** (Stripe, F7.20). Any success restores service and the period (F7.10b). | Service continues. Resuming at any point restores billing as though nothing happened (F7.12a).                      |
+  | ~28  | **48-hour final warning by email**, stating exactly what will be deleted and when.                                        | Same, and doubles as the closing statement (F7.12c).                                                                |
+  | 30   | **Full stop.** Number released, all Ringly-held data deleted, amount owed recorded (F10.9). Irreversible.                 | Settled (F7.12b), refund issued, then the same full stop.                                                           |
 
 - **F10.3a** **Nothing is ever deleted without a 48-hour warning email first.**
   This applies to both paths and is not conditional on the business having read
   earlier emails.
 - **F10.3b** A business that has asked to cancel is **not** retried for payment
   (F7.10); the retry loop applies only to the non-payment path.
-- **F10.4** A business's telephone number is its public identity, printed on
-  signage and listings. It is therefore **never released before day 30**, whatever
-  the reason for suspension.
-- **F10.5** Deletion at day 30 must remove data held **by our processors too**,
-  not only our own database — including transcripts and recordings retained by
-  the telephony provider.
+- **F10.4** **An activated business's telephone number is never released before
+  day 30**, whatever the reason — non-payment, chargeback, or its own
+  cancellation. It is the business's public identity, printed on signage and
+  listings, and losing it is not recoverable. This protection applies only once a
+  business has activated; one that never did is removed at day 10 (F10.1).
+- **F10.5** **Ringly issues no deletion call to the telephony provider.**
+  Transcripts and recordings expire on their own **30-day TTL** (F10.6), which is
+  never longer than the window before a business is deleted, so provider-held
+  content is gone by then without Ringly doing anything. Deletion at day 30 covers
+  Ringly's own database only.
 - **F10.6** **Ringly stores neither transcripts nor recordings.** Both remain
   with the telephony provider and are fetched on demand when needed. Retention is
   configured **on every provisioned agent**, never inherited from a default:
@@ -663,7 +700,12 @@ period _n+1_ begins 30 days after period _n_.
 - **N1.2** Server-side code paths that bypass row-level security (webhook
   handlers using a service role) must scope every query by business explicitly,
   and that scoping must be covered by tests.
-- **N1.3** A tenant's data can be exported and deleted on request, completely.
+- **N1.3** A tenant's data is **deleted** completely when the relationship ends
+  (F10.8). **Ringly offers no export**, deliberately: every appointment already
+  lives in the business's own calendar, which they keep; transcripts and
+  recordings were never Ringly's to give; and everything else is Ringly's
+  operational record of a relationship that has ended. There is nothing a
+  business would receive that it does not already hold.
 
 ### N2 — Scale
 
