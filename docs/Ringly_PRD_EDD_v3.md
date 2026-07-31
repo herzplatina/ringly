@@ -104,16 +104,27 @@ _(Carried from v2; renumbered. v2 FR1–FR10 map to F1.1–F1.10.)_
 - **F1.9** Number purchase and agent provisioning run in the background.
 - **F1.10** No WhatsApp UI in onboarding.
 - **F1.11 (new)** Onboarding collects and verifies a **business contact email**,
-  defaulted from the Google identity and editable. It is required before
-  activation and is the destination for all billing and stats email (F8).
-- **F1.12 (new)** Onboarding ends with a **test call** step. The business calls
-  its own new number and then **confirms on the dashboard that the call worked**.
-  Success is the owner's judgement, not something Ringly infers — only they know
-  whether the agent actually sounded right. Confirmation is what fully activates
-  the number and starts billing (F7.1).
+  defaulted from the Google identity and editable. It is the destination for all
+  billing email, including the 48-hour warning before deletion (F10.3a), so an
+  unverified address is a silent single point of failure.
+- **F1.12 (new)** **Getting ready is a checklist of three tasks, presented
+  together and completed in any order the business likes:**
+  1. **verify the contact email** (F1.11);
+  2. **make a test call and confirm it worked** — the owner's judgement, not
+     something Ringly infers, because only they know whether the agent sounded
+     right;
+  3. **add a payment method.**
+
+  Nothing is sequenced. A business that wants to hear its receptionist before
+  giving anyone a card can; one that wants everything done in a minute can. The
+  screen shows all three with their state, and what remains.
+
+- **F1.12a** **When all three are done, activation is offered**: the $100 is
+  charged, period 1 begins, and the business is told plainly that it is **now
+  taking customer calls**. There is no separate activation fee (F7.1) — this
+  charge is period 1's.
 - **F1.13 (new)** A business may place at most **10 test calls** before
-  confirming (F10.1). **If it exhausts them without confirming**, onboarding
-  stops and:
+  activating. **If it exhausts them without confirming**, onboarding stops and:
   - the business is **emailed** to say the number has not been activated and
     Ringly is investigating and will come back to them;
   - the failure is raised on the **operator dashboard** and **emailed to the
@@ -905,6 +916,11 @@ delete the Stripe customer → delete Ringly's rows → write the departure reco
   - **The business's own cancellation** — held a further **60 days** after
     service stops (F7.12e), fully recoverable, because a business that left in
     good standing may come back and should find itself intact.
+- **F10.4a** **A number is never reassigned while any business still holds it.**
+  Suspension and dormancy stop the number being answered, which makes it look
+  unused; it is not. A number becomes available to a new business **only after
+  deletion** — day 10 unactivated, day 60 otherwise — and never during a
+  suspension or dormancy period, however idle it appears.
 - **F10.5** **Ringly issues no deletion call to the telephony provider.**
   Transcripts and recordings expire on their own **30-day TTL** (F10.6), which is
   never longer than the window before a business is deleted, so provider-held
@@ -1443,20 +1459,23 @@ merely experience.
 
 ### 2.4a.1 The flow
 
-| #   | Screen                        | What happens                                                                                                                                                                                                                 | Requirement      |
-| --- | ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------- |
-| 1   | **Intake** (public, no login) | One textarea, shadow prompt _"Tell me the name and address of your business…"_, spoken aloud. User types.                                                                                                                    | F1.1, F1.2       |
-| 2   | **Enrichment**                | One request: Places Text Search resolves the business (several hits → show candidates), Place Details returns name, address, phone, hours, IANA timezone, website; the website is fetched and Claude structures ≤5 services. | F1.3, F1.4, F1.6 |
-| 3   | **Review**                    | Every field inline-editable. Services can be added, removed, edited; a menu image or PDF, or manual entry, cover the case where nothing was found.                                                                           | F1.5             |
-| 4   | **Why we need access**        | Before Google is opened: a plain-language screen naming each scope and its reason — sign-in so the account is theirs, calendar because **Ringly refuses to book a time it cannot verify**, so this one is not optional.      | **F1.7c**        |
-| 5   | **Google consent**            | `signInWithOAuth` with `calendar.events`, `access_type=offline`, `prompt=consent`.                                                                                                                                           | F1.7             |
-| 6   | **Scope check**               | On return, the **granted** scopes are inspected, not assumed.                                                                                                                                                                | **F1.7a**        |
-| 7   | **Claim + provision**         | Business row created from the draft, refresh token encrypted and stored, Retell number bought or reused, LLM and agent created and bound. A value screen runs while this happens.                                            | F1.9             |
-| 8   | **Contact email**             | Defaulted from the Google identity, editable, and a verification email sent.                                                                                                                                                 | F1.11            |
-| 9   | **Test call**                 | The number shown large: _"Call it now and hear your receptionist."_ Remaining test calls displayed.                                                                                                                          | F1.12, F1.13     |
-| 10  | **Confirm it worked**         | _"Did that sound right?"_ — **the owner's judgement, not Ringly's inference**. Confirming is what activates.                                                                                                                 | **F1.12**        |
-| 11  | **Payment**                   | Stripe Elements collects the card; a SetupIntent stores it off-session and the first $100 is charged. Period 1 starts.                                                                                                       | F7.1, F7.2       |
-| 12  | **Live**                      | Dashboard.                                                                                                                                                                                                                   | —                |
+| #   | Screen                    | What happens                                                                                                                                                                                          | Requirement |
+| --- | ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------- |
+| 1   | **Intake** (public)       | One textarea, shadow prompt _"Tell me the name and address of your business…"_, spoken aloud. User types.                                                                                             | F1.1, F1.2  |
+| 2   | **Enrichment**            | One request: Places resolves the business (several hits → candidates), Details returns name, address, phone, hours, IANA timezone, website; the website is fetched and Claude structures ≤5 services. | F1.3–F1.6   |
+| 3   | **Review**                | Every field inline-editable; services addable, removable, editable, with upload or manual entry as fallbacks.                                                                                         | F1.5        |
+| 4   | **Why we need access**    | Before Google opens: each scope named with its reason — sign-in so the account is theirs, calendar because **Ringly refuses to book a time it cannot verify**, so it is not optional.                 | **F1.7c**   |
+| 5   | **Google consent**        | `signInWithOAuth` with `calendar.events`, `access_type=offline`, `prompt=consent`.                                                                                                                    | F1.7        |
+| 6   | **Scope check**           | The **granted** scopes are inspected, not assumed.                                                                                                                                                    | **F1.7a**   |
+| 7   | **Provision**             | Business row created from the draft, refresh token encrypted, Retell number bought or reused, agent created and bound — behind a value screen.                                                        | F1.9        |
+| 8   | **Get ready — checklist** | **Three tasks shown together, done in any order:** verify the contact email · make a test call and confirm it worked · add a payment method. Live state on each; nothing is sequenced.                | **F1.12**   |
+| 9   | **Activate**              | Offered once all three are green: $100 charged, period 1 starts, and the business is told plainly it is **now taking customer calls**.                                                                | **F1.12a**  |
+
+**Step 8 is the whole design decision.** Sequencing those three would force a
+business to hand over a card before hearing what it is buying, or to wait on an
+inbox round-trip before it can play with the thing it just built. Presenting them
+together lets an owner who wants to try the receptionist immediately do exactly
+that, and an owner who wants to be finished in ninety seconds do that instead.
 
 ### 2.4a.2 The two ways it stops, and what the user sees
 
@@ -1483,20 +1502,26 @@ where `is_test_call` and the business is still `unbilled`; the tenth is the last
   clock** (F10.1b) — otherwise the business being investigated is deleted
   underneath the investigation.
 
-### 2.4a.3 Ordering decisions worth stating
+### 2.4a.3 Decisions worth stating
 
-- **Email verification does not block the test call**, only activation. Making
-  someone wait for an inbox round-trip before they can hear their own receptionist
-  would break the flow at its most persuasive moment. But the address receives the
-  48-hour deletion warning, so it must be verified before money changes hands.
-- **Activation and first payment are the same step.** There is no separate
-  activation fee (F7.1); confirming the test call is what starts period 1.
-- **Provisioning runs in the background** behind the value screen (F1.9), so the
-  Retell round-trip is never a blocking form step.
+- **Nothing in step 8 blocks anything else in step 8.** The test-call counter
+  runs independently of email verification and of the card; a business can burn
+  test calls before Ringly holds any payment detail at all. That is intended —
+  ten calls is a bounded, cheap cost against a much larger risk of losing someone
+  at the point of asking for a card.
+- **Activation requires all three.** The card is obvious. The confirmed test call
+  is obvious. The **verified email** is the one that looks skippable and is not:
+  it receives the 48-hour warning before deletion (F10.3a), so activating on an
+  unverified address builds in a silent failure of the one notice that must
+  always arrive.
+- **Activation and first payment are the same event.** Confirming completes
+  period 1's charge; there is no separate activation fee (F7.1).
+- **Provisioning runs behind the value screen** (F1.9), so the Retell round-trip
+  is never a blocking form step.
 - **The draft survives the OAuth redirect** in `sessionStorage`, with a
-  short-lived server-side copy keyed by nonce as backup — carried over from v2,
-  and now load-bearing for the declined-scope path, which returns the user to a
-  screen that must still have their business on it.
+  short-lived server-side copy keyed by nonce as backup. Carried over from v2 and
+  now load-bearing: the declined-scope path returns a user to a screen that must
+  still have their business on it.
 
 ## 2.5 The call path
 
@@ -1907,13 +1932,25 @@ holding it (F10.4).
   coming back from dormancy (F7.12e).
 - **Release** only at deletion, day 60.
 
-> **A trap worth naming.** `selectReusableNumber` treats a Retell number with no
-> inbound agent as orphaned and reusable. An unbound number belonging to a
-> suspended business looks exactly like that. It is protected only because the
-> business row still exists and its `retell_phone_number` appears in
-> `takenNumbers` — so **that guard must never be weakened**, and the row must not
-> be deleted before the number is released. Getting this wrong hands a suspended
-> business's number to a stranger.
+**Unbinding must never make a number reusable** (F10.4a). `selectReusableNumber`
+treats a Retell number with no inbound agent as orphaned, and an unbound number
+belonging to a suspended or dormant business looks exactly like one. Three things
+keep them apart, and all three are required:
+
+1. **`takenNumbers` is built from every business row that holds a number**,
+   whatever its billing status — `active`, `grace`, `suspended`, `cancelling` and
+   `dormant` alike. Filtering that query by status is the mistake to guard
+   against; the number is taken because the row exists, not because the business
+   is paying.
+2. **The number is released only at deletion**, in the same operation that
+   removes the row (§2.9.4 step 6), so there is never a window in which the row
+   is gone but the number is not yet released, or the reverse.
+3. **A test covers it directly**: a suspended business's number must not be
+   returned by `selectReusableNumber` while its row exists.
+
+Getting this wrong hands a suspended business's phone number — the one printed on
+its van — to a stranger, and it would look like correct behaviour to every part
+of the system except the business it happened to.
 
 **Lifecycle sweeper**, hourly:
 
