@@ -492,7 +492,12 @@ charge failed first (F7.11).
 
 - **F7.17** A **chargeback is treated exactly as non-payment** (F10.3): the
   7-day grace and suspension, then full revocation at day 60, with reminder
-  emails throughout so the business can resolve it and recover.
+  emails throughout so the business can resolve it and recover. **No special
+  handling** — Ringly does not pause the deletion clock while a dispute is open,
+  does not build a dispute workflow, and contests or concedes disputes by hand in
+  the Stripe dashboard. A dispute running longer than 60 days therefore resolves
+  after the business is gone; accepted, because they are rare and the alternative
+  is machinery for an event that may never happen.
 - **F7.18** **Sales tax is collected through Stripe Tax**, configured per US
   state. Tax is Stripe's calculation, not Ringly's; Ringly stores the resulting
   amounts for reconciliation only.
