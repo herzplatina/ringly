@@ -519,11 +519,9 @@ The dashboard **reports exactly two things** — the aggregate shape of the call
 Ringly handled, and what the business has paid for them. Anything else it might
 report is deliberately absent, not merely unbuilt.
 
-It also carries the **controls** a business needs: managing its service catalogue
-(F3.1), confirming its test call (F1.12), setting its booking and recurrence
-horizons (F2.9, F5.2), reconnecting a calendar (F1.7b), and the warnings raised
-when something is wrong (F2.7). Those are actions, not reporting, and the
-two-things rule does not constrain them.
+It also carries the **controls** a business needs — the full list is F6.13 — and
+the warnings raised when something is wrong (F2.7). Those are actions, not
+reporting, and the two-things rule does not constrain them.
 
 **(1) Aggregate analysis of calls to Ringly**
 
@@ -584,13 +582,17 @@ two-things rule does not constrain them.
 **(2) Billing history**
 
 - **F6.7** Billing history is **a table, not a chart** — one row per billing
-  period: **fixed fee · billable minutes · usage charge · total · % of the $500
-  cap · date charged · status**.
+  period: **dates · fixed fee · billable minutes · usage charge · total · % of the
+  $500 cap · date charged · status**.
   - **Billable minutes** are connected minutes on productive calls (F7.6);
     enquiry-only and dropped calls consume none.
   - **Status** is paid, failed, or refunded. **"Refunded" is only ever a goodwill
     gesture made by hand** — no rule in this document produces a refund, and none
     should be built.
+  - **A period that was paused says so** (F7.11b). A row whose dates span 47 days
+    is otherwise unexplainable, and the explanation is favourable to the
+    business: it names the days it was suspended and states that none of them
+    were charged. An unlabelled long period reads like a billing error.
   - Minutes and money are different units, so nothing here is charted: a single
     plot carrying both would need two axes, which is the one construction that
     reliably misleads.
@@ -711,13 +713,28 @@ charge failed first (F7.11).
 - **F7.10a** Because cancellation arrives by email (F10.2), **the operator sets
   and clears a business's cancelled status from the operator dashboard** (F9.10).
   It is the single control that stops future charges.
-- **F7.10b** **Reactivating from suspension resumes the period where it stopped.**
-  Nothing restarts and no new fixed fee is due for it. Whatever is
-  outstanding — a failed fixed fee, an unsettled usage bill, or both — is charged
-  **on the day service is restored**, not deferred to settlement. The resumed
-  period then runs out its remaining days and settles as normal on its new last
-  day, and its usage includes everything served during the 7-day grace before
-  suspension — service given is service billed.
+- **F7.10b** **Payment clearing is the trigger; restoration is the consequence.**
+  Ringly does not charge a suspended business to bring it back — it is already
+  being charged, continuously, by the retries that never stopped (F7.11b-i).
+  **The moment nothing is outstanding, service resumes that same day**: the
+  number is rebound, the period unpauses where it stopped, and the business is
+  emailed to say its phone is answering again.
+  - **"Nothing outstanding" is the test, not "a payment arrived".** A business can
+    owe a failed fixed fee and an unsettled usage bill at once; clearing one of
+    two leaves it suspended, and the email says what remains.
+  - **It does not matter how the payment cleared** — an automatic retry, a new
+    card, or the business paying the invoice by hand. All three reach Ringly the
+    same way (EDD §2.9.5).
+  - **Nothing restarts and no new fixed fee is due.** The resumed period runs out
+    its remaining days and settles on its new last day, and its usage includes
+    everything served during the 7-day grace before suspension — service given is
+    service billed.
+- **F7.10b-i** **A business that has paid and is still not being answered is the
+  worst state in the system**, so recovery must not depend on a single message
+  arriving. If the notification of payment is lost, a **daily reconciliation**
+  finds any suspended business that owes nothing and restores it (EDD §2.9.5).
+  A lost notification may cost such a business hours; it must never cost it days,
+  and it must never cost it the account.
 - **F7.10c** **Returning from dormancy after cancellation starts a new billing
   period**, charged $100 on the day of return (F7.12e). That path settled its
   period on the way out (F7.12b), so there is nothing to resume. Whether they keep
@@ -920,7 +937,8 @@ That press charges the $100 and starts period 1; **nothing else does** (F1.12b).
 At five test calls without activating, **the number stops answering** (F1.13a).
 A business that never activates is removed entirely at day 10.
 
-**A period.** Thirty days from activation. **$100 on the first day.** Usage
+**A period.** Thirty days of _service_ from activation — longer in wall-clock
+time if it was ever paused by a suspension (F7.11b). **$100 on the first day.** Usage
 accrues across the period on **productive calls only** — a booking, a reschedule
 that booked, or a cancellation of a real appointment. Enquiries, wrong numbers
 and dropped calls cost the business nothing, and who is calling never matters.
@@ -1010,8 +1028,8 @@ delete the Stripe customer → delete Ringly's rows → write the departure reco
   deleted. **Only the periodic stats digest is optional.**
 - **F8.5** Sending is **idempotent**: the key is written before the send, so a
   retried worker can never send twice. Three key shapes, chosen per email:
-  - **per period** — at most once per business per billing period (receipts,
-    digests, cap notice);
+  - **per period** — at most once per business per billing period (the digest,
+    the upcoming-charge notice, the cap notice);
   - **per incident** — at most once per continuous failure, however many calls
     it affects (calendar outage). An outage must never produce one email per
     lost customer;
@@ -1044,23 +1062,24 @@ payment-succeeded notices are **absent by design** — they are Stripe's (F8.3a)
 and duplicating them is how a business ends up with two differently-worded
 messages from what looks like one company (F7.21).
 
-| Email                   | When                                       | Tone default                                                                                                                   |
-| ----------------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------ |
-| Email verification      | Contact email entered (F1.11)              | Functional; one link, nothing else                                                                                             |
-| Welcome / now live      | Activation completes (F1.12a)              | Welcoming; **states the number is now taking customer calls**                                                                  |
-| Upcoming charge         | Before each period's fixed fee             | Neutral; no action needed                                                                                                      |
-| Payment failed          | First decline (F7.11)                      | Calm, **leads with "your service is still running"**                                                                           |
-| Payment follow-up       | Through the grace period                   | Firmer, counts down to the date service stops                                                                                  |
-| Suspension notice       | Day 7 (F10.3)                              | Direct, **leads with "nothing has been deleted"**                                                                              |
-| Deletion warning        | 48 hours before deletion (F10.3a)          | Unambiguous; itemises exactly what is destroyed                                                                                |
-| Cap reached             | $500 reached (F7.9b)                       | **Good news** — they earned it, the rest is on Ringly                                                                          |
-| Cancellation confirmed  | Operator marks cancelled (F7.10a)          | Matter-of-fact; **states the fixed fee is not refunded** (F7.12b)                                                              |
-| Cancellation countdown  | Through the reconsideration window (F7.12) | Neutral; the date service stops, and how to revoke                                                                             |
-| Closing statement       | Cancellation window closes (F7.12c)        | Final; usage charged, fee not refunded, deletion date                                                                          |
-| Calendar access failing | Bookings being refused (F2.7)              | Urgent, explains _why_ refusing beats double-booking                                                                           |
-| Recurring change        | Occurrence shifted or skipped (F5.2b)      | Informational; **states plainly that the customer was not told**                                                               |
-| Test calls exhausted    | 5th test call, not activated (F1.13a)      | States plainly that the number has stopped answering, that they are not charged, and that activating turns it back on (F1.13b) |
-| Stats digest            | Each billing period (F8.3)                 | Light; the only unsubscribable email                                                                                           |
+| Email                   | When                                          | Tone default                                                                                                                   |
+| ----------------------- | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| Email verification      | Contact email entered (F1.11)                 | Functional; one link, nothing else                                                                                             |
+| Welcome / now live      | Activation completes (F1.12a)                 | Welcoming; **states the number is now taking customer calls**                                                                  |
+| Upcoming charge         | Before each period's fixed fee                | Neutral; no action needed                                                                                                      |
+| Payment failed          | First decline (F7.11)                         | Calm, **leads with "your service is still running"**                                                                           |
+| Payment follow-up       | Through the grace period                      | Firmer, counts down to the date service stops                                                                                  |
+| Suspension notice       | Day 7 (F10.3)                                 | Direct, **leads with "nothing has been deleted"**                                                                              |
+| **Service restored**    | Nothing outstanding after suspension (F7.10b) | **Leads with "your number is answering again"**; states the new period end date, since the period was paused (F7.11b)          |
+| Deletion warning        | 48 hours before deletion (F10.3a)             | Unambiguous; itemises exactly what is destroyed                                                                                |
+| Cap reached             | $500 reached (F7.9b)                          | **Good news** — they earned it, the rest is on Ringly                                                                          |
+| Cancellation confirmed  | Operator marks cancelled (F7.10a)             | Matter-of-fact; **states the fixed fee is not refunded** (F7.12b)                                                              |
+| Cancellation countdown  | Through the reconsideration window (F7.12)    | Neutral; the date service stops, and how to revoke                                                                             |
+| Closing statement       | Cancellation window closes (F7.12c)           | Final; usage charged, fee not refunded, deletion date                                                                          |
+| Calendar access failing | Bookings being refused (F2.7)                 | Urgent, explains _why_ refusing beats double-booking                                                                           |
+| Recurring change        | Occurrence shifted or skipped (F5.2b)         | Informational; **states plainly that the customer was not told**                                                               |
+| Test calls exhausted    | 5th test call, not activated (F1.13a)         | States plainly that the number has stopped answering, that they are not charged, and that activating turns it back on (F1.13b) |
+| Stats digest            | Each billing period (F8.3)                    | Light; the only unsubscribable email                                                                                           |
 
 **Operator-facing email**
 
@@ -1106,8 +1125,10 @@ messages from what looks like one company (F7.21).
   that business sees it, by picking the business from a **drop-down of business
   names**. This is how a support conversation gets resolved — looking at the same
   screen the person on the phone is describing.
-  - **Read-only.** Controls that belong to the business — editing services,
-    setting horizons, confirming a test call — are absent.
+  - **Read-only. Every control in F6.13 is absent**, not disabled — editing
+    services and hours, setting horizons, confirming a test call, the digest
+    opt-out, and above all **deleting a customer** (F10.1a-i), which is
+    irreversible and belongs to the business alone.
   - **Visibly a borrowed view**, banner-marked with the business's name.
   - **Not impersonation.** No business session is created and no business
     credential is used; the page renders inside `/ops` from the operator's own
@@ -1122,9 +1143,11 @@ messages from what looks like one company (F7.21).
   N8) and Google Places (one-off at onboarding, considered covered by the first
   $100). A cost line is added to this model only when something new is billed
   per business; nothing is carried here in advance of that.
-- **F9.6** **Operator alerts**: a business reaching its cap (F7.9b), and payment
-  failures. Delivered by **email** initially. _TBD: move operator alerting to
-  Slack; pending implementation._
+- **F9.6** **Operator alerts** are the set in F8.13 and no other: a business
+  reaching its cap (F7.9b, with cost-to-serve and margin), a payment failure,
+  a calendar unreachable (F2.7), an activation stuck (F1.13a), and a business
+  deleted. Delivered by **email** initially. _Moving operator alerting to Slack
+  is deferred (§1.9)._
 - **F9.7** Refreshed **daily**, and available at all times. The current period is
   computed live; history is served from pre-aggregated data.
 - **F9.8** Figures are reported **by calendar month** (June, July, August), not by
@@ -1766,6 +1789,7 @@ flowchart TB
         W3[Billing settlement]
         W4[Lifecycle sweeper]
         W5[Email dispatcher]
+        W6[Billing reconciliation]
     end
     DB --> Cold
 
@@ -2178,16 +2202,45 @@ POST /api/activate            -- the Activate button, and nothing else
   guard: contact_email_verified_at is not null
   guard: test_call_confirmed_at   is not null
   guard: a payment method is on file
-  ├─ charge $100 (period 1's fixed fee, F7.1)
-  ├─ businesses.billing_status = 'active'
-  ├─ businesses.activated_at   = now()
-  └─ insert billing_periods (seq 1, starts_at = now(), ends_at = +30d)
+  1  charge $100, Stripe idempotency key = `activate:<business_id>`  (F7.1)
+  2  in one transaction:
+       businesses.billing_status = 'active'
+       businesses.activated_at   = now()
+       insert billing_periods (seq 1, starts_at = now(), ends_at = +30d)
+       clear the unactivated_expiry deadline
+  3  BIND the Retell agent to the number    -- retried until it succeeds
+  4  email: welcome / now live
 ```
 
 **`billing_status` moves off `unbilled` here and nowhere else in onboarding.**
 No background job promotes a business, no call count trips it, no operator action
 does it. That single write is what every downstream billing decision keys
 on — including whether the call arriving a second later is a test call (F1.13c).
+
+**Step 3 is a no-op for most businesses and load-bearing for the rest.** A
+business that spent its five test calls has an **unbound** number (F1.13a), so
+activation is also the thing that brings it back — the same rebind used when a
+suspended business pays (§2.9.5). A business that never hit the limit is already
+bound and step 3 does nothing. **The handler does not branch on which:** it binds
+unconditionally, because a conditional here is a chance to get the condition
+wrong, and binding an already-bound agent costs nothing.
+
+**The order is chosen for how it fails**, because these are three systems and any
+of them can drop out mid-way:
+
+| Fails at               | Result                                                          | Why it is the tolerable failure                                                                                            |
+| ---------------------- | --------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| **1, the charge**      | Nothing happened. Button still there, business still `unbilled` | No money moved, no state changed                                                                                           |
+| **2, the local write** | Charged but not activated                                       | Recovered by the idempotency key: the business presses again, Stripe does not double-charge, and the transaction completes |
+| **3, the bind**        | Paying, activated, phone not yet answering                      | Retried in the background and raised to the operator if it will not settle. **Visible and fixable**                        |
+
+- **Charging first is the deliberate choice.** The alternative — bind, then
+  charge — leaves a live receptionist answering calls for a business that never
+  paid, which nothing in the system would ever notice. A paid business waiting
+  minutes for its number is a worse experience and a better failure.
+- **The Stripe idempotency key is what makes step 2 recoverable.** Without it, a
+  business that presses Activate after a dropped response is charged twice for
+  period 1, and no rule in this document would produce a refund for it (F6.7).
 
 ### 2.4a.2 The two ways it stops, and what the user sees
 
@@ -2725,10 +2778,6 @@ calendar.
 Where the two disagree about when a period started or how long it ran, ours wins
 and Stripe is corrected to match.
 
-**Ringly's own `billing_periods` are authoritative**; Stripe executes payments.
-Where the two disagree about when a period started or how long it ran, ours wins
-and Stripe is corrected to match.
-
 Webhooks are verified with `stripe.webhooks.constructEvent` — the vendor's own
 verifier, never hand-rolled — and every event is recorded in `billing_events`
 keyed on `stripe_event_id`, which is both the audit trail (F7.14) and the
@@ -2736,6 +2785,56 @@ idempotency key for redelivery.
 
 **Usage is written locally first** and pushed to Stripe's meter asynchronously,
 so a Stripe outage never blocks a call (N7.1).
+
+### 2.9.5 How a suspended business comes back
+
+**Ringly does not charge the business to restore it; it reacts to the payment
+clearing.** Stripe is retrying the open invoice (§2.9.3) and the business may
+also pay it or update its card at any moment. Either way the event arrives the
+same way, and **the Stripe webhook is the trigger for the whole recovery**:
+
+```
+invoice paid (webhook, signature verified)
+  ├─ record in billing_events, keyed on stripe_event_id      -- idempotent
+  ├─ is anything still outstanding for this business?
+  │     yes → stay suspended. Nothing changes                (F7.11b-i)
+  │     no  ↓
+  ├─ billing_periods: ends_at += (now − paused_at)           -- unpause (F7.11b)
+  │                   paused_seconds_total += same
+  │                   paused_at = null
+  ├─ businesses.billing_status = 'active'
+  ├─ REBIND the Retell agent to the number                   -- §2.10.1
+  ├─ resume the Stripe billing cycle, anchor moved to match
+  ├─ clear the suspended_expiry deadline                     -- §2.10
+  └─ email the business: your number is answering again      (F8, "service restored")
+```
+
+- **The check is "is anything outstanding", not "did this invoice succeed".** A
+  business can owe a failed fixed fee _and_ an unsettled usage bill (F7.10b).
+  Clearing one of two leaves it suspended, and the email says which is left.
+- **The whole handler is idempotent on `stripe_event_id`.** Webhooks redeliver;
+  unpausing twice would extend `ends_at` twice and quietly hand the business a
+  free period.
+- **Rebinding is the step the business actually notices.** Everything else is
+  bookkeeping — this is the one that makes the phone ring again, and it is
+  retried until it succeeds because a business that has paid and still has a dead
+  number is the worst state in the system.
+- **The business is told.** It was emailed when service stopped (F7.11b-i), so it
+  is emailed when service resumes; otherwise the only way to discover the phone
+  works is to try it.
+
+**A missed webhook must not strand a paid-up business**, so the daily
+reconciliation sweep is not optional: for every `suspended` business, ask Stripe
+whether anything is outstanding, and run the same recovery for any that is paid
+up. Webhooks are the fast path, not the only path.
+
+- It runs the **same function** as the webhook handler, so there is one recovery
+  implementation and one place for it to be wrong.
+- **Daily is the right cadence** because Stripe's retry schedule is measured in
+  days, and the failure it covers — a dropped webhook — is rare. A business paying
+  at 2am is restored by the webhook in seconds; the sweep is the backstop.
+- **A business found paid-up but suspended is also an operator alert.** It means
+  a webhook was lost, and one lost webhook usually means others were too.
 
 ### 2.9.4 Teardown, in order (F7.19, F10.10)
 
@@ -2887,6 +2986,18 @@ and never did. It is not a recycling mechanism for departed businesses.
 `final_warning` is a **separate deadline**, not a branch inside the deletion job,
 so that "nothing is deleted without 48 hours' notice" (F10.3a) is enforced by the
 schedule rather than by remembering to check.
+
+**`suspended_expiry` is set when suspension begins and is _not_ paused by the
+pause** (F7.11b). The billing period stops; the 60-day clock to deletion does
+not. Pausing both would mean a business that never comes back is never deleted,
+and Ringly rents its number forever. **What pauses is what the business pays for;
+what runs is what it has to act within.**
+
+**Billing reconciliation**, daily and separate from the sweeper (§2.9.5): for
+every `suspended` business, ask Stripe whether anything is outstanding and
+restore any that owes nothing. It exists because a dropped webhook must not
+strand a business that has paid (F7.10b-i), and it runs the same recovery
+function the webhook does.
 
 **Retention** (F10.8) is one rule: nothing is aged out while a business is
 active; everything goes when the relationship ends, on the clock the ending sets
@@ -3291,52 +3402,53 @@ the check that the design is complete**, and it is maintained with the design: a
 requirement added to Part 1 with no entry here is a requirement nobody has
 designed for.
 
-| Requirements                | Satisfied by                                                                        |
-| --------------------------- | ----------------------------------------------------------------------------------- |
-| F1.1–F1.9 onboarding        | §2.4a.1 steps 1–7                                                                   |
-| F1.7a–c scope decline       | §2.4a.1 steps 4–6, §2.4a.2                                                          |
-| F1.11 contact email         | 005 (`contact_email`, `contact_email_verified_at`), §2.12                           |
-| F1.12–F1.12a checklist      | §2.4a.1 steps 8–9, §2.4a.3; 005 (`test_call_confirmed_at`, `activated_at`)          |
-| F1.13–F1.13d test calls     | §2.4a.2 (inline unbind at the 5th); §2.10.1; 005 (`is_test_call`); F9.12            |
-| F2.1a disclosure            | §2.15 (appended by Ringly at provisioning, not editable)                            |
-| F2.2–F2.3a booking          | §2.5.2 steps 1–8; 005 exclusion constraint                                          |
-| F2.4 identifying an appt    | §2.5.6                                                                              |
-| F2.5, N5 timezone           | 009 `local_date`; §2.8; rollup bucketing                                            |
-| F2.6 filler                 | §2.5.1 (`speak_during_execution`)                                                   |
-| F2.7–F2.7a fail-closed      | §2.5.3 `BusyLookup`, §2.5.4 `calendar_incidents`                                    |
-| F2.8–F2.9a horizons         | §2.5.2 step 3; 005 horizon columns + bound constraint                               |
-| **F2.10–F2.11 no fallback** | **Agent prompt only — no design element, and none needed**                          |
-| F3.1–F3.6 catalogue, hours  | 006 (`sort_order`, `deactivated_at`, `service_versions`); §2.5.5 cache invalidation |
-| F4 scheduling providers     | §2.6 `SchedulingProvider`; 007                                                      |
-| F5 recurrence               | 008; §2.7 materialiser, clash **and opening-hours** handling (F5.2e)                |
-| F6.1–F6.3f analytics        | 009 `daily_business_stats`; §2.8; §2.8a composition                                 |
-| F6.5–F6.6 definitions       | 009 `outcome_rulesets` + `outcome_ruleset_version`; §2.8a definitions panel         |
-| F6.7–F6.8 billing history   | 010 `billing_periods`, `usage_records`; §2.8a table                                 |
-| F6.12 dashboard latency     | §2.8 pre-aggregation; live median bounded by range                                  |
-| F6.14 freshness             | §2.8a freshness line; 009 (nightly rollup, live median labelled as such)            |
-| F7.1–F7.14 billing          | 010; §2.9.1 state machine; §2.9.2 settlement; §2.9.3 Stripe                         |
-| **F7.11b, -i suspension**   | 010 (`paused_at`, `paused_seconds_total`); §2.9.1; §2.9.3 suspension table; §2.10.1 |
-| F7.15–F7.16 terms change    | 010 `pricing_policy` pinned per period                                              |
-| F7.17–F7.18 disputes, tax   | §2.9.3; 010 `tax_cents`                                                             |
-| F7.19, F10.10 teardown      | §2.9.4, in order                                                                    |
-| F8 email                    | §2.12; 011 `email_log`; 010 digest opt-out                                          |
-| F9 operator                 | §2.11; 011 `daily_business_economics`; §2.8a operator composition                   |
-| F10.1–F10.3b lifecycle      | 011 `lifecycle_deadlines`; §2.10 sweeper                                            |
-| **F10.1a-i, -ii deletion**  | **§2.10.2 — path 1 self-serve, path 2 by sweeper; both automated**                  |
-| F1.12a–F1.12b activation    | §2.4a.1 step 9 — one button, one `billing_status` write, nothing else               |
-| F10.4–F10.4b the number     | §2.10.1, including the reassignment chain                                           |
-| F10.5–F10.7 call content    | §2.10 (per-agent TTL) **+ the explicit 10-day-path delete, R18**                    |
-| F10.8 retention             | §2.10                                                                               |
-| F10.9 departure record      | 011 `departed_businesses`; §2.9.4 order                                             |
-| N1 isolation                | §2.3.1 `tenantScoped`, RLS, isolation tests                                         |
-| N2 scale                    | §2.3.2 index layout; §2.8 pre-aggregation                                           |
-| N3 latency                  | §2.5.1 budget; §2.5.5 cache                                                         |
-| N4 serving cost             | §2.13                                                                               |
-| N6 security                 | §2.14                                                                               |
-| N7 dependencies             | §2.5.3, §2.5.4, §2.9.3 (usage written locally first)                                |
-| **N8 hosting portability**  | **§2.2a — workers as HTTP endpoints**                                               |
-| **N9 cost control**         | **§2.14 — deliberately small, sized for the expected volume**                       |
-| **N10 durability**          | **§2.14.1 — PITR + cross-region; third copy deferred (§1.9, R22)**                  |
+| Requirements                   | Satisfied by                                                                        |
+| ------------------------------ | ----------------------------------------------------------------------------------- |
+| F1.1–F1.9 onboarding           | §2.4a.1 steps 1–7                                                                   |
+| F1.7a–c scope decline          | §2.4a.1 steps 4–6, §2.4a.2                                                          |
+| F1.11 contact email            | 005 (`contact_email`, `contact_email_verified_at`), §2.12                           |
+| F1.12–F1.12a checklist         | §2.4a.1 steps 8–9, §2.4a.3; 005 (`test_call_confirmed_at`, `activated_at`)          |
+| F1.13–F1.13d test calls        | §2.4a.2 (inline unbind at the 5th); §2.10.1; 005 (`is_test_call`); F9.12            |
+| F2.1a disclosure               | §2.15 (appended by Ringly at provisioning, not editable)                            |
+| F2.2–F2.3a booking             | §2.5.2 steps 1–8; 005 exclusion constraint                                          |
+| F2.4 identifying an appt       | §2.5.6                                                                              |
+| F2.5, N5 timezone              | 009 `local_date`; §2.8; rollup bucketing                                            |
+| F2.6 filler                    | §2.5.1 (`speak_during_execution`)                                                   |
+| F2.7–F2.7a fail-closed         | §2.5.3 `BusyLookup`, §2.5.4 `calendar_incidents`                                    |
+| F2.8–F2.9a horizons            | §2.5.2 step 3; 005 horizon columns + bound constraint                               |
+| **F2.10–F2.11 no fallback**    | **Agent prompt only — no design element, and none needed**                          |
+| F3.1–F3.6 catalogue, hours     | 006 (`sort_order`, `deactivated_at`, `service_versions`); §2.5.5 cache invalidation |
+| F4 scheduling providers        | §2.6 `SchedulingProvider`; 007                                                      |
+| F5 recurrence                  | 008; §2.7 materialiser, clash **and opening-hours** handling (F5.2e)                |
+| F6.1–F6.3f analytics           | 009 `daily_business_stats`; §2.8; §2.8a composition                                 |
+| F6.5–F6.6 definitions          | 009 `outcome_rulesets` + `outcome_ruleset_version`; §2.8a definitions panel         |
+| F6.7–F6.8 billing history      | 010 `billing_periods`, `usage_records`; §2.8a table                                 |
+| F6.12 dashboard latency        | §2.8 pre-aggregation; live median bounded by range                                  |
+| F6.14 freshness                | §2.8a freshness line; 009 (nightly rollup, live median labelled as such)            |
+| F7.1–F7.14 billing             | 010; §2.9.1 state machine; §2.9.2 settlement; §2.9.3 Stripe                         |
+| **F7.11b, -i, -ii suspension** | 010 (`paused_at`, `paused_seconds_total`); §2.9.1; §2.9.3 suspension table; §2.10.1 |
+| **F7.10b, -i recovery**        | **§2.9.5 — webhook-driven, plus the daily reconciliation backstop**                 |
+| F7.15–F7.16 terms change       | 010 `pricing_policy` pinned per period                                              |
+| F7.17–F7.18 disputes, tax      | §2.9.3; 010 `tax_cents`                                                             |
+| F7.19, F10.10 teardown         | §2.9.4, in order                                                                    |
+| F8 email                       | §2.12; 011 `email_log`; 010 digest opt-out                                          |
+| F9 operator                    | §2.11; 011 `daily_business_economics`; §2.8a operator composition                   |
+| F10.1–F10.3b lifecycle         | 011 `lifecycle_deadlines`; §2.10 sweeper                                            |
+| **F10.1a-i, -ii deletion**     | **§2.10.2 — path 1 self-serve, path 2 by sweeper; both automated**                  |
+| F1.12a–F1.12b activation       | §2.4a.1 step 9 — one button, one `billing_status` write, nothing else               |
+| F10.4–F10.4b the number        | §2.10.1, including the reassignment chain                                           |
+| F10.5–F10.7 call content       | §2.10 (per-agent TTL) **+ the explicit 10-day-path delete, R18**                    |
+| F10.8 retention                | §2.10                                                                               |
+| F10.9 departure record         | 011 `departed_businesses`; §2.9.4 order                                             |
+| N1 isolation                   | §2.3.1 `tenantScoped`, RLS, isolation tests                                         |
+| N2 scale                       | §2.3.2 index layout; §2.8 pre-aggregation                                           |
+| N3 latency                     | §2.5.1 budget; §2.5.5 cache                                                         |
+| N4 serving cost                | §2.13                                                                               |
+| N6 security                    | §2.14                                                                               |
+| N7 dependencies                | §2.5.3, §2.5.4, §2.9.3 (usage written locally first)                                |
+| **N8 hosting portability**     | **§2.2a — workers as HTTP endpoints**                                               |
+| **N9 cost control**            | **§2.14 — deliberately small, sized for the expected volume**                       |
+| **N10 durability**             | **§2.14.1 — PITR + cross-region; third copy deferred (§1.9, R22)**                  |
 
 **The one row carrying no design element is deliberate:** F2.10–F2.11 are prompt
 behaviour, with nothing to build and nothing to store.
