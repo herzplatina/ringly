@@ -1563,8 +1563,9 @@ interface SchedulingProvider {
 - **Every implementation must honour the signal and the budget.** A provider that
   cannot answer in time returns `{ ok: false, reason: "timed_out" }`. Slow is
   failed (N3.1).
-- **Retention is set explicitly at provisioning** — 30 days for recordings, at
-  least 30 for transcripts (F10.6) — never inherited from a default.
+
+> Note: transcript and recording retention belongs to **Retell**, the telephony
+> provider, not to the scheduling provider — see §2.10.
 
 ## 2.7 Recurrence
 
@@ -1654,6 +1655,12 @@ these are three plots, not two scales on one.
 charge · total · % of cap · charged on · status. Deliberately unplotted: minutes
 and money are different units, and one plot carrying both needs two axes.
 
+**Controls that live on the dashboard, not among the reporting** (F6.13):
+confirming the test call during onboarding, setting the booking and recurrence
+horizons, reconnecting a calendar after a failure (F1.7b), and managing the
+service catalogue (F3.1). They are actions, and the two-things rule constrains
+what the dashboard _reports_, not what it lets a business do.
+
 ### Operator dashboard
 
 **Filters — one row**
@@ -1708,16 +1715,23 @@ real money. Modelled explicitly rather than inferred from timestamps.
 
 ### 2.9.1 Business billing states
 
-```
-        ┌──────────── activate (F1.12) ─────────────┐
-        │                                            ▼
-  unbilled                                        active ──── cancel request ───▶ cancelling
-        ▲                                       │     ▲                              │
-        │                          charge fails │     │ pays                         │ window closes
-        │                                       ▼     │                              ▼
-        └──── (never activated: deleted d10) ── grace ─┴──── suspended ──────▶ dormant
-                                                  │ d7            │ d60            │ d60
-                                                  └───────────────┴────────────────┴──▶ deleted
+```mermaid
+stateDiagram-v2
+    [*] --> unbilled: onboarding
+    unbilled --> active: test call confirmed (F1.12)
+    unbilled --> [*]: day 10, never activated (F10.1)
+
+    active --> grace: a charge fails
+    grace --> active: pays — outstanding taken that day (F7.10b)
+    grace --> suspended: day 7 (F10.3)
+    suspended --> active: pays
+    suspended --> [*]: day 60, deleted
+
+    active --> cancelling: cancellation request (F7.12)
+    cancelling --> active: revoked — window usage becomes billable (F7.12a)
+    cancelling --> dormant: window closes, period settled (F7.12b)
+    dormant --> active: returns, on a new period (F7.12e)
+    dormant --> [*]: day 60, deleted
 ```
 
 | State        | Calls answered? | Usage billed? | Exit                                                       |
@@ -1755,7 +1769,9 @@ sum(usage_records.quantity_seconds for the period)   -- seconds, not minutes
   → × pricing_policy.per_minute_cents                -- the pinned version
   → total = fixed_fee + usage
   → clamp total to pricing_policy.cap_cents          -- $500 incl. fee (F7.9)
-  → charge the difference, or record it owed if the charge fails (F7.12f)
+  → charge (clamped_total − fixed_fee already taken in advance)
+  → if that charge fails, record it owed (F7.12f) — do not retry a departed
+    business, there is nothing left to withhold
 ```
 
 Usage past the cap is **recorded in full and charged short**: Ringly needs the
@@ -1924,17 +1940,19 @@ because Retell requires a signed BAA that Ringly does not hold (§1.4).
 The parts of the shipped system this design contradicts, so none of it is
 discovered late:
 
-| Today                                                                                                         | Must become                                                             |
-| ------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
-| `getCalendarBusyIntervals` returns `[]` on failure                                                            | Returns `BusyLookup`; booking refuses on failure (R1, F2.7)             |
-| Booking proceeds when the calendar is unreadable                                                              | Refuses, apologises, opens an incident                                  |
-| Webhooks use `createServiceClient` directly                                                                   | Only through `tenantScoped` (N1.2)                                      |
-| `reminders` table, WhatsApp consent columns, `record_whatsapp_consent` tool, consent step in the agent prompt | **Deleted** — and removing the consent step shortens every booking call |
-| Agent greeting has no recording disclosure                                                                    | Disclosure appended by Ringly, not editable (F2.1a)                     |
-| `business_type` includes `clinic`                                                                             | Removed (§1.4)                                                          |
-| `calls` has no duration, end reason, or billability                                                           | Captured at post-call (F6, F7.6)                                        |
-| `(business_id, starts_at)` unique index                                                                       | Range exclusion constraint (§2.4/005)                                   |
-| Agent answers with no booking-horizon or opening-hours check                                                  | Enforces both (F2.8, F2.9)                                              |
+| Today                                                                                                         | Must become                                                                                        |
+| ------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `getCalendarBusyIntervals` returns `[]` on failure                                                            | Returns `BusyLookup`; booking refuses on failure (R1, F2.7)                                        |
+| Booking proceeds when the calendar is unreadable                                                              | Refuses, apologises, opens an incident                                                             |
+| Webhooks use `createServiceClient` directly                                                                   | Only through `tenantScoped` (N1.2)                                                                 |
+| `reminders` table, WhatsApp consent columns, `record_whatsapp_consent` tool, consent step in the agent prompt | **Deleted** — and removing the consent step shortens every booking call                            |
+| Agent greeting has no recording disclosure                                                                    | Disclosure appended by Ringly, not editable (F2.1a)                                                |
+| `business_type` includes `clinic`                                                                             | Removed (§1.4)                                                                                     |
+| `calls` has no duration, end reason, or billability                                                           | Captured at post-call (F6, F7.6)                                                                   |
+| `(business_id, starts_at)` unique index                                                                       | Range exclusion constraint (§2.4/005)                                                              |
+| Agent answers with no booking-horizon or opening-hours check                                                  | Enforces both (F2.8, F2.9)                                                                         |
+| `/api/calls/[callId]/transcript` serves transcripts to the business dashboard                                 | **Deleted** — a business cannot read call content (F6.9); the operator uses Retell's own dashboard |
+| Nothing stops a suspended business's number from answering                                                    | Suspension must actually withdraw service (§2.10.1)                                                |
 
 ## 2.16 Delivery plan
 
