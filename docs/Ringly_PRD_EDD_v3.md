@@ -1312,10 +1312,19 @@ implementation, never hand-rolled.
   fix** — `getCalendarBusyIntervals` must distinguish "no busy intervals" from
   "could not determine busy intervals", and the booking path must refuse on the
   latter. Phase 1.
-- **R2 — Refresh-token expiry.** While the Google app is in _Testing_, refresh
-  tokens are revoked after 7 days, which triggers R1 for every tenant. Production
-  publishing and verification are prerequisites for launch, and verification for
-  a sensitive scope takes weeks.
+- **R2 — LAUNCH BLOCKER: Google OAuth verification is not done.** While the app
+  is in _Testing_, Google revokes refresh tokens after **7 days**. Combined with
+  a mandatory calendar (F4.1) and fail-closed booking (F2.7), that means **every
+  business stops taking bookings one week after signing up**, permanently, until
+  it re-consents. This is no longer a degradation — it is the product ceasing to
+  work for every customer on a 7-day timer.
+
+  Ringly **cannot launch to a single paying business** before sensitive-scope
+  verification completes, and that review runs for **weeks**. Submitting it is
+  independent of every engineering phase and should not wait on any of them.
+
+  _Owner: Shipra. Target: weekend of 2026-08-01. **Status: not started.**_
+
 - **R3 — Cross-tenant leakage via service role.** Mitigated by §2.2; must be
   test-enforced (N1.2).
 - **R4 — Migration risk.** 005's exclusion constraint fails to apply if any
