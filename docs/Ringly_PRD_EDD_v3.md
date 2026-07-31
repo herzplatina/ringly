@@ -954,6 +954,21 @@ charge failed first (F7.11).
   days (F10.3). There is no case of a business returning to find three periods
   stacked up behind it.
 
+  **The debt clears first; the new period's fee is charged after.** These are two
+  separate movements on the same day and the order is not cosmetic: restoration
+  is triggered by owing nothing (F7.10b), so the new period cannot exist until
+  the old debt is settled. A business paying its way out of suspension on a day
+  when a new period opens is therefore charged **twice that day** — what it owed,
+  then $100 — and both appear separately in its billing history (F6.7).
+
+- **F7.11b-iv** **If the new period's $100 fails, that is a fresh failure with a
+  fresh clock.** The old grace clock ended the moment the debt cleared; a decline
+  on the new period starts a new 7-day grace from that day (F7.11), not a
+  continuation of the one just closed. A business is never carried straight from
+  suspension back into suspension without the full grace it is owed — and the
+  60-day deletion clock restarts with it, because the previous one expired when
+  the account was restored.
+
 - **F7.11c** **Grace is the opposite, and deliberately so.** In `grace` the
   business is still being served, so the period runs normally: it ends on time,
   settles, and the next period opens with its $100 attempted like any other
@@ -976,30 +991,43 @@ charge failed first (F7.11).
   **Case (a) — the $100 fixed fee fails.** Charged on **day 1** of period _N_, so
   the failure is at the very start of a period nobody has paid for.
 
-  |                                          |                                                                                                                                                   |
-  | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-  | Day 1                                    | $100 invoiced, declined. Grace starts                                                                                                             |
-  | Days 1–8                                 | Served. Period _N_ runs normally, usage accrues and is billable (F7.11c)                                                                          |
-  | Day 8                                    | **Suspended.** Period _N_ keeps running; the business is simply not being served                                                                  |
-  | Outstanding                              | One invoice: the $100 for period _N_                                                                                                              |
-  | **Pay on day 20**                        | Service resumes that day **inside period _N_**, which still ends on **day 30**. Nothing new is charged. They paid $100 and received 18 of 30 days |
-  | **Day 30 arrives while still suspended** | Period _N_ **settles on time** for the 7 days of usage, clamped. **No period _N+1_ opens** (F7.11b)                                               |
-  | **Pay on day 45**                        | Period _N_ is over, so **a new period opens on day 45** with its own $100 (F7.10c). Period _N_ stays settled as it was                            |
-  | Never pay                                | At day 60 from the failure: debt is period _N_'s 7 days of usage **plus** its unpaid $100, clamped (F7.9a)                                        |
+  |                                                   |                                                                                                                                                                            |
+  | ------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+  | Day 1                                             | $100 invoiced, declined. Grace starts                                                                                                                                      |
+  | Days 1–8                                          | Served. Period _N_ runs normally, usage accrues and is billable (F7.11c)                                                                                                   |
+  | Day 8                                             | **Suspended.** Period _N_ keeps running; the business is simply not being served                                                                                           |
+  | **Pay on day 20** — owes **$100**                 | That is the only invoice raised so far; _N_'s usage is not settled until day 30. Service resumes **inside _N_**, which still ends day 30. **Nothing else is charged then** |
+  | └ then day 30                                     | _N_ settles as normal, for **days 1–8 _and_ 20–30** of usage — everything served, whenever it was served                                                                   |
+  | **Day 30 while still suspended**                  | _N_ **settles on time** for its 7 days of usage (days 1–8), clamped, and that invoice joins the debt. **No _N+1_ opens** (F7.11b)                                          |
+  | **Pay on day 45** — owes **$100 + 7 days' usage** | Both invoices must clear. _N_ is over, so **a new period opens day 45** and **its own $100 is charged then**, after the debt clears (F7.10c)                               |
+  | Never pay                                         | Deleted at day 60 from the failure. Debt = the $100 **plus** the 7 days of usage, clamped (F7.9a)                                                                          |
 
   **Case (b) — the usage settlement fails.** Charged on the **last day** of period
   _N_, so period _N_ is already over. **Suspension lands in period _N+1_.**
 
-  |                   |                                                                                                                                                                                                                                               |
-  | ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-  | Day 30 of _N_     | Usage settled and invoiced; declined. Grace starts. **Period _N_ is closed** — `usage_settled_at` is set and it never reopens (F7.16)                                                                                                         |
-  | Day 31            | **Period _N+1_ opens on schedule**, its $100 attempted like any other charge (F7.11c). Against a card that just failed it will usually fail too                                                                                               |
-  | Days 31–37        | Served. Period _N+1_ runs and accrues usage                                                                                                                                                                                                   |
-  | Day 37            | **Suspended.** _N+1_ keeps running; _N_ is untouched, a settled period being immutable                                                                                                                                                        |
-  | Outstanding       | **Two invoices**: _N_'s usage and _N+1_'s $100                                                                                                                                                                                                |
-  | **Pay on day 45** | **Both must clear** — clearing one leaves them suspended (F7.10b). Service resumes that day **inside _N+1_**, which still ends on its original day 60. They received 7 days before suspension and 15 after, for the $100 they eventually paid |
-  | **Pay on day 70** | _N+1_ ended on day 60 while suspended and settled then for its 7 days of usage. So **a new period opens on day 70** with its own $100 (F7.10c)                                                                                                |
-  | Never pay         | At day 60 from the failure: debt is _N_'s usage **plus** _N+1_'s $100 **plus** _N+1_'s partial usage, each period clamped separately                                                                                                          |
+  |                                                                          |                                                                                                                                                                   |
+  | ------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+  | Day 30 of _N_                                                            | Usage settled and invoiced; declined. Grace starts. **Period _N_ is closed** — `usage_settled_at` is set and it never reopens (F7.16)                             |
+  | Day 31                                                                   | **Period _N+1_ opens on schedule**, its $100 attempted like any other charge (F7.11c). Against a card that just failed it will usually fail too                   |
+  | Days 31–37                                                               | **Served — this is grace, inside _N+1_.** Usage accrues to _N+1_ and **is billable** (F7.11c). These seven days matter later                                      |
+  | Day 37                                                                   | **Suspended.** _N+1_ keeps running; _N_ is untouched, a settled period being immutable                                                                            |
+  | **Pay on day 45** — owes **_N_'s usage + _N+1_'s $100**                  | Both must clear; clearing one leaves them suspended (F7.10b). Service resumes **inside _N+1_**, which still ends day 60. **Nothing else charged then**            |
+  | └ then day 60                                                            | _N+1_ settles for **days 31–37 _and_ 45–60** — about **22 days** of usage, not 15. The grace days belong to _N+1_ and were billable when they were served         |
+  | **Pay on day 70** — owes **_N_'s usage + _N+1_'s $100 + _N+1_'s 7 days** | _N+1_ ended day 60 while suspended and **settled then** for its grace usage, so that invoice is in the debt too. A new period opens day 70, **$100 charged then** |
+  | Never pay                                                                | Deleted at day 90 (60 days from the day-30 failure). Debt = _N_'s usage **+** _N+1_'s $100 **+** _N+1_'s 7 days, each period clamped separately                   |
+
+  **Two things about case (b) are easy to get wrong, and both concern period
+  _N+1_'s seven grace days:**
+
+  - **They are billable, so _N+1_'s settlement is bigger than the days after
+    restore.** Paying on day 45 buys 15 more days of service, but the bill on day
+    60 covers 22 — the seven served during grace are service given, and service
+    given is service billed (F7.11c).
+  - **_N+1_ is never a period "the business did not use".** It served seven days
+    before suspension, so its $100 is owed whatever happens next, and it does not
+    fall away because the business happened to return after the period closed
+    rather than before. Combined with F7.11e, **that $100 is owed in full on both
+    the day-45 and the day-70 paths.**
 
   **The shape both cases share:** paying inside the period resumes it without a
   new charge and without giving the lost days back; paying after it has ended
