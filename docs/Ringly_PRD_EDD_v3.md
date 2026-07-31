@@ -86,6 +86,17 @@ _(Carried from v2; renumbered. v2 FR1–FR10 map to F1.1–F1.10.)_
 - **F1.6** Enrichment resolves in a single request.
 - **F1.7** A single Google OAuth grants the Ringly session and offline calendar
   access; the account is keyed to the Google identity.
+- **F1.7a** **Calendar scope may be declined independently of sign-in.** Google
+  offers granular consent, so a user can grant sign-in and refuse calendar in the
+  same dialog. Ringly checks the scopes actually granted rather than assuming.
+- **F1.7b** **Declining calendar access blocks activation, not the account.**
+  Sign-in completes and the enriched draft is kept, so declining costs a click
+  rather than the work already done. Onboarding stops at a screen that
+  **explains, in plain language, why calendar access is required** — Ringly
+  refuses to book a time it cannot verify (F2.7), so without it there is no
+  product — and offers a re-consent button.
+- **F1.7c** The reason for every scope Ringly requests is stated on the consent
+  screen **before** the user is sent to Google, not only after they decline.
 - **F1.8** The user is told their Google login is now their Ringly login.
 - **F1.9** Number purchase and agent provisioning run in the background.
 - **F1.10** No WhatsApp UI in onboarding.
@@ -399,6 +410,33 @@ period _n+1_ begins 30 days after period _n_.
 - **F7.18** **Sales tax is collected through Stripe Tax**, configured per US
   state. Tax is Stripe's calculation, not Ringly's; Ringly stores the resulting
   amounts for reconciliation only.
+- **F7.19** **Deleting a business tears down its payment provider state, in
+  order**: cancel the subscription → void any open invoices → detach the payment
+  method → delete the customer. Only then are Ringly's own rows removed.
+  Deleting Ringly's rows first destroys the identifier every one of those steps
+  needs, leaving a saved card on file belonging to nobody.
+- **F7.20** **The division of responsibility with the payment provider is
+  explicit, and nothing is done twice.** Where both could act, exactly one does:
+
+  | Function                                                                   | Owner                                     |
+  | -------------------------------------------------------------------------- | ----------------------------------------- |
+  | Tax calculation                                                            | **Stripe** — Ringly stores the amounts    |
+  | Invoices, receipts, payment-succeeded email                                | **Stripe**, carrying Ringly branding      |
+  | Retrying failed payments                                                   | **Stripe** — Ringly builds no retry loop  |
+  | Every failure-path email (failed, reminders, suspension, deletion warning) | **Ringly**                                |
+  | Proration and the $500 cap                                                 | **Ringly** computes, Stripe executes      |
+  | Refunds                                                                    | **Ringly** computes, Stripe executes      |
+  | End-of-dunning behaviour and teardown                                      | **Ringly** (F7.19)                        |
+  | Billing thresholds                                                         | **Neither** — deliberately not configured |
+  | Self-service cancellation portal                                           | **Disabled** (§1.9)                       |
+
+- **F7.21** **The failure path is Ringly's because only Ringly knows the
+  consequence.** Stripe's dunning email can say a card was declined; it cannot
+  say service continues for seven days, that nothing has been deleted yet, or
+  what exactly is destroyed in 48 hours — those are Ringly's timelines and
+  Ringly's data. Stripe's own dunning and receipt-on-failure emails are therefore
+  **switched off**, or a business receives two differently-worded messages from
+  what appears to be one company.
 
 - **F7.15** **The commercial terms are expected to change** once real usage is
   observed. The fixed fee, the cap, the per-unit rates, and **the definition of a
@@ -429,6 +467,10 @@ period _n+1_ begins 30 days after period _n_.
   (`src/emails/`). They are reviewed in pull requests like any other code, so a
   change to what a customer reads goes through the same scrutiny as a change to
   what the code does. No hosted template editor, no copy living in a vendor UI.
+- **F8.3a** **Ringly does not send the success path.** Receipts, invoices and
+  payment-succeeded notices are **Stripe's**, carrying Ringly branding (F7.20).
+  Ringly sends no email that Stripe already sends well — the split is by who
+  knows the consequence, not by who could technically send it (F7.21).
 - **F8.4** **Transactional email cannot be unsubscribed from.** A business
   cannot opt out of being told its payment failed or its data is about to be
   deleted. **Only the periodic stats digest is optional.**
@@ -537,6 +579,10 @@ period _n+1_ begins 30 days after period _n_.
   after **10 days**, and may place at most **10 test calls** before activation.
   Both exist because an unactivated business is pure cost — a rented number and
   live call minutes against no revenue.
+- **F10.1a** **A consumer has no direct route to Ringly.** A caller wanting
+  their data removed asks the business, which asks Ringly (F10.2). Ringly has no
+  relationship with the caller and offers them no interface. Not a priority, and
+  no mechanism exists in v3 for a business to delete a single customer.
 - **F10.2** **Cancellation is not self-serve in v3.** All business-initiated
   account actions — cancellation, deletion, reactivation — go through Ringly's
   **official contact email address**, which is the single supported channel.
@@ -575,29 +621,34 @@ period _n+1_ begins 30 days after period _n_.
   **call content older than 30 days is not retrievable** — by the business or by
   Ringly. Any requirement that depends on older call content must be read against
   this limit.
-- **F10.8** **Retention of Ringly's own data**, by what it is rather than by
-  table:
-  - **Caller identity is removed after 30 days.** The caller's phone number on a
-    call record is the only consumer PII Ringly holds beyond an active
-    relationship, and it does not survive the month.
-  - **Appointments and customer records live for as long as the business is
-    active**, and are deleted with everything else 30 days after the business
-    ends (F10.3). A business's booking history is the record of its own trade;
-    ageing it out would damage the customer, not protect them.
-  - **Money records are never aged out** while a business is active. Invoices
-    must remain reproducible (F7.16) and disputes arrive late.
-  - **Aggregates are kept indefinitely.** They contain no personal data and are
-    what the dashboard reads once the underlying rows are gone.
+- **F10.8** **Retention of Ringly's own data: everything lives as long as the
+  business does.** Ringly does not age out any table while a business is active.
+  Call records, customers, appointments, usage, costs and money records are all
+  needed by the business dashboard, the operator dashboard, and invoice
+  reconciliation — all of which look back over months, not days.
+  - The **only** thing on a 30-day clock is what Ringly does **not** store:
+    transcripts and recordings, held by the telephony provider (F10.6).
+  - Everything Ringly holds is destroyed **30 days after the relationship ends**
+    (F10.3), **however it ended** — non-payment or a clean cancellation alike.
+  - There is no partial or rolling deletion, and no field-level expiry.
+- **F10.9** **A departed business leaves a permanent financial record.** When a
+  business is deleted, Ringly retains, indefinitely and outside the purge:
+  - the business's **id and name**;
+  - the **date it joined and the date it left**, and how it ended;
+  - the **amount it still owed** at departure;
+  - the **lifetime net revenue** Ringly earned from it, **after payment-processor
+    fees**.
 
-  > **Mechanism note.** "Caller identity is removed" is implemented by **clearing
-  > `calls.from_number`, not by deleting the call row.** Deleting rows would
-  > orphan or cascade into `usage_records` and `cost_records`, which reference
-  > them — taking billing evidence and cost attribution with it, inside the very
-  > window a business is most likely to query an invoice. The row survives
-  > without a number; the personal data does not survive at all. If the intent is
-  > instead that the whole row must go, `usage_records.call_id` and
-  > `cost_records.call_id` must become nullable with `on delete set null`, and
-  > invoice queries must stop depending on them.
+  This record contains **business identity and money only — never consumer data**.
+  No caller names, no phone numbers, no appointments. It exists so Ringly can
+  answer "what did this customer earn us, and what did they leave owing" years
+  later, and must not become a way for customer records to survive deletion.
+
+- **F10.10** **The financial record is captured before teardown begins.** Net
+  revenue is derived from payment-processor records that the teardown deletes, so
+  the order is fixed: **capture the totals → tear down the payment provider
+  (F7.19) → delete Ringly's rows → write the record.** Reversing any of these
+  loses the number permanently.
 
 ---
 
@@ -779,6 +830,11 @@ the buckets below.
   - Does the business get an export of their data before day-30 deletion?
   - Can a suspended business self-serve reactivate, or does that stay manual?
 - **Operator alerting via Slack**, replacing email (F9.6).
+- **Stripe's own customer portal as the cancellation route.** It would give
+  businesses self-service cancellation and payment-method updates without Ringly
+  building either. Deliberately **disabled in v3** because it would bypass the
+  email-only flow (F10.2) and let a business cancel without the operator seeing
+  it — which is currently the only thing preventing cap-cycling (F7.9).
 
 ### Later — no near-term plan
 
@@ -1144,17 +1200,26 @@ from `business_type`.
 **Not stored anywhere:** card details (Stripe only), call recordings and
 transcripts (Retell only, 30-day retention), call audio of any kind.
 
-**Retention, decided (F10.8):** only three places hold consumer PII —
-`customers`, `calls.from_number`, and `appointments` by association.
-`calls.from_number` is **cleared after 30 days**; `customers` and `appointments`
-live while the business is active and are destroyed 30 days after it ends
-(F10.3). Money tables and aggregates are never aged out. Everything else is
-business configuration and follows the business.
+**Retention, decided (F10.8):** nothing is aged out while a business is active.
+Every table above lives for the life of the relationship and is destroyed 30 days
+after it ends, however it ended. The only 30-day clock is on what Ringly does
+_not_ store — transcripts and recordings, held by Retell.
 
-**One accuracy consequence.** Unique-caller counts beyond 30 days come from the
-daily rollup, and a caller who rang on two different days counts twice in a
-monthly total. Exact monthly unique callers would need the numbers retained,
-which is the thing being deliberately given up.
+**Two additions to the list:**
+
+- `departed_businesses(business_id, name, joined_at, left_at, ended_by, owed_at_departure_cents, lifetime_net_revenue_cents)` —
+  survives the purge (F10.9). Business identity and money only; **no consumer
+  data**, and the schema must keep it that way.
+- `usage_records.call_id` and `cost_records.call_id` can stay non-nullable, since
+  calls now outlive every period they are billed in. The earlier concern about
+  orphaning billing evidence disappears with the TTL that caused it.
+
+**Scale consequence.** Keeping everything means the largest tables grow without
+bound for a long-lived tenant: at the §1.7 target, `calls` accrues on the order
+of 24M rows a year across the platform. This does not threaten correctness, but
+it is why §2.2 keeps monthly range partitioning available and why the dashboard
+reads rollups (§2.8) rather than raw rows — retention is no longer what protects
+dashboard latency, so the rollups now carry that load alone.
 
 ## 2.9 Billing (F7)
 
@@ -1180,24 +1245,24 @@ Usage is written locally to `usage_records` first — the source of truth for ou
 own reporting and unit economics (N4.4) — and pushed to Stripe's meters
 asynchronously, so a Stripe outage never blocks a call.
 
-**Using Stripe's dunning requires three settings, or it fights our timeline.**
-Retries are Stripe's (F7.11) — we do not build a retry loop — but Stripe's
-defaults do not match F10.3:
+**Stripe configuration, exhaustively (F7.20).** Every setting below exists to
+stop both systems acting on the same thing:
 
-1. **Retry schedule must span the full 30 days.** Stripe's default Smart Retries
-   give up well before day 30, after which it would stop trying while our
-   requirement says keep trying to the boundary.
-2. **End-of-dunning behaviour must be "leave the subscription alone."** Stripe
-   can cancel or mark unpaid when retries are exhausted; either would end the
-   relationship on Stripe's schedule rather than ours. Deletion at day 30 is
-   Ringly's decision, driven by `billing_periods`, not Stripe's.
-3. **Stripe's own customer emails must be off.** Stripe will otherwise send its
-   dunning notices alongside ours (F8.2), so a business receives two
-   differently-worded payment-failure emails from what appears to be the same
-   company.
+| Setting                        | Value                        | Why                                                              |
+| ------------------------------ | ---------------------------- | ---------------------------------------------------------------- |
+| Smart Retries schedule         | Spans the full 30 days       | Default gives up well before the deletion boundary               |
+| End-of-dunning behaviour       | Leave the subscription alone | Otherwise Stripe ends the relationship on its schedule, not ours |
+| Dunning emails                 | **Off**                      | Ringly owns the whole failure path (F7.21)                       |
+| Receipts and payment-succeeded | **On**, Ringly-branded       | Stripe knows everything these need; Ringly sends none            |
+| `proration_behavior`           | `none`                       | Stripe prorates by the second and cannot enforce the cap         |
+| Billing thresholds             | **Not configured**           | Would invoice early, alongside our own cap logic                 |
+| Customer portal                | **Disabled**                 | Would let a business self-cancel, bypassing F10.2                |
+| Branding                       | Logo, colours, business name | So Stripe-sent mail reads as Ringly                              |
 
 The **48-hour final warning (F10.3a) is always ours** — Stripe has no concept of
-the deletion that follows, so it cannot be delegated.
+the deletion that follows, so it cannot be delegated. Nor can the suspension
+notice, the grace-period reminders, or the first failure notice: each states a
+Ringly-specific consequence on a Ringly-specific timeline (F7.21).
 
 **Why we do not use Stripe's proration.** Stripe prorates by the second, credits
 the customer balance rather than the card unless told otherwise, and — decisively
