@@ -293,16 +293,30 @@ two-things rule does not constrain them.
 - **F6.2** Reported for **both** groupings, side by side:
   - each **calendar month** (June, July, August) — how a business thinks; and
   - each **30-day billing period** — how they are charged.
-- **F6.3** The figures are:
-  - calls received, and unique callers;
-  - call time-of-day distribution;
-  - average and median call duration;
-  - outcome breakdown as counts and percentages: **booked / rescheduled /
+- **F6.3** **Aggregate figures**, for the whole business:
+  - **total calls** and **total call duration**;
+  - **time-of-day distribution** of calls — shown wherever an aggregate call
+    count is shown, because it is the one figure that tells a business _when_ it
+    is missing people;
+  - **outcome breakdown** as counts and percentages: **booked / rescheduled /
     cancelled / enquiry-only / dropped**;
-  - appointments booked, and revenue booked. Revenue for **future**
-    appointments is an **estimate**, labelled as such: price resolves at
-    occurrence time (F3.4), so it can still change before the appointment
-    happens.
+  - **appointments booked, rescheduled and cancelled**;
+  - **revenue booked** — an **estimate** for future appointments, labelled as
+    such, because price resolves at occurrence time (F3.4);
+  - **what the business paid Ringly** in the period.
+- **F6.3a** **Averages across customers:** calls per customer, and call duration
+  per customer, over the same period.
+- **F6.3b** **Per-customer figures:** for each of the business's own customers,
+  how many times they called and for how long. A business may see this because
+  they are **its own customers** — the aggregate-only restriction (F6.9) is about
+  call _content_, never about who called.
+  - Calls from numbers Ringly cannot match to a customer — withheld caller ID, a
+    wrong number, a first-time enquirer who never booked — are counted in the
+    aggregates and reported as **unattributed**, never guessed at.
+- **F6.3c** **Enquiry-only and dropped are counted separately**, on this
+  dashboard and the operator's, even though neither is billable (F7.6). Collapsing
+  them would hide the difference between an agent that answers questions well but
+  does not convert, and one that is failing callers outright.
 - **F6.4** **"Dropped"** covers both a caller who hung up without a resolved
   outcome **and** a call the agent could not help with. If the caller did not get
   what they rang for, it is dropped. A completed enquiry — the caller asked
@@ -329,10 +343,11 @@ two-things rule does not constrain them.
 
 **Everything else**
 
-- **F6.9** The dashboard is **aggregate-only for calls**. A business cannot read
-  individual transcripts, listen to recordings, or search call content — Ringly
-  stores none of it (F10.6). Ringly's own developer inspects individual calls in
-  the Retell dashboard.
+- **F6.9** The dashboard is **aggregate-only for call _content_**. A business
+  cannot read individual transcripts, listen to recordings, or search what was
+  said — Ringly stores none of it (F10.6). It **can** see per-customer call
+  counts and durations (F6.3b); the restriction is on content, not on counting.
+  Ringly's own developer inspects individual calls in the Retell dashboard.
 - **F6.10** Figures cover **only appointments booked through Ringly**. Anything
   the owner enters directly in their own calendar is respected for conflict
   checking (F2.3) but never appears in Ringly's figures.
@@ -700,8 +715,14 @@ delete the Stripe customer → delete Ringly's rows → write the departure reco
 - **F9.1** Visible **only to the operator**. No business owner may reach it by
   any route, with any credential. This is the single screen that reads across all
   tenants and is therefore treated as a walled garden (EDD §2.11, N1.1).
-- **F9.2** Per business, per period: **net revenue** (charges received, less
-  payment-processor fees), **cost incurred**, and the margin between them.
+- **F9.2** Per business, per calendar month: **net revenue** (charges received,
+  less payment-processor fees), **cost incurred** serving them, and the margin
+  between them.
+- **F9.2a** Per business: **total calls**, their **outcome breakdown** — with
+  **enquiry-only and dropped counted separately** (F6.3c) — and the **time-of-day
+  distribution** of those calls. **Unique callers are not reported here**; the
+  operator view is about volume, outcome and money, and unique-customer figures
+  belong to the business (F6.3a–b).
 - **F9.3** Payment reliability per business — paid on time, late, failed,
   currently past due — so irregular payers are visible at a glance.
 - **F9.4** Platform totals: revenue, cost, and margin across all businesses.
@@ -1183,8 +1204,12 @@ Everything Phase 1 needs; nothing that depends on a later decision.
   `whatsapp_sender_status`, `onboarding_step`; `no_show` from the appointment
   status check; `clinic` from the `business_type` check.
 - **`calls` gains** `started_at`, `ended_at`, `duration_seconds`, `end_reason`,
-  `outcome` widened to include `dropped`, and `is_billable boolean not null
-default false`. No `transcript` and no `recording_url` — Ringly stores neither
+  `outcome` widened to include `dropped`, `is_billable boolean not null default
+false`, and **`customer_id` (nullable)** — resolved at post-call by matching
+  `from_number` against `customers`. Nullable because a withheld number, a wrong
+  number, or a first-time enquirer who never books has no customer to attribute
+  to; those calls are reported as **unattributed** rather than guessed at
+  (F6.3b). No `transcript` and no `recording_url` — Ringly stores neither
   (F10.6), and a stored recording URL would rot because Retell's are signed.
 - **Composite indexes** leading with `business_id` on `appointments`, `calls`,
   `customers`.
@@ -1230,20 +1255,48 @@ The unique key is what makes materialisation idempotent. Occurrences are ordinar
 appointment rows, so conflict checking, calendar sync and analytics work on them
 unchanged.
 
-### 009 — analytics (F6)
+### 009 — analytics (F6, F9)
 
 ```
-daily_business_stats(business_id, local_date, calls, unique_caller_hashes,
-                     duration_seconds_total, duration_seconds_p50,
-                     booked, rescheduled, cancelled, enquiry_only, dropped,
-                     appointments_booked, revenue_booked_cents,
-                     primary key (business_id, local_date))
+daily_business_stats(
+  business_id, local_date,
+  calls, duration_seconds_total,
+  calls_by_hour int[24],                       -- local hours (F6.3, F9.2a)
+  booked, rescheduled, cancelled, enquiry_only, dropped,
+  appointments_booked, appointments_rescheduled, appointments_cancelled,
+  revenue_booked_cents,
+  customers_seen, calls_unattributed,
+  primary key (business_id, local_date))
+
+daily_customer_stats(
+  business_id, customer_id, local_date,
+  calls, duration_seconds,
+  primary key (business_id, customer_id, local_date))
 ```
 
-`local_date` is computed in the **business's** timezone (N5.2, F6.11).
-`unique_caller_hashes` stores the distinct set as hashes rather than a count, so
-a _monthly_ unique-caller figure can be computed correctly from daily rows
-instead of double-counting anyone who rang on two days.
+Four things about this shape:
+
+- **`local_date` is the business's local date** (N5.2, F6.11), which is what lets
+  the same rows serve calendar months _and_ 30-day billing periods (F6.2) —
+  daily granularity is the common denominator of two calendars that never align.
+- **`calls_by_hour` is a 24-element array of local hours**, not a separate table.
+  Summing thirty to ninety arrays elementwise is trivial in application code, and
+  it keeps the time-of-day distribution (F6.3, F9.2a) in the same row as the
+  count it decorates.
+- **`daily_customer_stats` is a second rollup, not a join at read time.** F6.3b
+  needs per-customer counts for a business with up to 10,000 customers and years
+  of history; aggregating raw `calls` per request would breach the 500ms budget
+  (F6.12) and grow with the tenant. `customers_seen` on the daily row is the
+  distinct count, so **averages per customer (F6.3a) never require touching the
+  per-customer table**.
+- **`calls_unattributed`** carries calls with no `customer_id`, so the two views
+  reconcile: `calls = Σ(daily_customer_stats.calls) + calls_unattributed`.
+  Without it they silently disagree and nobody can tell which is wrong.
+
+Earlier drafts stored distinct caller _hashes_ to make monthly unique counts
+correct. That is no longer needed: `customer_id` on the call makes distinct
+customers countable directly, and the operator dashboard no longer reports unique
+callers at all (F9.2a).
 
 ### 010 — billing (F7)
 
@@ -1464,24 +1517,35 @@ populated ahead of it (F2.9a).
 ## 2.8 Analytics
 
 Raw `calls` are never scanned per dashboard request (F6.12, N4.3). A nightly
-per-tenant rollup writes `daily_business_stats` keyed by the business's local
-date; the dashboard reads a bounded number of pre-aggregated rows and computes
-today live from that tenant's own rows only — bounded by tenant size, not
-platform size (N2.2).
+per-tenant rollup writes `daily_business_stats` and `daily_customer_stats` keyed
+by the business's local date; the dashboard reads a bounded number of
+pre-aggregated rows and computes today live from that tenant's own rows only —
+bounded by tenant size, not platform size (N2.2).
 
-**Both groupings come from the same daily rows** (F6.2): calendar months by
+**Both calendars come from the same daily rows** (F6.2): calendar months by
 summing on `local_date`, billing periods by summing between
 `billing_periods.starts_at` and `ends_at`. Storing daily and aggregating upward
-is what makes two different calendars possible from one table.
+is the only way one table serves two calendars that never align.
 
-**Outcome derivation happens once, at the post-call webhook**, from the
-transcript in the payload — which is the only moment Ringly ever sees it (F10.6).
+**Attribution happens at the post-call webhook.** `calls.customer_id` is resolved
+by matching `from_number` against `customers`; where it cannot be, the call is
+counted as unattributed rather than assigned to a guess (F6.3b). This is the only
+place caller identity is used for attribution — it is deliberately _not_ used to
+authenticate a caller rescheduling an appointment (§2.5.6), which is a different
+question with a different answer.
+
+**Outcome derivation also happens once, at the post-call webhook**, from the
+transcript in the payload — the only moment Ringly ever sees it (F10.6).
 `outcome`, `end_reason` and `is_billable` are persisted then. **Outcomes can
 never be re-derived** (F6.6): if the classifier improves, history keeps its old
-labels, and the dashboard says so rather than hiding it.
+labels and the dashboard says so rather than hiding it.
 
-`dropped` covers both a caller who hung up unresolved and a call the agent could
-not help with (F6.4).
+**Five outcomes, not four.** `enquiry_only` and `dropped` stay distinct
+everywhere (F6.3c) even though neither is billable — the difference between an
+agent answering questions well but not converting, and one failing callers
+outright, is the most actionable signal on either dashboard. `dropped` covers
+both a caller who hung up unresolved and a call the agent could not help with
+(F6.4).
 
 ## 2.9 Billing
 
