@@ -1902,14 +1902,27 @@ so a Stripe outage never blocks a call (N7.1).
 3  void open invoices
 4  detach payment method
 5  delete Stripe customer
-6  delete Ringly's rows
-7  write departed_businesses
+6  RELEASE the Retell number                              ← before the row goes
+7  delete Ringly's rows
+8  write departed_businesses
 ```
 
-Steps 1 and 7 bracket the rest for a reason: net revenue comes from Stripe
-balance transactions that step 5 destroys, and `business_id` is needed for step 7
-after step 6 has removed the row that holds it. Doing 6 before 2–5 leaves a saved
-card in Stripe belonging to nobody.
+**Every step of that order is load-bearing.**
+
+- **1 before 5** — net revenue comes from Stripe balance transactions that
+  deleting the customer destroys.
+- **7 before 8** — `business_id` and the totals are needed to write the record,
+  and step 7 removes the row holding them.
+- **2–6 before 7** — deleting Ringly's rows first orphans everything upstream: a
+  saved card in Stripe belonging to nobody, and a Retell number belonging to
+  nobody.
+- **6 before 7, specifically.** This is the one that matters most and is easiest
+  to get backwards. While the business row exists the number is in `takenNumbers`
+  and cannot be reassigned. The moment the row is deleted that protection is
+  gone. Releasing the number first means the failure mode of a crash mid-teardown
+  is a row whose number no longer exists — visible, recoverable, harmless.
+  Releasing it after means a window in which an unbound number has no row
+  protecting it, and a business provisioning in that window can be handed it.
 
 ## 2.10 Lifecycle and retention
 
@@ -1945,12 +1958,41 @@ keep them apart, and all three are required:
 2. **The number is released only at deletion**, in the same operation that
    removes the row (§2.9.4 step 6), so there is never a window in which the row
    is gone but the number is not yet released, or the reverse.
-3. **A test covers it directly**: a suspended business's number must not be
+3. **The number is released before the row is deleted** (§2.9.4 step 6), so
+   there is never an instant in which an unbound number has no row protecting it.
+4. **A test covers it directly**: a suspended business's number must not be
    returned by `selectReusableNumber` while its row exists.
 
 Getting this wrong hands a suspended business's phone number — the one printed on
 its van — to a stranger, and it would look like correct behaviour to every part
 of the system except the business it happened to.
+
+**The chain, end to end.** A number is unavailable to anyone else from the moment
+it is provisioned until the moment its business is deleted:
+
+| Business state                | Row exists? | In `takenNumbers`? | Number answers?    | Reassignable?                |
+| ----------------------------- | ----------- | ------------------ | ------------------ | ---------------------------- |
+| `unbilled`, `active`, `grace` | yes         | yes                | yes                | **no**                       |
+| `suspended` (day 7–60)        | yes         | yes                | no — agent unbound | **no**                       |
+| `cancelling`                  | yes         | yes                | yes                | **no**                       |
+| `dormant` (60 days)           | yes         | yes                | no — agent unbound | **no**                       |
+| deleted (day 60)              | **no**      | no                 | —                  | released, gone from the pool |
+
+**The row is what protects the number, and the row survives the whole dormancy.**
+It is deleted only at the end, together with the release — which answers the
+worry directly: there is no state in which a business is dormant and its number
+has become available.
+
+**`departed_businesses` deliberately does not carry the number.** Revenue history
+survives deletion (F10.9); the phone number does not, because a record that
+outlives the business must never look like a claim on a number that has moved on.
+
+> **Open: what "released" should mean.** Two readings — hand the number back to
+> Retell, ending the rental, or keep it in Ringly's pool unbound for reuse. This
+> design assumes **handing it back**: it stops a cost with no revenue against it
+> (F9.9), and it avoids a departed business's customers reaching a _different_
+> business that inherited its number. `selectReusableNumber` then covers only its
+> original case — numbers bought during a provisioning that failed before binding.
 
 **Lifecycle sweeper**, hourly:
 
