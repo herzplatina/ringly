@@ -420,6 +420,11 @@ charge failed first (F7.11).
   **keeps answering calls and keeps accruing usage**, and emails the business
   about the failure. If payment has not cleared by day 7, the account is
   **suspended** (F10.3).
+- **F7.11a** **A business already behind on payment cannot cancel into free
+  service.** If a cancellation arrives while a payment failure is unresolved, the
+  business is treated as **non-paying**: the suspension clock keeps running
+  (F10.3), no free window opens, and no usage is forgiven. Cancelling is not a
+  route out of a debt.
 - **F7.12** **Cancellation opens a short reconsideration window, then settles.**
   The window runs from the request until **whichever comes first: 7 days later,
   or the end of the current billing period**. During it:
@@ -429,9 +434,11 @@ charge failed first (F7.11).
     charged, though the service is still given. Ringly absorbs it.
   - **Reminder emails run through the window**, saying what happens, when, and
     what the business will and will not be charged.
-- **F7.12a** **Revoking inside the window erases it.** The period continues to
-  its original end as though the request never happened; usage resumes being
-  billed from the moment of revocation, and everything already accrued stands.
+- **F7.12a** **Revoking inside the window erases it, retroactively.** The period
+  continues to its original end as though the request never happened — and the
+  usage served during the window, which would have been free had they left,
+  **becomes billable after all**. The free window is a concession for leaving,
+  not a way to take a week of free service and stay.
 - **F7.12b** **When the window closes, the period is settled early and service
   stops.** The business is charged the usage it accrued **up to the request**,
   clamped so the period total never exceeds $500 (F7.9a).
@@ -445,6 +452,10 @@ charge failed first (F7.11).
   final period, the usage charged, confirmation that the fixed fee is not
   refunded, and the date the account and its data will be deleted if they do not
   return.
+- **F7.12f** **If the settlement charge fails, it is recorded and let go.** The
+  amount is written to the departure record (F10.9) as owed. Ringly does not
+  suspend, retry, or pursue a business whose service has already stopped —
+  there is nothing left to withhold.
 - **F7.12e** **The account then lies dormant for 30 days, fully recoverable.**
   Service has stopped, but **the phone number and every database record are
   retained**. A business that returns inside those 30 days resumes on **its own
@@ -465,8 +476,9 @@ charge failed first (F7.11).
   billable call** must all be changeable without a schema migration or a
   redesign. What does **not** change: 30-day billing periods, the rule that data
   lives as long as the relationship and is purged 30 days after it ends (F10.8),
-  and the two-phase 7-day-then-30-day suspension and revocation timeline
-  (F10.3).
+  and the two-phase shape of the lifecycle — a grace period, then suspension,
+  then removal after a final warning (F10.3) — though the lengths of those phases
+  may be tuned.
 - **F7.16** A change to commercial terms **never rewrites history**. Each billing
   period is settled under the terms in force when it ran, so past invoices remain
   reproducible.
@@ -511,6 +523,79 @@ charge failed first (F7.11).
   Ringly's data. Stripe's own dunning and receipt-on-failure emails are therefore
   **switched off**, or a business receives two differently-worded messages from
   what appears to be one company.
+
+### F7a — The billing model, end to end
+
+_Normative summary. Where this and F7/F10 differ, the numbered requirements win._
+
+**Activation.** A business signs up, gets a number, places up to 10 test calls,
+and confirms on its dashboard that one worked. That confirmation activates the
+number and starts period 1. A business that never confirms is removed entirely at
+day 10.
+
+**A period.** Thirty days from activation. **$100 on the first day.** Usage
+accrues across the period on **productive calls only** — a booking, a reschedule
+that booked, or a cancellation of a real appointment. Enquiries, wrong numbers
+and dropped calls cost the business nothing, and who is calling never matters.
+**Usage is settled on the last day**, seconds summed across the whole period and
+rounded up to a minute once. The next period begins the following day with its
+own $100 — so the two charges never share a date, and a failing card fails one at
+a time.
+
+**The cap.** $500 per period including the fixed fee. Usage past it is still
+recorded, because Ringly needs its true cost, but the charge is clamped at
+settlement. The business is told it has hit the cap and that the rest of the
+period is on Ringly.
+
+**Settlement happens at exactly three moments:** a period ending normally, a
+cancellation window closing, or final removal for non-payment — where the
+clamped figure becomes the debt on the departure record, uncollected.
+
+**If payment fails.** One clock, started by whichever charge failed first.
+
+| Day  |                                                                                              |
+| ---- | -------------------------------------------------------------------------------------------- |
+| 0–7  | Service continues and **this usage is billable**. Reminder emails.                           |
+| 7    | Suspended. Calls stop. Number retained. No free service.                                     |
+| 7–10 | Stripe retries. Paying restores service and charges the outstanding fee that day.            |
+| 10   | Retries stop. 48-hour warning.                                                               |
+| 12   | Number released, data deleted, debt recorded. No dormancy — a later return is a new account. |
+
+**If the business cancels.** The window is **7 days or the end of the period,
+whichever comes first**. Through it service continues untouched and usage stops
+being billed.
+
+- **Revoke inside the window** and the period runs to its original end — and the
+  usage served during the window **becomes billable after all**. The concession
+  was for leaving.
+- **Let it close** and the period settles early: usage up to the request is
+  charged, **the $100 is not refunded**, service stops, and a closing statement
+  goes out. There is **no refund on this path at all** — the fee is never
+  returned and usage is only ever charged in arrears.
+- **Then 30 days dormant.** Number and every record retained. Come back inside it
+  and you resume on your own number with your own history, on a new period
+  charged $100 that day. After it, everything is deleted and a return is a
+  stranger.
+
+**A business already behind on payment cannot cancel into free service** — it is
+treated as non-paying, and the suspension clock keeps running. **If a departing
+business's settlement charge fails**, it is recorded as owed and let go; there is
+nothing left to withhold.
+
+**Chargebacks** follow the non-payment path exactly.
+
+**Who does what.**
+
+| Stripe                                      | Ringly                                         |
+| ------------------------------------------- | ---------------------------------------------- |
+| Tax calculation                             | The whole failure path, every email in it      |
+| Invoices, receipts, payment-succeeded email | The cap, and clamping at settlement            |
+| Retrying failed payments                    | Deciding when service stops and when data goes |
+| Executing charges                           | Teardown at deletion                           |
+
+Billing thresholds: neither. Customer portal: disabled. **Teardown order:** capture
+lifetime revenue → cancel subscription → void open invoices → detach card →
+delete the Stripe customer → delete Ringly's rows → write the departure record.
 
 ### F8 — Email
 
@@ -652,14 +737,17 @@ charge failed first (F7.11).
   **On payment failure** — the clock starts the day the _first_ charge fails,
   whether that was a fixed fee or a usage settlement:
 
-  | Day  | What happens                                                                                                                                    |
-  | ---- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-  | 0    | Charge fails. Service continues, usage keeps accruing, business emailed.                                                                        |
-  | 0–7  | **Grace period.** Calls answered as normal. Reminder emails sent. This usage is billable — service given is service billed.                     |
-  | 7    | **Suspended.** Calls stop being answered; the number is retained. **No free service from here on.**                                             |
-  | 7–30 | Suspended, payment **retried by Stripe** (F7.20). Success inside the period restores service and charges the outstanding fee that day (F7.10b). |
-  | ~28  | **48-hour final warning by email**, itemising exactly what will be deleted.                                                                     |
-  | 30   | **Full stop.** Number released, Ringly-held data deleted, amount owed recorded permanently (F10.9).                                             |
+  | Day  | What happens                                                                                                                    |
+  | ---- | ------------------------------------------------------------------------------------------------------------------------------- |
+  | 0    | Charge fails. Service continues, usage keeps accruing, business emailed.                                                        |
+  | 0–7  | **Grace period.** Calls answered as normal. Reminder emails sent. This usage **is billable** — service given is service billed. |
+  | 7    | **Suspended.** Calls stop being answered; the number is retained. **No free service from here on.**                             |
+  | 7–10 | Suspended, payment **retried by Stripe** (F7.20). Paying restores service and charges the outstanding fee that day (F7.10b).    |
+  | 10   | Retries stop. **48-hour final warning by email**, itemising exactly what will be deleted.                                       |
+  | 12   | **Full stop.** Number released, Ringly-held data deleted, amount owed recorded permanently (F10.9).                             |
+
+  There is **no dormant window on this path** — a business that never paid is
+  removed at day 12 and a later return is a wholly new account with a new number.
 
   **On a cancellation request** — a short window, then dormancy:
 
@@ -678,11 +766,16 @@ charge failed first (F7.11).
   earlier emails.
 - **F10.3b** A business that has asked to cancel is **not** retried for payment
   (F7.10); the retry loop applies only to the non-payment path.
-- **F10.4** **An activated business's telephone number is never released before
-  day 30**, whatever the reason — non-payment, chargeback, or its own
-  cancellation. It is the business's public identity, printed on signage and
-  listings, and losing it is not recoverable. This protection applies only once a
-  business has activated; one that never did is removed at day 10 (F10.1).
+- **F10.4** A business's telephone number is its public identity, printed on
+  signage and listings, and losing it is not recoverable. **How long it is held
+  after service ends depends on why service ended:**
+  - **Never activated** — removed at **day 10** (F10.1). No relationship to
+    protect.
+  - **Non-payment or chargeback** — removed at **day 12** (F10.3), after a
+    7-day grace, 3 days of retries, and a 48-hour warning.
+  - **The business's own cancellation** — held a further **30 days** after
+    service stops (F7.12e), fully recoverable, because a business that left in
+    good standing may come back and should find itself intact.
 - **F10.5** **Ringly issues no deletion call to the telephony provider.**
   Transcripts and recordings expire on their own **30-day TTL** (F10.6), which is
   never longer than the window before a business is deleted, so provider-held
@@ -706,8 +799,10 @@ charge failed first (F7.11).
   reconciliation — all of which look back over months, not days.
   - The **only** thing on a 30-day clock is what Ringly does **not** store:
     transcripts and recordings, held by the telephony provider (F10.6).
-  - Everything Ringly holds is destroyed **30 days after the relationship ends**
-    (F10.3), **however it ended** — non-payment or a clean cancellation alike.
+  - Everything Ringly holds is destroyed when the relationship is over, on the
+    clock the ending sets (F10.3, F10.4): **day 12** for non-payment, **30 days
+    after service stops** for a business that cancelled, **day 10** for one that
+    never activated.
   - There is no partial or rolling deletion, and no field-level expiry.
 - **F10.9** **A departed business leaves a permanent financial record.** When a
   business is deleted, Ringly retains, indefinitely and outside the purge:
