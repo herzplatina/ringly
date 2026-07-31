@@ -101,6 +101,14 @@ Revised again 2026-07-31 — see below._
 > minimum set that can charge a real customer (phases 0–5) and §2.16.2 lists every
 > difference from the previous plan.
 >
+> **A test strategy and a scenario catalogue were added** (§2.20, §2.21): 269
+> end-to-end scenarios covering every requirement in Part 1, written against a
+> product-level vocabulary so the test bodies survive implementation change. Four
+> decisions shape them — an injectable clock, simulated Retell payloads, Stripe in
+> test mode with the other vendors faked, and assertions on projections rather
+> than tables. What the suite cannot prove is listed rather than glossed
+> (§2.20.3), and the vendor behaviour that needs a human is **action item A1**.
+>
 > **A final pass over the whole document** then fixed: an invariant that claimed
 > a business is never charged for an unanswered day, which the fixed-period model
 > contradicts (I5); an operator alert firing for every business that used its
@@ -2192,6 +2200,21 @@ dropped-call definition (F6.3), calendar-provider switching out of scope (R9).
   true email is Ringly. F7.20, F7.21 and F7.11b-i stand as written and Stripe's
   dunning stays off.
 
+**Action items — work that is not a question and not a phase:**
+
+- **A1 — Manual QA against the real Google, Retell and Resend, before launch.**
+  The automated suite fakes all three (EDD §2.20.1), so it proves Ringly reacts
+  correctly to a simulated calendar failure, not that Google fails that way. What
+  only a human can confirm is listed at **§2.20.4**: that the agent actually says
+  the disclosure and sounds right, that a real granular-consent decline and a real
+  token revocation behave as designed, and that mail from all four identities
+  lands in an inbox rather than a spam folder. **Owner: the operator.** This is
+  the untested half of the system, and no amount of green tests substitutes for
+  it.
+- **A2 — A load exercise against the N2.1 targets** (10,000 businesses × 10,000
+  customers), which an end-to-end suite cannot express (§2.20.3).
+- **A3 — A restore drill** proving N10.5, including from the cross-region copy.
+
 ---
 
 ## 1.9 Deferred
@@ -4175,3 +4198,513 @@ designed for.
 
 **The one row carrying no design element is deliberate:** F2.10–F2.11 are prompt
 behaviour, with nothing to build and nothing to store.
+
+## 2.20 Test strategy
+
+**Tests are written before the implementation, and they must survive it.** The
+schema below is a design, not a decision that has been made against real code;
+269 tests coupled to column names would all break on the first rename, which is
+the outcome this section exists to prevent.
+
+### 2.20.1 The four choices that shape every test
+
+|                | Decision                                                                         | Consequence                                                                                                                                                                  |
+| -------------- | -------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Time**       | **An injectable clock.** The application reads time from one place; tests set it | Every 7/10/30/60-day scenario is expressible in milliseconds. **This is a constraint on the implementation, accepted deliberately** — without it, half the PRD is untestable |
+| **The caller** | **Simulated Retell webhook payloads**, posted at Ringly's endpoints              | Fast and deterministic for the ~60 booking scenarios. **It tests Ringly's handling, not Retell's agent** — that gap is closed by manual QA (§2.20.4)                         |
+| **Vendors**    | **Stripe in test mode; Google, Retell and Resend faked**                         | A declined card is genuinely a declined card. A calendar outage is simulated, so the test proves Ringly's reaction, not Google's behaviour                                   |
+| **Assertions** | **Product-level projections**, never tables or selectors (§2.20.2)               | Test bodies stay stable when the implementation changes                                                                                                                      |
+
+### 2.20.2 How the bodies stay stable
+
+**One rule: a test body may not name anything the implementation could rename.**
+No table names, no column names, no HTTP paths, no CSS selectors, no vendor
+identifiers, no SQL. Those live in **one adapter module**, and changing the
+implementation means changing the adapter, not the tests.
+
+The vocabulary a test body may use is deliberately small:
+
+**Actors** — `caller`, `owner`, `operator`, `system`. Everything is something one
+of them does.
+
+```
+await caller.calls(biz).andAsksToBook({ service: 'Cut', at: 'Tuesday 2pm' })
+await owner.pressesActivate()
+await operator.pausesDeletionClock(biz)
+await system.advanceTo(day(45))
+```
+
+**Projections** — named, product-level views of state. A projection is what the
+_product_ says is true, not where it is stored:
+
+```
+serviceStatus(biz)   -> { numberLive, reason, testCallsRemaining }
+billingHistory(biz)  -> [{ dates, fixedFee, minutes, usage, total, status, suspended }]
+callAnalytics(biz,r) -> { calls, avgDuration, medianDuration, booked, outcomes, byWindow }
+appointments(biz)    -> [{ customer, service, start, duration, series }]
+calendar(biz)        -> [{ start, end, title }]        // the connected calendar
+inbox(address)       -> [{ kind, subject, body, sentAt }]
+operatorQueue()      -> [{ business, condition, since }]
+owed(biz)            -> Money
+```
+
+**Why projections rather than the database.** Asserting `billingHistory(biz)[0].total`
+survives the table being renamed, split, or replaced by an API. Asserting
+`select total from billing_periods` does not. Today the adapter implements
+`billingHistory` with a query; after Phase 4 it implements it by calling the same
+endpoint the dashboard calls — and **no test body changes either time**.
+
+**Emails are asserted on content, not on transport.** `inbox()` is a capture fake
+in place of Resend. A test asserts that a message of a declared kind (F8.2)
+arrived saying a particular thing — never that a particular function was called.
+
+**What is allowed to change a test body:** the product behaving differently. That
+is correct, and is the only thing that should.
+
+**A worked example**, showing the whole vocabulary and no implementation detail:
+
+```
+test('suspension does not extend the period', async () => {
+  const biz = await aBusiness().activated().on(day(1))
+  await system.advanceTo(day(31)); await stripe.declineNextCharge()
+  await system.advanceTo(day(38))
+  expect(await serviceStatus(biz)).toMatchObject({ numberLive: false })
+  await stripe.payOutstanding(biz)
+  const [current] = await billingHistory(biz)
+  expect(current.endsOn).toEqual(day(60))      // unchanged, not extended
+  expect(await owed(biz)).toEqual(money(0))
+})
+```
+
+### 2.20.3 What end-to-end tests do not cover
+
+Listed so the gaps are decisions rather than oversights:
+
+- **N2.1 scale** — 10,000 tenants × 10,000 customers needs a load harness, not an
+  E2E suite. A separate exercise before launch.
+- **N10 durability** — proved by a restore drill (N10.5), not by a test.
+- **F8.6–F8.10 email format** — "reads like a utility bill", "no urgency the body
+  does not justify". Assertable in part (currency present, dates absolute, subject
+  length); the rest is a review checklist.
+- **N3 latency** — measurable in the suite but meaningful only under production
+  load; the numbers here are smoke checks, not the real measurement.
+- **F2.6 filler speech and agent tone** — nothing to assert against a simulated
+  payload. Manual QA (§2.20.4).
+
+### 2.20.4 Action item: manual QA against the real vendors
+
+**The faked vendors are the untested half, and they must be exercised by hand
+before launch.** The suite proves Ringly reacts correctly to a calendar failure;
+it does not prove Google fails the way the fake does. Owner: the operator.
+Tracked in §1.8.
+
+| Vendor              | What only a human can confirm                                                                                                                  |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Retell**          | The agent actually says the disclosure, handles the this-one-or-all question, sounds right, and covers latency with filler (F2.1a, F2.4, F2.6) |
+| **Google Calendar** | Real granular-consent decline; real token revocation; real `events.list` shape; real outage behaviour (F1.7a, F2.7a)                           |
+| **Resend**          | Deliverability from all four identities, rendering in Gmail and Outlook, and that nothing lands in spam (F8.11)                                |
+
+## 2.21 Scenario catalogue
+
+**269 end-to-end scenarios covering every requirement in Part 1.** Written
+against the vocabulary in §2.20.2 — a scenario names a behaviour, never a
+table, a route or a selector. The requirement column is what each one exists
+to hold; a requirement changing means finding its scenarios here.
+
+### A — Onboarding and activation
+
+_F1.1–F1.12b — 24 scenarios_
+
+| #   | Scenario                                                                                    | Holds            |
+| --- | ------------------------------------------------------------------------------------------- | ---------------- |
+| 1   | Free-form intake enriches name, address, phone, hours, timezone and website in one request  | F1.1, F1.3, F1.6 |
+| 2   | An ambiguous business name offers a candidate list                                          | F1.3             |
+| 3   | Services are auto-extracted from the website, capped at five                                | F1.4             |
+| 4   | An unreachable website falls back to manual entry                                           | F1.4, N7         |
+| 5   | Every enriched field is editable before commit                                              | F1.5             |
+| 6   | The consent screen names each scope and its reason before Google opens                      | F1.7c            |
+| 7   | Signing in with calendar granted stores an offline token                                    | F1.7             |
+| 8   | Calendar declined: sign-in completes, the draft survives, onboarding stops at the explainer | F1.7a, F1.7b     |
+| 9   | A declined-calendar account sits unbilled under the 10-day clock and is never charged       | F1.7b            |
+| 10  | The number is bought and the agent bound behind the value screen                            | F1.9             |
+| 11  | The bind is verified by reading provider state back                                         | F1.12a-ii        |
+| 12  | A failed bind verification is retried and raised to the operator                            | F1.12a-ii, F9.6  |
+| 13  | The contact email defaults from the Google identity and is editable                         | F1.11            |
+| 14  | An unverified contact email blocks activation                                               | F1.11, F1.12     |
+| 15  | The checklist shows three tasks in any order, plus test calls remaining                     | F1.12            |
+| 16  | Activate is unavailable until all three items are green                                     | F1.12a           |
+| 17  | Pressing Activate charges $100, opens period 1, and says the number is now taking calls     | F1.12a           |
+| 18  | Confirming the test call alone neither activates nor charges                                | F1.12b           |
+| 19  | Adding a card alone neither activates nor charges                                           | F1.12b           |
+| 20  | Time passing never activates a business                                                     | F1.12b           |
+| 21  | A card declined at activation changes nothing and charges nothing                           | F1.12a-i         |
+| 22  | A local write failing after the charge is completed by Ringly, never re-prompted            | F1.12a-i         |
+| 23  | A bind failing at activation still confirms the charge and emails when the number is live   | F1.12a-i         |
+| 24  | Pressing Activate twice cannot charge twice                                                 | §2.4a.1          |
+
+### B — Test-call allowance
+
+_F1.13–F1.13d — 13 scenarios_
+
+| #   | Scenario                                                                         | Holds        |
+| --- | -------------------------------------------------------------------------------- | ------------ |
+| 25  | Calls before activation are recorded as test calls and never billed              | F1.13c       |
+| 26  | A stranger's call still counts against the allowance                             | F1.13c       |
+| 27  | The fifth test call unbinds the agent                                            | F1.13a       |
+| 28  | The sixth call is not answered at all — no connected minutes are consumed        | F1.13a       |
+| 29  | The business is emailed on exhaustion, in every case                             | F1.13a       |
+| 30  | The operator is alerted only when the test call was never confirmed              | F1.13a       |
+| 31  | A business with all three items green that exhausts is emailed but not escalated | F1.13a       |
+| 32  | An exhausted business can still activate, and that rebinds the number            | F1.13b       |
+| 33  | A business that never confirmed a working call cannot activate                   | F1.13b       |
+| 34  | An operator reset restores the allowance and rebinds the agent together          | F10.1c       |
+| 35  | Changing the allowance configuration changes the limit without a deploy          | F1.13        |
+| 36  | Activating does not reclassify a business's earlier test calls                   | F1.13c       |
+| 37  | After activation the owner's own call is billed like any other                   | F1.13c, F7.7 |
+
+### C — Call handling and booking
+
+_F2.1–F2.11 — 25 scenarios_
+
+| #   | Scenario                                                                                  | Holds |
+| --- | ----------------------------------------------------------------------------------------- | ----- |
+| 38  | The agent identifies the business and describes services, prices and durations            | F2.1  |
+| 39  | The recording disclosure is spoken on every call                                          | F2.1a |
+| 40  | A business cannot remove or alter the disclosure through its greeting                     | F2.1a |
+| 41  | With no custom greeting, the default disclosure text is used verbatim                     | F2.1a |
+| 42  | Booking a free slot succeeds and the event appears in the connected calendar              | F2.2  |
+| 43  | A slot conflicting with an existing Ringly appointment is refused with alternatives       | F2.3  |
+| 44  | A slot conflicting with an externally-created calendar event is refused                   | F2.3  |
+| 45  | Two callers racing one slot: the second is refused and exactly one appointment exists     | F2.3a |
+| 46  | A reschedule on full name, date, time and service match succeeds                          | F2.4  |
+| 47  | A partial match is refused and the caller is told what did not match                      | F2.4  |
+| 48  | A corrected detail re-runs the search                                                     | F2.4  |
+| 49  | A caller ringing from a different number can still reschedule                             | F2.4  |
+| 50  | One person calling from two numbers becomes two customer records                          | F2.4  |
+| 51  | A relative day resolves to the next such day and is read back for confirmation            | F2.4  |
+| 52  | An occurrence of a series triggers the this-one-or-all question                           | F2.4  |
+| 53  | A one-off appointment does not trigger that question                                      | F2.4  |
+| 54  | Every time spoken to a caller is in the business's timezone                               | F2.5  |
+| 55  | Filler speech covers backend waits                                                        | F2.6  |
+| 56  | The agent answers at 3am but refuses to book outside opening hours                        | F2.8  |
+| 57  | A booking beyond the horizon is refused                                                   | F2.9  |
+| 58  | A changed booking horizon applies to the next caller                                      | F2.9  |
+| 59  | A horizon outside 7–180 days is rejected                                                  | F2.9  |
+| 60  | The agent cannot transfer, says so, gives the business's own details, and records dropped | F2.10 |
+| 61  | The confirmation is the read-back alone; no message is ever promised                      | F2.11 |
+| 62  | Cancelling a real appointment removes the calendar event                                  | F2.2  |
+
+### D — Fail-closed calendar
+
+_F2.7, F4.5, N7.2 — 8 scenarios_
+
+| #   | Scenario                                                                                | Holds       |
+| --- | --------------------------------------------------------------------------------------- | ----------- |
+| 63  | A calendar that cannot be reached writes no appointment and the caller is apologised to | F2.7        |
+| 64  | A calendar timeout is treated as failure, never as "no conflicts"                       | N3.1        |
+| 65  | Revoked consent refuses booking and surfaces reconnect on the dashboard                 | F2.7a       |
+| 66  | An outage raises the dashboard banner above the filters                                 | F2.7, §2.8a |
+| 67  | An outage sends one email per incident, not one per failed call                         | F2.7        |
+| 68  | The warning clears itself on the first successful calendar read                         | F2.7        |
+| 69  | Enquiries still work during an outage; only booking stops                               | F4.5        |
+| 70  | The operator dashboard shows the business under "bookings failing"                      | F9.12       |
+
+### E — Catalogue and opening hours
+
+_F3.1–F3.6 — 11 scenarios_
+
+| #   | Scenario                                                                          | Holds |
+| --- | --------------------------------------------------------------------------------- | ----- |
+| 71  | Services can be added, edited, deactivated and reordered                          | F3.1  |
+| 72  | A catalogue change reaches the next caller within 60 seconds                      | F3.2  |
+| 73  | A caller mid-conversation keeps the catalogue they started with                   | F3.2  |
+| 74  | Deactivating a service leaves appointments already booked against it untouched    | F3.3  |
+| 75  | Price resolves at the time of the appointment, not the time of booking            | F3.4  |
+| 76  | Duration is locked at booking and repricing never moves neighbouring appointments | F3.4  |
+| 77  | A deleted service values its appointments at the last known price                 | F3.4  |
+| 78  | Hours edited on the dashboard reach the next caller                               | F3.5  |
+| 79  | Narrowing hours never moves or cancels an existing appointment                    | F3.5  |
+| 80  | Widening hours makes the new slots bookable immediately                           | F3.5  |
+| 81  | A business cannot change its own timezone                                         | F3.6  |
+
+### F — Recurring appointments
+
+_F5.1–F5.3 — 12 scenarios_
+
+| #   | Scenario                                                                            | Holds        |
+| --- | ----------------------------------------------------------------------------------- | ------------ |
+| 82  | A caller sets up a recurring series in one call                                     | F5.1         |
+| 83  | Occurrences are materialised out to the horizon                                     | F5.2         |
+| 84  | A materialisation horizon below the booking horizon is rejected                     | F5.2, §2.7   |
+| 85  | An occurrence landing on a taken slot shifts within ±2 hours the same day           | F5.2a        |
+| 86  | An occurrence with nothing free in that window is skipped, not moved to another day | F5.2a        |
+| 87  | A shift or skip emails the owner and states plainly that the customer was not told  | F5.2b, F5.2c |
+| 88  | Owner notifications are batched per run, not per occurrence                         | §2.7         |
+| 89  | An occurrence falling outside newly-narrowed hours is shifted or skipped            | F5.2e        |
+| 90  | Occurrences already generated are not swept up when hours change                    | F5.2e        |
+| 91  | Cancelling a series cancels future occurrences and leaves past ones intact          | F5.3         |
+| 92  | Cancelling one occurrence leaves the rest of the series intact                      | F5.2         |
+| 93  | Re-running the materialiser creates no duplicate occurrences                        | §2.7         |
+
+### G — Business dashboard
+
+_F6.1–F6.15 — 25 scenarios_
+
+| #   | Scenario                                                                           | Holds      |
+| --- | ---------------------------------------------------------------------------------- | ---------- |
+| 94  | A business sees only its own data                                                  | F6.1, N1.1 |
+| 95  | The unit and range filters govern every figure on the page                         | F6.2       |
+| 96  | All six call metrics render                                                        | F6.3       |
+| 97  | "Calls that booked" counts calls, not appointments                                 | F6.3       |
+| 98  | Revenue booked is labelled an estimate when the range includes future appointments | F6.3a      |
+| 99  | Time of day renders as six business-local four-hour windows                        | F6.3b      |
+| 100 | Outcomes filter by time window and time-of-day filters by outcome                  | F6.3c      |
+| 101 | Enquiry-only and dropped are counted separately                                    | F6.3d      |
+| 102 | Three separate trend charts render on a shared x-axis                              | F6.3e      |
+| 103 | What the business pays Ringly is absent from the call metrics                      | F6.3f      |
+| 104 | Dropped covers hang-ups and cannot-helps; a completed enquiry is separate          | F6.4       |
+| 105 | Outcome definitions render from data, not from the component                       | F6.5       |
+| 106 | A range spanning a definition change shows the notice and reclassifies nothing     | F6.6       |
+| 107 | Billing history is one table with the current period as its first row              | F6.7, F6.8 |
+| 108 | A period during which service was suspended is labelled in its row                 | F6.7       |
+| 109 | No transcript, recording or per-customer figure is reachable                       | F6.9       |
+| 110 | Externally-created calendar events never appear in the figures                     | F6.10      |
+| 111 | Every figure renders in the business's own timezone                                | F6.11      |
+| 112 | Dashboard queries return within budget regardless of tenant size                   | F6.12      |
+| 113 | All seven dashboard controls are present                                           | F6.13      |
+| 114 | The freshness line states the complete-to date and that today appears tomorrow     | F6.14      |
+| 115 | Median and billing figures are labelled live; everything else is nightly           | F6.14      |
+| 116 | Every money figure is labelled settled, accruing or outstanding                    | F6.14a     |
+| 117 | Service status shows whether the number is live, the number, and calls remaining   | F6.15      |
+| 118 | When the number is not live, the status says why and what turns it back on         | F6.15      |
+
+### H — Billing, the paying path
+
+_F7.1–F7.18 — 18 scenarios_
+
+| #   | Scenario                                                                    | Holds       |
+| --- | --------------------------------------------------------------------------- | ----------- |
+| 119 | $100 is charged on day 1 of every period                                    | F7.1        |
+| 120 | The card is stored for off-session use at activation                        | F7.2        |
+| 121 | Raw card details never reach Ringly                                         | F7.3, N6.2  |
+| 122 | Usage accrues only on productive calls                                      | F7.5, F7.6  |
+| 123 | Enquiry, dropped and wrong-number calls accrue no usage                     | F7.6        |
+| 124 | The whole call is billable, not only the minutes up to the booking          | F7.7        |
+| 125 | Seconds are summed across the period and rounded up once                    | F7.7a       |
+| 126 | A rate change applies without a deploy and leaves settled periods untouched | F7.8, F7.16 |
+| 127 | Usage settles on the period's last day                                      | F7.4        |
+| 128 | The next period opens the following day with its own $100                   | F7          |
+| 129 | The fixed fee and the usage settlement never fall on the same day           | F7          |
+| 130 | Usage past the cap is recorded in full but charged short                    | F7.9        |
+| 131 | Crossing the cap emails the business and alerts the operator                | F7.9b       |
+| 132 | Service continues after the cap and the excess is absorbed                  | F7.9b       |
+| 133 | $470 of usage results in $500 charged and $70 absorbed                      | F7.12d      |
+| 134 | Every charge, refund and failure is recorded immutably                      | F7.14       |
+| 135 | A settled period is unchanged by a later pricing-policy change              | F7.16       |
+| 136 | Sales tax is stored as Stripe calculated it, never computed by Ringly       | F7.18       |
+
+### I — Failure, grace, suspension and recovery
+
+_F7.10b–F7.11f, F10.3 — 30 scenarios_
+
+| #   | Scenario                                                                           | Holds          |
+| --- | ---------------------------------------------------------------------------------- | -------------- |
+| 137 | A declined fixed fee starts grace with service continuing                          | F7.11          |
+| 138 | Grace usage is billable when a period is open to bill it to                        | F7.11c-ii      |
+| 139 | Day 7 unpaid suspends the business, unbinds the agent and stops the number         | F10.3          |
+| 140 | A failed unbind is retried and raised to the operator                              | F1.12a-ii      |
+| 141 | Suspension adds no fixed fee, no usage and no new period                           | F7.11b, F7.11c |
+| 142 | Suspension does not extend the billing period                                      | F7.11b         |
+| 143 | A period ending mid-suspension settles on its original last day with no successor  | F7.11d         |
+| 144 | The debt is frozen through suspension — day 55 owes exactly what day 8 owed        | F7.11c         |
+| 145 | Case (a): paying on day 20 resumes inside the period with nothing new charged      | F7.11d         |
+| 146 | Case (a): the day-30 settlement covers days 1–8 and 20–30                          | F7.11d         |
+| 147 | Case (a): paying on day 45 clears $100 plus usage, then opens a new period at $100 | F7.11d         |
+| 148 | Case (b): a declined settlement closes the period and opens no successor           | F7.11d         |
+| 149 | Case (b): the grace days are served, not billed, and their cost is still recorded  | F7.11c-ii      |
+| 150 | Case (b): paying on day 45 and on day 70 are identical transactions                | F7.11d         |
+| 151 | A partial payment leaves the business suspended and the email says what remains    | F7.10b         |
+| 152 | Stripe retries continue throughout suspension                                      | F7.11b-i       |
+| 153 | Every payment email is Ringly's; Stripe's dunning stays silent                     | F7.11b-ii      |
+| 154 | The 48-hour deletion warning arrives before the deadline                           | F10.3a         |
+| 155 | Payment clearing restores service the same day and emails the business             | F7.10b         |
+| 156 | Restoring into a still-running period charges nothing extra                        | F7.11b-iii     |
+| 157 | Restoring with no open period opens exactly one, at $100 that day                  | F7.11b-iii     |
+| 158 | The debt clears before the new period's fee — two movements on the same day        | F7.11b-iii     |
+| 159 | A decline on the new period's fee starts a fresh grace and deletion clock          | F7.11b-iv      |
+| 160 | A missed webhook is caught by the daily reconciliation                             | F7.10b-i       |
+| 161 | Reconciliation finding a stranded business raises an operator alert                | §2.9.5         |
+| 162 | A redelivered webhook cannot restore twice or open two periods                     | §2.9.5         |
+| 163 | A chargeback follows the non-payment path exactly                                  | F7.17          |
+| 164 | The 60-day deletion clock is not paused by suspension                              | §2.10          |
+| 165 | Debt never exceeds $500 exclusive of tax                                           | I3             |
+| 166 | Case (a) can reach $500; case (b) can reach $400                                   | F7c            |
+
+### J — Cancellation and dormancy
+
+_F7.12–F7.12f — 13 scenarios_
+
+| #   | Scenario                                                                      | Holds         |
+| --- | ----------------------------------------------------------------------------- | ------------- |
+| 167 | Marking cancelled opens the window with service continuing and usage unbilled | F7.12         |
+| 168 | The window is 7 days or period end, whichever comes first                     | F7.12         |
+| 169 | Countdown emails run through the window                                       | F7.12         |
+| 170 | Revoking makes the window's usage billable and restores the original end date | F7.12a        |
+| 171 | The window closing settles the period early and refunds no part of the $100   | F7.12b        |
+| 172 | A closing statement is sent                                                   | F7.12c        |
+| 173 | Dormancy retains the number and every record for 60 days                      | F7.12e        |
+| 174 | Returning inside dormancy resumes the same number and history on a new period | F7.12e        |
+| 175 | Returning after dormancy is a wholly new account with a new number            | F7.12e        |
+| 176 | A failed settlement charge is recorded as owed and never retried              | F7.12f        |
+| 177 | A business behind on payment cannot cancel into free service                  | F7.11a        |
+| 178 | A cancelled business is never charged again unless it withdraws               | F7.10         |
+| 179 | Only the operator can set or clear cancelled status                           | F7.10a, F9.10 |
+
+### K — Lifecycle, numbers and deletion
+
+_F10.1–F10.10 — 20 scenarios_
+
+| #   | Scenario                                                                     | Holds      |
+| --- | ---------------------------------------------------------------------------- | ---------- |
+| 180 | A business that never activates is deleted at day 10 and its number released | F10.1      |
+| 181 | The operator can pause the 10-day clock                                      | F10.1b     |
+| 182 | Silence pauses nothing — the default stands                                  | F10.1b     |
+| 183 | The operator is alerted before day 10 even when the business is not stuck    | F9.6a      |
+| 184 | Nothing is deleted without a 48-hour warning, on any path                    | F10.3a, I4 |
+| 185 | Deletion emails both the business and the operator, on every path            | F10.3c     |
+| 186 | The deletion email is sent before the address that receives it is destroyed  | F10.3d     |
+| 187 | Teardown runs in order: capture, Stripe, number, emails, rows, record        | §2.9.4     |
+| 188 | The number is handed back to the provider and not pooled                     | F10.4b     |
+| 189 | A suspended business's number is never offered as reusable                   | F10.4a     |
+| 190 | A dormant business's number is never offered as reusable                     | F10.4a     |
+| 191 | An unactivated business that spent its allowance keeps its number reserved   | F10.4a     |
+| 192 | A deleted business's number leaves the pool                                  | F10.4a     |
+| 193 | The departure record holds identity and money and no consumer data           | F10.9      |
+| 194 | The departure record is captured before teardown destroys its source         | F10.10     |
+| 195 | The 10-day path issues an explicit provider-side content delete              | F10.5, R18 |
+| 196 | The 60-day paths need no provider-side delete                                | F10.5      |
+| 197 | Ringly never stores a transcript or a recording                              | F10.6      |
+| 198 | Call content older than 30 days is not retrievable                           | F10.7      |
+| 199 | Nothing is aged out while a business is active                               | F10.8      |
+
+### L — Customer PII deletion
+
+_F10.1a–F10.1a-ii — 10 scenarios_
+
+| #   | Scenario                                                                          | Holds     |
+| --- | --------------------------------------------------------------------------------- | --------- |
+| 200 | The owner deletes a customer by phone number, immediately and without an operator | F10.1a-i  |
+| 201 | The customer row and every piece of PII are erased                                | F10.1a-i  |
+| 202 | Their recurring series is cancelled and deleted                                   | §2.10.2   |
+| 203 | Future appointments are deleted and their calendar events withdrawn               | F10.1a-i  |
+| 204 | Past appointments survive with the customer link removed                          | F10.1a-i  |
+| 205 | Calls are untouched — they carry no link and no content                           | F10.1a-i  |
+| 206 | Settled billing figures are unchanged by the deletion                             | F7.16     |
+| 207 | The lookup never lists customers or resolves a number into a name                 | §2.8a     |
+| 208 | The deletion warns that it is irreversible before confirming                      | F10.1a-i  |
+| 209 | Deleting the business destroys every customer's PII automatically                 | F10.1a-ii |
+
+### M — Email
+
+_F8.1–F8.14 — 14 scenarios_
+
+| #   | Scenario                                                                             | Holds       |
+| --- | ------------------------------------------------------------------------------------ | ----------- |
+| 210 | Nothing outside the registry is ever sent                                            | F8.2        |
+| 211 | Transactional email cannot be unsubscribed from                                      | F8.4        |
+| 212 | The stats-digest opt-out is honoured                                                 | F8.4        |
+| 213 | The dispatcher refuses to consult an opt-out for a transactional kind                | §2.12       |
+| 214 | Per-period idempotency sends the digest at most once per period                      | F8.5        |
+| 215 | Per-incident idempotency sends one email for an outage however many calls it affects | F8.5        |
+| 216 | Per-event idempotency sends one email per shifted occurrence                         | F8.5        |
+| 217 | A retried worker never sends the same message twice                                  | F8.5        |
+| 218 | The four streams send from four separate identities                                  | F8.11       |
+| 219 | Ringly never sends a receipt, an invoice or a payment-succeeded notice               | F8.3a       |
+| 220 | Every email states what happened, what it means, and what happens next               | F8.8        |
+| 221 | Amounts carry currency and dates are absolute                                        | F8.9        |
+| 222 | Operator alerts lead with the business name and the money at stake                   | F8.12       |
+| 223 | The operator alert set is exactly the declared one and no more                       | F8.13, F9.6 |
+
+### N — Operator dashboard
+
+_F9.1–F9.13 — 21 scenarios_
+
+| #   | Scenario                                                                      | Holds                |
+| --- | ----------------------------------------------------------------------------- | -------------------- |
+| 224 | An authenticated business owner receives 404 from every /ops route            | F9.1                 |
+| 225 | No tenant-facing module imports the ops module, and none the other way        | §2.11                |
+| 226 | Range and business selector govern every figure on the page                   | F9.2                 |
+| 227 | The money table sorts on every column                                         | F9.2a                |
+| 228 | The margin chart has a zero baseline and renders a negative month as negative | F9.2b                |
+| 229 | The outcomes-by-time-of-day chart is present                                  | F9.2b                |
+| 230 | No per-business call, duration or outcome columns appear in the table         | F9.2c                |
+| 231 | No per-customer figure appears anywhere                                       | F9.2d                |
+| 232 | View-as-business is read-only, banner-marked, and creates no business session | F9.2e                |
+| 233 | Every business control is absent from the borrowed view                       | F9.2e                |
+| 234 | Payment reliability is shown per business                                     | F9.3                 |
+| 235 | Platform totals include the count of active businesses                        | F9.4                 |
+| 236 | The cost model attributes Retell and nothing else                             | F9.5                 |
+| 237 | Operator alerts are delivered by email                                        | F9.6                 |
+| 238 | Figures are reported by calendar month and count only settled money           | F9.8, F6.14a         |
+| 239 | Rented numbers that are not earning are listed                                | F9.9                 |
+| 240 | The outcome definitions match the ones the business sees                      | F9.11                |
+| 241 | Each needs-attention condition appears when its trigger is met                | F9.12                |
+| 242 | A business in several conditions is listed once per condition                 | F9.12                |
+| 243 | The operator can pause a clock, reset an allowance and set cancelled status   | F9.10, F9.13, F10.1c |
+| 244 | The operator dashboard is nightly with a live median, like the business one   | F9.7                 |
+
+### O — Multi-tenancy and isolation
+
+_N1, N2 — 5 scenarios_
+
+| #   | Scenario                                                                      | Holds |
+| --- | ----------------------------------------------------------------------------- | ----- |
+| 245 | A webhook arriving for one business can neither read nor write another's rows | N1.2  |
+| 246 | Row-level security blocks a cross-tenant read on the dashboard                | N1.1  |
+| 247 | Deleting one tenant leaves another's data intact                              | N1.3  |
+| 248 | No data export is offered on any path                                         | N1.3  |
+| 249 | Query cost tracks the requesting tenant's size, not the platform's            | N2.2  |
+
+### P — Timezone and DST
+
+_N5 — 6 scenarios_
+
+| #   | Scenario                                                                        | Holds |
+| --- | ------------------------------------------------------------------------------- | ----- |
+| 250 | Instants are stored in UTC and rendered in the business's timezone              | N5.1  |
+| 251 | Day, month and period boundaries are computed in the business's timezone        | N5.2  |
+| 252 | The hour skipped by spring-forward cannot be booked                             | N5.3  |
+| 253 | The hour duplicated by fall-back resolves unambiguously                         | N5.3  |
+| 254 | Analytics windows bucket correctly across a DST transition                      | N5.2  |
+| 255 | A billing period boundary lands on the right local date across a DST transition | N5.2  |
+
+### Q — Latency and degradation
+
+_N3, N4, N7 — 8 scenarios_
+
+| #   | Scenario                                                          | Holds      |
+| --- | ----------------------------------------------------------------- | ---------- |
+| 256 | The webhook handler stays within its per-turn budget              | N3         |
+| 257 | An operation exceeding the hard ceiling is treated as failed      | N3.1       |
+| 258 | Work not needed to answer the caller happens after the response   | N3.2       |
+| 259 | Stripe being down leaves calls working and usage accruing locally | N7.1       |
+| 260 | Resend being down leaves calls working and email retried          | N7.1       |
+| 261 | Places being down degrades onboarding to manual entry             | N7.1       |
+| 262 | A configuration edit reaches the next caller within 60 seconds    | F3.2, N4.2 |
+| 263 | The config cache never holds appointments or busy intervals       | §2.5.5     |
+
+### R — Security and cost control
+
+_N6, N9 — 6 scenarios_
+
+| #   | Scenario                                                            | Holds |
+| --- | ------------------------------------------------------------------- | ----- |
+| 264 | An unsigned Retell webhook is rejected                              | N6.3  |
+| 265 | An unsigned Stripe webhook is rejected                              | N6.3  |
+| 266 | Provider refresh tokens are encrypted at rest                       | N6.1  |
+| 267 | Enrichment is rate-limited per IP                                   | N9.1  |
+| 268 | Passing the daily spend ceiling degrades enrichment to manual entry | N9.1  |
+| 269 | Nothing chargeable to Ringly happens before Google sign-in          | N9.3  |
+
+**Total: 269 scenarios.** Coverage of what is deliberately _not_ here is
+§2.20.3; the vendor behaviour no suite can prove is §2.20.4.
