@@ -77,7 +77,7 @@ manage their own operation without talking to us.
 _(Carried from v2; renumbered. v2 FR1–FR10 map to F1.1–F1.10.)_
 
 - **F1.1** Intake accepts free-form text; no structured fields required.
-- **F1.2** Voice output speaks the prompt; typed input in v1.
+- **F1.2** Voice output speaks the prompt; input is typed. (Speech-to-text input is deferred.)
 - **F1.3** Enrichment resolves name, address, phone, hours, IANA timezone, and
   website from Google Places.
 - **F1.4** Services auto-extracted from the website (≤5 items), with upload and
@@ -94,6 +94,16 @@ _(Carried from v2; renumbered. v2 FR1–FR10 map to F1.1–F1.10.)_
   activation and is the destination for all billing and stats email (F8).
 - **F1.12 (new)** Onboarding ends with a **test call** step. Activation (F7.1) is
   only offered once the business has placed a successful test call to its number.
+- **F1.13 (new)** A business may place at most **10 test calls** before
+  activation (F10.1). **If all ten fail**, onboarding stops and:
+  - the business is **emailed** to say none of the test calls succeeded, their
+    number has therefore not been activated, and Ringly is investigating and will
+    come back to them;
+  - the failure is raised on the **operator dashboard** and **emailed to the
+    operator**.
+
+  A business in this state is never charged, and cannot activate itself out of
+  it — recovery is operator-led.
 
 ### F2 — Call handling and booking
 
@@ -105,8 +115,11 @@ _(Carried from v2; renumbered. v2 FR1–FR10 map to F1.1–F1.10.)_
   > "Hello, this is _[business name]_. Just to let you know, this call is
   > recorded for quality assurance. How can I help you today?"
 
-  Around a dozen US states require all-party consent to record. The disclosure is
-  not optional and not configurable by the business.
+  Around a dozen US states require all-party consent to record. **The disclosure
+  is appended by Ringly and is not part of the business's editable greeting
+  script** — a business can change how it introduces itself, but cannot remove or
+  alter the disclosure. If a business supplies no greeting of its own, the text
+  above is used verbatim.
 
 - **F2.2** The agent books, reschedules, and cancels appointments.
 - **F2.3** A requested time is checked against the business's own bookings **and**
@@ -127,20 +140,48 @@ _(Carried from v2; renumbered. v2 FR1–FR10 map to F1.1–F1.10.)_
     the search runs again against the corrected values.
   - Caller ID is **not** the identifying factor: a customer may ring from a
     different phone or withhold their number.
+  - **A relative day means the next one.** "Tuesday at 2" resolves to the
+    **nearest future Tuesday** from the moment of the call. The agent then
+    **states the full date back to the caller** and waits for confirmation before
+    acting, so an ambiguous phrase is never resolved silently.
+  - **For an appointment that belongs to a recurring series, the agent asks
+    explicitly whether the caller means this occurrence alone or the whole
+    series**, and repeats the choice back before cancelling or moving anything.
+    This question is not asked for one-off appointments.
 - **F2.5** All times spoken to a caller are in the **business's** local timezone,
   never UTC and never the caller's.
 - **F2.6** While the agent is waiting on any backend operation, the caller hears
   natural filler speech rather than silence. No caller-perceptible gap may exceed
   the budget in N3.
-- **F2.7** **If the business's calendar cannot be reached, booking fails
-  audibly.** Ringly cannot offer a time it has not verified, so the agent tells
-  the caller there is a technical problem and to try again shortly. **No
-  appointment is written.** A booking Ringly cannot verify is worse than no
+- **F2.7** **If the business's calendar cannot be reached for any reason, no
+  appointment is booked.** A booking Ringly cannot verify is worse than no
   booking — it double-books the business and the customer arrives to a clash.
   _(This replaces the earlier fail-open position; see R1.)_
+  - **To the caller: a quiet apology, not an explanation.** The agent apologises,
+    says it cannot confirm a time right now, and asks them to call back shortly.
+    No technical detail, no blame.
+  - **To everyone else: as loud as possible.** The same failure raises a
+    prominent warning on the **business dashboard**, a warning on the **operator
+    dashboard**, and an **immediate email to the business** telling them customer
+    bookings are failing because their calendar cannot be reached.
+  - **Alerting is per incident, not per call.** A calendar outage fails every
+    call that arrives during it; the business gets **one** email per incident,
+    not one per lost customer. The warning clears automatically on the first
+    successful calendar read.
+- **F2.7a** This applies however the calendar became unreachable — provider
+  outage, timeout, revoked consent, or expired credentials. **There is no case in
+  which Ringly books against a calendar it could not read.** A business that
+  chose to run with no calendar at all (F4.3) is unaffected, because there is
+  nothing to read.
 - **F2.8** The agent answers **24 hours a day**, but appointments may only be
   **booked inside the business's opening hours** (F3, business_hours).
-- **F2.9** An appointment may not be booked **more than 70 days ahead**.
+- **F2.9** A one-off appointment may not be booked **more than 70 days ahead**.
+  The limit is **configuration, not a constant** — a platform default with an
+  optional per-business override, so it can move without a deploy.
+- **F2.9a** The 70-day limit constrains **what a caller may request**. It does
+  not constrain recurrence: a standing series is open-ended by nature, and its
+  occurrences are materialised ahead by the system (F5.2), not requested by a
+  caller.
 
 ### F3 — Service catalogue management
 
@@ -175,8 +216,11 @@ _(Carried from v2; renumbered. v2 FR1–FR10 map to F1.1–F1.10.)_
 - **F4.4** Providers targeted after launch, in priority order: Microsoft 365 /
   Outlook, CalDAV (Apple/Fastmail), then vertical booking systems (Square
   Appointments, Acuity, Calendly).
-- **F4.5** Losing or revoking provider access degrades to F4.3 behaviour and
-  raises a dashboard warning and an email; it never blocks calls.
+- **F4.5** **Losing or revoking provider access does not degrade to F4.3.** A
+  business that never connected a calendar has nothing to check; a business whose
+  calendar Ringly cannot read has something to check and cannot. The second case
+  **fails closed** under F2.7 and F2.7a. Calls are still answered and enquiries
+  still work — only booking stops — and the failure is surfaced loudly per F2.7.
 
 ### F5 — Recurring appointments
 
@@ -188,7 +232,9 @@ _(Carried from v2; renumbered. v2 FR1–FR10 map to F1.1–F1.10.)_
 - **F5.1** A caller can set up a **recurring** appointment in one call (e.g.
   "every fourth Tuesday at 2"), described by a standard recurrence rule.
 - **F5.2** Occurrences are generated ahead of time so each can be individually
-  moved, cancelled, or skipped without affecting the rest of the series.
+  moved, cancelled, or skipped without affecting the rest of the series. The
+  horizon is **90 days by default and is configuration, not a constant** — a
+  platform default with an optional per-business override, like F2.9.
 - **F5.2a** If a generated occurrence lands on a slot that is already taken, it
   is **shifted to the nearest free slot on the same day, within ±2 hours** of its
   usual time. If nothing fits that window the occurrence is **skipped, not
@@ -438,7 +484,11 @@ involves a backend call:
 | Caller-perceived silence (filler covers)   | ≈ 0        |
 
 - **N3.1** Any backend operation on the call path has a hard timeout and a
-  defined degraded result. Slow is treated as failed.
+  defined outcome on expiry. **Slow is treated as failed** — and for the
+  scheduling provider, failed means the booking is refused (F2.7), not that it
+  proceeds unverified. The earlier "abandon and degrade" wording is superseded:
+  there is nothing to degrade to when the answer would be a booking we cannot
+  stand behind.
 - **N3.2** Work not needed to answer the caller is done after responding, never
   before.
 
@@ -540,17 +590,11 @@ F9.8), dropped-call definition (F6.3), calendar-provider switching out of scope
 
 ## 1.9 Deferred
 
-### To v2 of the product
+Two buckets, distinguished by intent rather than by a version number. "v1", "v2"
+and "v3" refer only to **documents**; product scope is either _in v3_ or in one of
+the buckets below.
 
-- **Reminders, and the channels that deliver them.** No dispatcher, no channel,
-  no reminder billing in v3. Brings with it:
-  - customer notification when a recurring occurrence is shifted or skipped
-    (F5.2c);
-  - reminder metering, already carried in the pricing policy (F7.8);
-  - the delivery guarantees the earlier draft specified (at-most-once, restart-
-    safe, cancelled when an appointment moves).
-
-### To v3.1
+### Soon after v3
 
 - **Self-serve cancellation.** Replaces the email-based flow in F10.2. Recorded
   now because it raises questions that should be answered before it is built:
@@ -561,6 +605,19 @@ F9.8), dropped-call definition (F6.3), calendar-provider switching out of scope
   - Does the business get an export of their data before day-30 deletion?
   - Can a suspended business self-serve reactivate, or does that stay manual?
 - **Operator alerting via Slack**, replacing email (F9.6).
+
+### Later — no near-term plan
+
+- **Reminders, and the channels that deliver them.** Not scheduled. **All
+  existing reminder code, tables and policies are to be deleted**, not left
+  dormant — dead scaffolding rots and misleads. When reminders return they return
+  as a fresh design. Deferred with them:
+  - customer notification when a recurring occurrence is shifted or skipped
+    (F5.2c);
+  - reminder metering, whose unit is already carried in the pricing policy (F7.8)
+    so its return needs no migration;
+  - the delivery guarantees the earlier draft specified (at-most-once,
+    restart-safe, cancelled when an appointment moves).
 
 # Part 2 — Engineering Design (EDD)
 
