@@ -1894,6 +1894,27 @@ clock (F10.1b) and an expression like `created_at + interval '10 days'` cannot b
 paused. The sweeper acts only on rows that are due and not paused; **silence
 never pauses anything**.
 
+### 2.10.1 What withdrawing service actually does
+
+Suspension and dormancy both **unbind the Retell agent from the number**. The
+number stays rented to that business; it simply stops being answered. Rebinding
+on return restores service on the same number, which is the whole point of
+holding it (F10.4).
+
+- **Unbind** on `active → suspended` (day 7) and on `cancelling → dormant`
+  (window close).
+- **Rebind** on any return to `active` — paying inside the window (F7.10b), or
+  coming back from dormancy (F7.12e).
+- **Release** only at deletion, day 60.
+
+> **A trap worth naming.** `selectReusableNumber` treats a Retell number with no
+> inbound agent as orphaned and reusable. An unbound number belonging to a
+> suspended business looks exactly like that. It is protected only because the
+> business row still exists and its `retell_phone_number` appears in
+> `takenNumbers` — so **that guard must never be weakened**, and the row must not
+> be deleted before the number is released. Getting this wrong hands a suspended
+> business's number to a stranger.
+
 **Lifecycle sweeper**, hourly:
 
 | Deadline kind         | Set when                | Action at `due_at`                             |
@@ -2016,7 +2037,7 @@ discovered late:
 | `(business_id, starts_at)` unique index                                                                       | Range exclusion constraint (§2.4/005)                                                              |
 | Agent answers with no booking-horizon or opening-hours check                                                  | Enforces both (F2.8, F2.9)                                                                         |
 | `/api/calls/[callId]/transcript` serves transcripts to the business dashboard                                 | **Deleted** — a business cannot read call content (F6.9); the operator uses Retell's own dashboard |
-| Nothing stops a suspended business's number from answering                                                    | Suspension must actually withdraw service (§2.10.1)                                                |
+| Nothing stops a suspended business's number from answering                                                    | Suspension and dormancy unbind the Retell agent; only deletion releases the number (§2.10.1)       |
 
 ## 2.16 Delivery plan
 
