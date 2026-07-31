@@ -491,7 +491,7 @@ charge failed first (F7.11).
 > new policy row, not a deploy.
 
 - **F7.17** A **chargeback is treated exactly as non-payment** (F10.3): the
-  7-day grace and suspension, then full revocation at day 30, with reminder
+  7-day grace and suspension, then full revocation at day 60, with reminder
   emails throughout so the business can resolve it and recover.
 - **F7.18** **Sales tax is collected through Stripe Tax**, configured per US
   state. Tax is Stripe's calculation, not Ringly's; Ringly stores the resulting
@@ -557,9 +557,9 @@ clamped figure becomes the debt on the departure record, uncollected.
 | ---- | ------------------------------------------------------------------------------------------------- |
 | 0–7  | Service continues and **this usage is billable**. Reminder emails.                                |
 | 7    | Suspended. Calls stop. **Number and all data retained.**                                          |
-| 7–30 | **Recoverable at any point** — Stripe retries, and paying what is owed restores service that day. |
-| ~28  | 48-hour final warning.                                                                            |
-| 30   | Number released, data deleted, debt recorded permanently. A later return is a new account.        |
+| 7–60 | **Recoverable at any point** — Stripe retries, and paying what is owed restores service that day. |
+| ~58  | 48-hour final warning.                                                                            |
+| 60   | Number released, data deleted, debt recorded permanently. A later return is a new account.        |
 
 **If the business cancels.** The window is **7 days or the end of the period,
 whichever comes first**. Through it service continues untouched and usage stops
@@ -742,11 +742,11 @@ delete the Stripe customer → delete Ringly's rows → write the departure reco
   | 0    | Charge fails. Service continues, usage keeps accruing, business emailed.                                                                        |
   | 0–7  | **Grace period.** Calls answered as normal. Reminder emails sent. This usage **is billable** — service given is service billed.                 |
   | 7    | **Suspended.** Calls stop being answered; **the number and all data are retained.**                                                             |
-  | 7–30 | Suspended but **fully recoverable at any point**: Stripe keeps retrying, and paying the outstanding charges restores service that day (F7.10b). |
-  | ~28  | **48-hour final warning by email**, itemising exactly what will be deleted.                                                                     |
-  | 30   | **Full stop.** Number released, Ringly-held data deleted, amount owed recorded permanently (F10.9).                                             |
+  | 7–60 | Suspended but **fully recoverable at any point**: Stripe keeps retrying, and paying the outstanding charges restores service that day (F7.10b). |
+  | ~58  | **48-hour final warning by email**, itemising exactly what will be deleted.                                                                     |
+  | 60   | **Full stop.** Number released, Ringly-held data deleted, amount owed recorded permanently (F10.9).                                             |
 
-  Days 7–30 cost Ringly almost nothing — service has already stopped, and only
+  Days 7–60 cost Ringly almost nothing — service has already stopped, and only
   the number rental continues — so the window is long, because the business's
   number is worth far more to them than the rental is to Ringly.
 
@@ -772,7 +772,7 @@ delete the Stripe customer → delete Ringly's rows → write the departure reco
   after service ends depends on why service ended:**
   - **Never activated** — removed at **day 10** (F10.1). No relationship to
     protect.
-  - **Non-payment or chargeback** — held to **day 30** (F10.3), recoverable
+  - **Non-payment or chargeback** — held to **day 60** (F10.3), recoverable
     throughout by paying what is owed. Holding it costs Ringly only the rental;
     releasing it early costs the business its identity.
   - **The business's own cancellation** — held a further **60 days** after
@@ -781,7 +781,7 @@ delete the Stripe customer → delete Ringly's rows → write the departure reco
 - **F10.5** **Ringly issues no deletion call to the telephony provider.**
   Transcripts and recordings expire on their own **30-day TTL** (F10.6), which is
   never longer than the window before a business is deleted, so provider-held
-  content is gone by then without Ringly doing anything. Deletion at day 30 covers
+  content is gone long before then without Ringly doing anything. Deletion covers
   Ringly's own database only.
 - **F10.6** **Ringly stores neither transcripts nor recordings.** Both remain
   with the telephony provider and are fetched on demand when needed. Retention is
@@ -802,7 +802,7 @@ delete the Stripe customer → delete Ringly's rows → write the departure reco
   - The **only** thing on a 30-day clock is what Ringly does **not** store:
     transcripts and recordings, held by the telephony provider (F10.6).
   - Everything Ringly holds is destroyed when the relationship is over, on the
-    clock the ending sets (F10.3, F10.4): **day 30** for non-payment, **60 days
+    clock the ending sets (F10.3, F10.4): **day 60** for non-payment, **60 days
     after service stops** for a business that cancelled, **day 10** for one that
     never activated.
   - There is no partial or rolling deletion, and no field-level expiry.
@@ -1301,9 +1301,9 @@ recordings are fetched from Retell on demand, which is what
   carries the transcript in its payload, so `outcome`, `end_reason` and
   `is_billable` are derived and persisted at that moment. Only the transcript
   _text_ is transient.
-- **Deletion at day 30 is two-sided** (F10.5): purge our rows _and_ delete the
-  Retell-side call data. Retell's own 30-day retention aligns by construction,
-  but the delete must still be issued, not assumed.
+- **Deletion is one-sided** (F10.5): Ringly purges its own rows and issues **no**
+  deletion call to Retell. Retell's 30-day TTL expires long before the earliest
+  Ringly deletion, so provider-held content is already gone.
 - **What this costs:** transcript _search_ (F6.4) is impossible over data we do
   not hold, and no call history older than 30 days is available to anyone.
 
