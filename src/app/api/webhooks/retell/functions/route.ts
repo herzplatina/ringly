@@ -45,7 +45,7 @@ export async function POST(req: NextRequest) {
         return handleCheckAvailability(db, business, args);
 
       case "record_whatsapp_consent":
-        return handleRecordConsent(db, business, args, callId);
+        return handleRecordConsent(db, business, args, callId, fromNumber);
 
       case "book_appointment":
         return handleBookAppointment(db, business, args, callId);
@@ -57,7 +57,7 @@ export async function POST(req: NextRequest) {
         return handleCancel(db, business, args, fromNumber);
 
       case "get_customer_appointments":
-        return handleGetAppointments(db, business, args);
+        return handleGetAppointments(db, business, fromNumber);
 
       default:
         return NextResponse.json({
@@ -143,8 +143,18 @@ async function handleRecordConsent(
   business: { id: string },
   args: Record<string, unknown>,
   callId: string,
+  callerPhone: string,
 ) {
-  const phoneNumber = normalizePhone(String(args.phone_number ?? ""));
+  // Consent is recorded against the verified caller ID, never a number the
+  // model supplied. Otherwise a caller could flip someone else's declined
+  // consent to granted and cause messages to be sent to a person who refused
+  // them.
+  const phoneNumber = normalizePhone(callerPhone);
+  if (!phoneNumber) {
+    return NextResponse.json({
+      result: "I can only record consent for the number you're calling from.",
+    });
+  }
   const consent = args.consent; // true / false / "yes" / "no"
   const granted =
     consent === true || consent === "yes" || consent === "granted";
@@ -531,9 +541,18 @@ async function handleCancel(
 async function handleGetAppointments(
   db: ReturnType<typeof createServiceClient>,
   business: { id: string; timezone: string },
-  args: Record<string, unknown>,
+  callerPhone: string,
 ) {
-  const phoneNumber = String(args.phone_number ?? "");
+  // The caller ID from the verified webhook, never a number the model supplied.
+  // Taking it from the tool arguments let any caller ask for any number and be
+  // read that customer's name, appointment times and appointment ids.
+  if (!callerPhone) {
+    return NextResponse.json({
+      result:
+        "I can only look up appointments for the number you're calling from.",
+    });
+  }
+  const phoneNumber = callerPhone;
 
   const { data: customer } = await db
     .from("customers")
