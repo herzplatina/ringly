@@ -9,7 +9,9 @@
     "lint": "eslint",
     "test": "jest",
     "test:e2e": "playwright test",
-    "test:e2e:ui": "playwright test --reporter=list"
+    "test:e2e:ui": "playwright test --reporter=list",
+    "test:behaviour": "jest --config jest.behaviour.config.mjs",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.107.0",

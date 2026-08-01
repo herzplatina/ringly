@@ -13,6 +13,24 @@ const eslintConfig = defineConfig([
     "build/**",
     "next-env.d.ts",
   ]),
+  {
+    // Repo-wide, as the conventional meaning of a leading underscore:
+    // "declared on purpose, unused on purpose". Applies everywhere rather than
+    // just to tests, because the convention is not a test concern — though
+    // tests/behaviour/harness is what makes it load-bearing, since a parameter
+    // there documents the signature of a method whose body does not exist yet
+    // (EDD §2.20.2), and warnings nobody can act on are how real ones get
+    // missed.
+    //
+    // Caught errors are deliberately *not* exempt: a swallowed error should
+    // stay noisy.
+    rules: {
+      "@typescript-eslint/no-unused-vars": [
+        "warn",
+        { argsIgnorePattern: "^_", varsIgnorePattern: "^_" },
+      ],
+    },
+  },
 ]);
 
 export default eslintConfig;

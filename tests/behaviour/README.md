@@ -35,20 +35,13 @@ reads the database while the real dashboard calls an API, **every test passes
 while the API is broken** — and nothing in the suite will tell you. The same
 applies to any projection that takes a shortcut the product does not take.
 
-Three rules that keep it honest:
+Three rules keep it honest, and each is stated in full beside the code it
+constrains rather than here, so there is one copy to keep true:
 
-1. **Projections read. They never compute.** The moment a projection calculates
-   a clamped total, a period boundary, or an outcome, it is a second
-   implementation of the product — one that can be wrong in exactly the same way
-   as the first, so the test agrees with the bug. Look things up; shape the
-   result; stop.
-2. **A projection goes through the same path the product does, as soon as that
-   path exists.** Reading the database is a temporary measure for surfaces not
-   yet built, not a design choice. When the API lands, the projection moves to
-   it — and no test body changes, which is the whole point.
-3. **A fake must be able to fail.** A fake that only ever returns success proves
-   nothing about the fail-closed requirements (F2.7), which are among the most
-   important behaviours here.
+1. **Projections read. They never compute.** — `harness/projections.ts`
+2. **A projection goes through the same path the product does**, as soon as that
+   path exists. — `harness/projections.ts`
+3. **A fake must be able to fail.** — `harness/fakes.ts`
 
 **§2.20.3 lists what this suite cannot prove at all** — including eight
 scenarios that pass on something narrower than the requirement they hold. Read
@@ -58,12 +51,40 @@ it before treating green as done.
 
 ```
 harness/
-  index.ts        the only import a spec may make
-  world.ts        per-test tenant setup and teardown
-  clock.ts        time control
-  actors/         caller · owner · operator · system
-  projections/    serviceStatus · billingHistory · inbox · …
-  fakes/          google · retell · resend · outcome classifier
-  stripe.ts       real test-mode client, with test clocks
-*.spec.ts         18 files, one per §2.21 group
+  index.ts        the only import a spec may make — barrel
+  types.ts        the vocabulary: Money, Day/Instant, outcomes, read models
+  pending.ts      notImplemented() / pending(), naming requirement + phase
+  world.ts        aBusiness() builder, per-test lifecycle
+  actors.ts       writes: caller · owner · operator · system · stripe
+  projections.ts  reads, including reads of the fakes — see below
+  fakes.ts        arranging vendors: google · retell · resend · classifier · places
+setup.ts          global afterEach teardown
+harness.spec.ts   the harness testing itself
+*.spec.ts         18 files to come, one per §2.21 group
 ```
+
+The split is by **direction, not by ownership**: everything that reads is a
+projection even when a fake is what answers it. Otherwise "does the number
+answer?" and "which numbers are held?" land in different files and nobody can
+say where a new read belongs.
+
+## Running them
+
+```sh
+npm run test:behaviour
+```
+
+Separate from `npm test` on purpose: the unit suite stays fast and hermetic,
+while these need a database, Stripe test mode, and the fakes standing up.
+
+## Status
+
+The **interface is complete**; the implementations are not. Every actor,
+projection and fake throws `NotImplementedError` naming the requirement it holds
+and the phase that will make it real (EDD §2.16). Scenarios for unbuilt phases
+are `test.todo`, so the suite is always green-or-todo rather than a wall of red
+nobody reads.
+
+The vocabulary derives from Part 1, not from code, which is why it could be
+written before the implementation exists — and why it should not need to change
+when the implementation arrives.
