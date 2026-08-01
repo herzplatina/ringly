@@ -1,5 +1,6 @@
 import {
   normalizePhone,
+  namesMatch,
   phonesMatch,
   isValidTimezone,
   normalizeTimezone,
@@ -9,6 +10,37 @@ describe("normalizePhone", () => {
   test("strips non-digits", () => {
     expect(normalizePhone("+1 (415) 555-1234")).toBe("14155551234");
     expect(normalizePhone("")).toBe("");
+  });
+});
+
+describe("namesMatch", () => {
+  // F2.4 identifies an appointment by name plus details instead of by caller
+  // ID, so this comparison is an authentication check, not a convenience.
+  it("tolerates what speech-to-text does to a name", () => {
+    expect(namesMatch("Jane Nguyen", "jane nguyen")).toBe(true);
+    expect(namesMatch("Jane  Nguyen", "Jane Nguyen")).toBe(true);
+    expect(namesMatch("Renée O'Brien", "Renee OBrien")).toBe(true);
+    expect(namesMatch(" Jane Nguyen ", "Jane Nguyen")).toBe(true);
+    expect(namesMatch("Blow-dry", "blow dry")).toBe(true);
+  });
+
+  it("never matches on a prefix, which would hand over another customer", () => {
+    expect(namesMatch("Anna", "Ann")).toBe(false);
+    expect(namesMatch("Jane Nguyen", "Jane")).toBe(false);
+    expect(namesMatch("Jane Nguyen", "Jane Nguyener")).toBe(false);
+  });
+
+  it("treats an empty or punctuation-only name as no match, never a wildcard", () => {
+    expect(namesMatch("", "")).toBe(false);
+    expect(namesMatch("Jane", "")).toBe(false);
+    expect(namesMatch("", "Jane")).toBe(false);
+    expect(namesMatch("---", "Jane")).toBe(false);
+    expect(namesMatch("---", "***")).toBe(false);
+  });
+
+  it("still distinguishes genuinely different people", () => {
+    expect(namesMatch("Jane Nguyen", "John Nguyen")).toBe(false);
+    expect(namesMatch("Colour", "Cut")).toBe(false);
   });
 });
 

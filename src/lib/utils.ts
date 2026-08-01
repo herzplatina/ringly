@@ -44,6 +44,36 @@ export function phonesMatch(a: string, b: string): boolean {
   return na.length > 0 && na === nb;
 }
 
+/**
+ * Compare two spoken names, or a spoken service name against a catalogue one.
+ *
+ * F2.4 identifies an appointment by name plus its details rather than by caller
+ * ID, so this is doing authentication work: it must tolerate what speech-to-text
+ * does to a name — case, accents, punctuation, doubled spaces — without
+ * becoming so loose that two different customers of one business collide. It
+ * normalises and requires equality; it never does fuzzy or partial matching,
+ * because "Ann" matching "Anna" would hand one customer another's appointment.
+ *
+ * An empty value never matches, so a missing name is a refusal rather than a
+ * wildcard.
+ */
+export function namesMatch(a: string, b: string): boolean {
+  const norm = (v: string) =>
+    v
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "") // Renée -> Renee
+      // Apostrophes are intra-word marks, so they are removed rather than
+      // separated: transcripts disagree about O'Brien vs OBrien. Everything
+      // else separates, so "Blow-dry" and "blow dry" agree while "Anna" and
+      // "Ann" still do not.
+      .replace(/['\u2019]/g, "")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, " ")
+      .trim();
+  const na = norm(a);
+  return na.length > 0 && na === norm(b);
+}
+
 /** True if `tz` is a valid IANA timezone that Intl (and date-fns-tz) accepts. */
 export function isValidTimezone(tz: string): boolean {
   if (!tz) return false;

@@ -10,7 +10,37 @@ import {
 import { sendWhatsApp } from "@/lib/twilio";
 import { addHours } from "date-fns";
 import { fromZonedTime } from "date-fns-tz";
-import { normalizePhone, phonesMatch } from "@/lib/utils";
+import { namesMatch, normalizePhone } from "@/lib/utils";
+
+/**
+ * Supabase returns a joined one-to-one relation as either an object or a
+ * single-element array depending on how it inferred the relationship.
+ */
+function joined<T>(v: T[] | T | null | undefined): T | undefined {
+  return Array.isArray(v) ? v[0] : (v ?? undefined);
+}
+
+/** Local wall-clock date + time in a timezone, as a UTC ISO timestamp. */
+function localToUtcIso(
+  date: string,
+  time: string,
+  timezone: string,
+): string | null {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !/^\d{2}:\d{2}$/.test(time)) {
+    return null;
+  }
+  // Find the UTC instant whose rendering in `timezone` is the wanted local
+  // time. One correction pass is enough: offsets are whole minutes, so the
+  // second evaluation is exact except across a transition, where the earlier
+  // of the two candidate instants is returned.
+  const naive = new Date(`${date}T${time}:00Z`);
+  if (Number.isNaN(naive.getTime())) return null;
+  const seen = new Date(naive.toLocaleString("en-US", { timeZone: timezone }));
+  const local = new Date(naive.toLocaleString("en-US", { timeZone: "UTC" }));
+  return new Date(
+    naive.getTime() + (local.getTime() - seen.getTime()),
+  ).toISOString();
+}
 
 export async function POST(req: NextRequest) {
   const body = await req.text();
@@ -51,13 +81,13 @@ export async function POST(req: NextRequest) {
         return handleBookAppointment(db, business, args, callId);
 
       case "reschedule_appointment":
-        return handleReschedule(db, business, args, fromNumber);
+        return handleReschedule(db, business, args);
 
       case "cancel_appointment":
-        return handleCancel(db, business, args, fromNumber);
+        return handleCancel(db, business, args);
 
-      case "get_customer_appointments":
-        return handleGetAppointments(db, business, fromNumber);
+      case "find_appointment":
+        return handleFindAppointment(db, business, args);
 
       default:
         return NextResponse.json({
@@ -378,10 +408,10 @@ async function handleReschedule(
     whatsapp_sender_status: string;
   },
   args: Record<string, unknown>,
-  callerPhone: string,
 ) {
   const appointmentId = String(args.appointment_id ?? "");
   const newStartsAt = String(args.new_starts_at ?? "");
+  const statedName = String(args.customer_name ?? "").trim();
 
   const { data: appt } = await db
     .from("appointments")
@@ -396,11 +426,13 @@ async function handleReschedule(
     return NextResponse.json({ result: "Appointment not found." });
   }
 
-  // Verify the caller owns this appointment. phonesMatch requires both numbers
-  // to be non-empty, so a suppressed caller ID never passes the ownership check.
-  if (!phonesMatch((appt as any).customers?.phone_number ?? "", callerPhone)) {
+  // F2.4 — the identifying tuple authenticates, not caller ID: a customer may
+  // ring from a different phone or withhold their number. The name is
+  // re-checked here so this call cannot act on an appointment that
+  // find_appointment never matched.
+  if (!namesMatch((appt as any).customers?.name ?? "", statedName)) {
     return NextResponse.json({
-      result: "You can only reschedule your own appointments.",
+      result: "That name does not match the booking. Could you say it again?",
     });
   }
 
@@ -491,9 +523,9 @@ async function handleCancel(
   db: ReturnType<typeof createServiceClient>,
   business: { id: string },
   args: Record<string, unknown>,
-  callerPhone: string,
 ) {
   const appointmentId = String(args.appointment_id ?? "");
+  const statedName = String(args.customer_name ?? "").trim();
 
   const { data: appt } = await db
     .from("appointments")
@@ -506,10 +538,10 @@ async function handleCancel(
     return NextResponse.json({ result: "Appointment not found." });
   }
 
-  // Verify the caller owns this appointment (phonesMatch rejects empty numbers).
-  if (!phonesMatch((appt as any).customers?.phone_number ?? "", callerPhone)) {
+  // F2.4 — see handleReschedule: the tuple authenticates, not caller ID.
+  if (!namesMatch((appt as any).customers?.name ?? "", statedName)) {
     return NextResponse.json({
-      result: "You can only cancel your own appointments.",
+      result: "That name does not match the booking. Could you say it again?",
     });
   }
 
@@ -537,71 +569,88 @@ async function handleCancel(
   return NextResponse.json({ result: "Appointment cancelled successfully." });
 }
 
-// ── get_customer_appointments ───────────────────────────────────────────────
-async function handleGetAppointments(
+// ── find_appointment ────────────────────────────────────────────────────────
+/**
+ * F2.4 / §2.5.6 — identify one appointment by name plus its details.
+ *
+ * **Caller ID is deliberately not used.** A customer may ring from a different
+ * phone or withhold their number, so gating on caller ID refuses legitimate
+ * callers. The four facts together are the authentication: the tuple is narrow
+ * because two appointments cannot share a slot, and a caller who already knows
+ * the name, date, time and service of a booking knows everything this returns.
+ *
+ * **There is deliberately no way to list a customer's appointments.** An
+ * earlier version took a phone number and returned everything booked under it,
+ * which let any caller name any number and be read that customer's name,
+ * schedule and appointment ids.
+ */
+async function handleFindAppointment(
   db: ReturnType<typeof createServiceClient>,
   business: { id: string; timezone: string },
-  callerPhone: string,
+  args: Record<string, unknown>,
 ) {
-  // The caller ID from the verified webhook, never a number the model supplied.
-  // Taking it from the tool arguments let any caller ask for any number and be
-  // read that customer's name, appointment times and appointment ids.
-  if (!callerPhone) {
+  const name = String(args.customer_name ?? "").trim();
+  const date = String(args.date ?? "").trim();
+  const time = String(args.time ?? "").trim();
+  const serviceName = String(args.service_name ?? "").trim();
+
+  if (!name || !date || !time || !serviceName) {
     return NextResponse.json({
       result:
-        "I can only look up appointments for the number you're calling from.",
+        "I need the name it was booked under, the date, the time and the service.",
     });
   }
-  const phoneNumber = callerPhone;
 
-  const { data: customer } = await db
-    .from("customers")
-    .select("id, name")
-    .eq("business_id", business.id)
-    .eq("phone_number", phoneNumber)
-    .single();
-
-  if (!customer) {
+  const startsAt = localToUtcIso(date, time, business.timezone);
+  if (!startsAt) {
     return NextResponse.json({
-      result: "No record found for this phone number.",
+      result: "I did not catch the date and time. Could you say them again?",
     });
   }
 
-  const { data: appointments } = await db
+  // Everything in that slot, so a partial match can say which detail was wrong
+  // rather than a bare "not found" the caller cannot act on (F2.4).
+  const { data: inSlot } = await db
     .from("appointments")
-    .select("id, starts_at, status, services(name)")
-    .eq("customer_id", customer.id)
+    .select("id, starts_at, services(name), customers(name)")
     .eq("business_id", business.id)
-    .in("status", ["booked", "rescheduled"])
-    .gt("starts_at", new Date().toISOString())
-    .order("starts_at", { ascending: true })
-    .limit(3);
+    .eq("starts_at", startsAt)
+    .in("status", ["booked", "rescheduled"]);
 
-  if (!appointments || appointments.length === 0) {
+  const rows = inSlot ?? [];
+  if (rows.length === 0) {
     return NextResponse.json({
-      result: `${customer.name ?? "The customer"} has no upcoming appointments.`,
+      result: `I have nothing booked at that time on ${date}. Could you check the date and time?`,
     });
   }
 
-  const list = appointments
-    .map(
-      (a: {
-        id: string;
-        starts_at: string;
-        services?: { name?: string }[] | { name?: string } | null;
-      }) => {
-        const time = formatSlotForSpeech(
-          { starts_at: a.starts_at, ends_at: a.starts_at },
-          business.timezone,
-        );
-        const svc = Array.isArray(a.services) ? a.services[0] : a.services;
-        return `${svc?.name ?? "Appointment"} on ${time} (ID: ${a.id})`;
-      },
-    )
-    .join("; ");
+  const match = rows.find(
+    (a) =>
+      namesMatch(joined<{ name?: string }>(a.customers)?.name ?? "", name) &&
+      namesMatch(
+        joined<{ name?: string }>(a.services)?.name ?? "",
+        serviceName,
+      ),
+  );
+
+  if (!match) {
+    // Name the failing field, never the correct value: "that slot is Nguyen's"
+    // would leak the very thing the match protects.
+    const nameMatches = rows.some((a) =>
+      namesMatch(joined<{ name?: string }>(a.customers)?.name ?? "", name),
+    );
+    return NextResponse.json({
+      result: nameMatches
+        ? "I have that name at that time, but for a different service. Which service was it?"
+        : "That name does not match what I have at that time. Could you spell it for me?",
+    });
+  }
 
   return NextResponse.json({
-    result: `Upcoming appointments for ${customer.name}: ${list}`,
-    appointments,
+    result: `Found it: ${joined<{ name?: string }>(match.services)?.name ?? "appointment"} on ${formatSlotForSpeech(
+      { starts_at: match.starts_at, ends_at: match.starts_at },
+      business.timezone,
+    )}.`,
+    appointment_id: match.id,
   });
 }
