@@ -129,14 +129,19 @@ function bookingTools() {
         appointment_id: {
           type: "string",
           description:
-            "The id of the appointment to move (from get_customer_appointments).",
+            "The id of the appointment to move (from find_appointment).",
+        },
+        customer_name: {
+          type: "string",
+          description:
+            "The name the appointment was booked under, repeated back for confirmation.",
         },
         new_starts_at: {
           type: "string",
           description: "The new start time as an ISO 8601 timestamp.",
         },
       },
-      ["appointment_id", "new_starts_at"],
+      ["appointment_id", "customer_name", "new_starts_at"],
     ),
     bookingTool(
       "cancel_appointment",
@@ -144,16 +149,41 @@ function bookingTools() {
       {
         appointment_id: {
           type: "string",
-          description: "The id of the appointment to cancel.",
+          description:
+            "The id of the appointment to cancel (from find_appointment).",
+        },
+        customer_name: {
+          type: "string",
+          description:
+            "The name the appointment was booked under, repeated back for confirmation.",
         },
       },
-      ["appointment_id"],
+      ["appointment_id", "customer_name"],
     ),
     bookingTool(
-      "get_customer_appointments",
-      "Look up the appointments of the person currently on the call. Use before rescheduling or cancelling to get the appointment_id. Takes no arguments: it always uses the caller's own number, and cannot look up anyone else.",
-      {},
-      [],
+      "find_appointment",
+      "Find one existing appointment before rescheduling or cancelling it. The caller must state the name it was booked under, the date, the time and the service, and all four must match. There is no way to list a customer's appointments: if any detail is wrong, say which one and ask again.",
+      {
+        customer_name: {
+          type: "string",
+          description: "The name the appointment was booked under.",
+        },
+        date: {
+          type: "string",
+          description:
+            "The appointment date as YYYY-MM-DD, in the business's timezone.",
+        },
+        time: {
+          type: "string",
+          description:
+            "The appointment start time as HH:mm, 24-hour, in the business's timezone.",
+        },
+        service_name: {
+          type: "string",
+          description: "The service the appointment is for.",
+        },
+      },
+      ["customer_name", "date", "time", "service_name"],
     ),
   ];
 }

@@ -96,7 +96,14 @@ export type CallSession = {
   andAsksToSetUpRecurring(
     req: BookingRequest & { every: string },
   ): Promise<CallResult>;
-  /** F2.4 — identified by name plus date, time and service, all matching. */
+  /**
+   * F2.4 — identified by **name plus date, time and service, all matching**.
+   *
+   * Caller ID is deliberately not part of it: a customer may ring from a
+   * different phone or withhold their number, so the scenarios that matter here
+   * are the ones where `caller(...)` is a number the business has never seen.
+   * A partial match is refused and says which detail was wrong (scenario 47).
+   */
   andAsksToReschedule(
     identify: BookingRequest,
     to: string,
