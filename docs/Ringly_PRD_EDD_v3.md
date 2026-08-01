@@ -512,28 +512,42 @@ needs — the full list is F5.15.
   - **total calls**
   - **average call duration**
   - **median call duration**
-  - **total appointments booked** — the count of calls whose outcome was a booking. It is the
-    headline number, and it is the same figure as the `booked` bar in the outcome
-    breakdown, promoted to a tile because it is what an owner looks for first.
+  - **total appointments booked** — the headline number, promoted to a tile
+    because it is what an owner looks for first. **A call books at most one
+    appointment**, because a repeating request books only its first instance
+    (F2.2a) and there are no series anywhere in the system, so this is also the
+    count of calls whose outcome was a booking and is the same figure as the
+    `booked` grouping in F5.4.
   - **revenue booked** — an **estimate** wherever the range includes
     future appointments, labelled as such, because price resolves at occurrence
     time (F3.4).
-- **F5.4** A chart for showing the distributions of customer calls by time-of-day (time of call arrival)
-  grouping and outcome (booked / rescheduled / cancelled / enquiry-only /
-  dropped) grouping.
+- **F5.4** **One chart, and its only measure is the number of calls.** It has two
+  dimensions and no others:
+  - **time of day** — when the call arrived, in the windows of F5.4a;
+  - **outcome** — booked / rescheduled / cancelled / enquiry-only / dropped.
+
+  How the two are combined is the business's choice, not a second chart (F5.4b).
+
   **"Dropped"** covers both a caller who hung up without a resolved
   outcome **and** a call the agent could not help with. If the caller did not get
   what they rang for, it is dropped. A completed enquiry — the caller asked
-  something and got a useful answer — is considered "enquiry_only" as the outcome.
+  something and got a useful answer — is recorded as `enquiry_only`.
+
 - **F5.4a** **Time of day is reported in six four-hour windows**, starting at
   local midnight: 00–04, 04–08, 08–12, 12–16, 16–20, 20–24. Hourly resolution is
   noise at these volumes; four-hour windows are the grain at which a business can
   act — "we are missing calls in the evening".
-- **F5.4b** **Outcome and time of day cross each other through filters, not a
-  separate report.** The outcomes view filters by time window; the time-of-day
-  view filters by outcome. Both questions — how do evening calls end, when do
-  reschedules happen — are answered without either chart carrying two dimensions
-  at once.
+- **F5.4b** **The two dimensions swap roles inside that one chart. One groups,
+  the other filters, and the business chooses which way round.** There is no
+  second chart and no separate report:
+  - **grouped by outcome, filtered by time of day** — how do evening calls end?
+  - **grouped by time of day, filtered by outcome** — when do reschedules happen?
+
+  Both configurations are reached from the same chart, and **neither renders both
+  dimensions as grouping at the same time**. A single plot carrying every outcome
+  across every window is unreadable at these volumes and answers neither
+  question; swapping which dimension groups answers both.
+
 - **F5.5** **Three separate trends across periods** — calls, appointments
   booked, and revenue booked — each one chart, one column per period. Kept apart
   rather than behind a measure toggle, so a period where calls rose and revenue
