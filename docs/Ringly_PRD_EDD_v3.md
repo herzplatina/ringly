@@ -1,144 +1,28 @@
 # Ringly — PRD + EDD (v3.0)
 
-_Supersedes `Ringly_PRD_EDD_v2.md` (2026-07-01). Revised 2026-07-30 for
-multi-tenant scale, scheduling-provider independence, recurring appointments,
-the business analytics dashboard, Stripe billing, and email notifications.
-Revised again 2026-07-31 — see below._
+_Supersedes `Ringly_PRD_EDD_v2.md` (2026-07-01). Locked 2026-07-30, revised
+2026-07-31._
 
-> **Status.** Part 1 (PRD) is locked. Part 2 (EDD) was rewritten against it on
-> 2026-07-30 and supersedes the earlier design. **Almost none of it is built**:
-> what ships today is the v2 product plus the calendar conflict check (PR #2) and
-> the email templates (PR #4) — and §2.15 lists the places where that shipped code
-> contradicts this design. The delivery plan is §2.16.
+> **Status.** Part 1 (PRD) is locked and Part 2 (EDD) is written against it.
+> **Almost none of it is built.** What runs on `main` is the v2 product and
+> nothing else: the calendar conflict check (PR #2, closed) and the email
+> templates (PR #4, open) are both still on their branches. **§2.15** lists the
+> places where the shipped code contradicts this design; **§2.16** is the delivery
+> plan that replaces it.
 
-> **Revision 2026-07-31 — three scope decisions and a correctness pass.**
->
-> 1. **Ringly has no channel to the calling customer, at all** (§1.4). Every
->    trace of a messaging channel and of appointment reminders is gone from this
->    document, including the dormant metering column and the deferral entries
->    that kept them alive as ideas. What survives is the instruction to **delete
->    the shipped code** (§2.4/005, §2.15) — that is cleanup, not a plan.
-> 2. **Healthcare is out of scope** and always was in this document (§1.4, R11);
->    it is now also enforced in the schema and stated on the cover.
-> 3. **Hosting is undecided** — Vercel or Google Cloud Run (N8, Q6, §2.2a). The
->    design no longer assumes either, and §2.2a states what must not be adopted
->    while the question is open.
->
-> Five further decisions were settled the same day:
->
-> 4. **A suspended business is charged nothing new** (F7.11b): no fixed fee, no
->    usage, no new period, for any part of it. **Periods are 30 calendar days and
->    are never extended** — a business suspended for ten days of its period gets
->    twenty days of service for its $100, and those lost days are the whole
->    penalty for paying late. **What does not stop is the chase** (F7.11b-i): the
->    unpaid invoice stays open, retried and followed up, because clearing it is
->    the only way back.
-> 5. **Customer PII is destroyed on exactly two occasions, both automatic**
->    (F10.1a, §2.10.2): a self-serve control on the business dashboard for one
->    customer, and the lifecycle sweeper for all of them when the business itself
->    is deleted. Neither involves anyone at Ringly.
-> 6. **Opening hours are the business's to change** (F3.5), written on save and
->    binding on every subsequent booking decision, including the generation of
->    future recurring occurrences (F5.2e).
-> 7. **Money records get point-in-time recovery and cross-region backups** (N10).
->    A third copy outside the provider account is **deferred** (§1.9, R22) — real
->    work against a rare failure, with Stripe holding the payments meanwhile.
-> 8. **Rate limiting is sized for the traffic actually expected**, which is low
->    (N9): a per-IP limit and a spend ceiling, not an abuse system.
->
-> Two further decisions, and one clarification:
->
-> 9. **Ringly sends every payment email, including throughout suspension; Stripe
->    retries the card silently** (Q7, F7.11b-ii). Stripe does not know what
->    suspension means here, so it cannot write a true email about it.
-> 10. **The test-call allowance is five, and the sixth call is not answered**
->     (F1.13, F1.13a). At the fifth, the agent is unbound from the number — the
->     same mechanism as suspension — because a recorded refusal would still be a
->     connected call and still cost Ringly minutes. **Activating rebinds it**
->     (F1.13b), so a business that decides to pay is never held back by an
->     allowance that exists to cap free usage.
->
-> And the clarification, after both were misread in review: **activation is one
-> button pressed by the owner and nothing else ever triggers it** (F1.12b, F1.13d
-> — no call count activates a business), and **a test call is simply any call
-> arriving before that button is pressed** (F1.13c).
->
-> Three more, from the second review pass:
->
-> 11. **No new billing period opens while a business owes anything** (F7.11c),
->     through grace as well as suspension — so **the debt is frozen** the moment
->     service stops, and what a business owes on day 55 is what it owed on day 8.
->     Both non-payment cases are worked through in full (F7.11d). Grace service is
->     a one-time concession per failure, not a fresh week every thirty days
->     (F7.11c-i), and is **unbilled when the failed charge was a settlement**,
->     because that period closed the same day and none opens to bill it to
->     (F7.11c-ii). **The $100 is never prorated** (F7.11e). A worked life from
->     signup to either ending is at **F7b**.
-> 12. **Every activation failure is reported to the business, and says whether it
->     was charged** (F1.12a-i). Binding a number is **verified by reading the
->     provider's state back**, never by placing a call (F1.12a-ii).
-> 13. **The operator dashboard uses the same nightly rollup and the same live
->     median as the business one** (F9.7) — one pipeline, one freshness rule, and
->     both sides of a support call reading the same number.
->
-> And three from the third pass: **the current billing period is the first row of
-> the billing history, not a panel beside it** (F6.7); **the dashboard shows
-> whether the number is actually live, and test calls remaining** (F6.15), so a
-> business never has to ring itself to find out; and **every money figure states
-> whether it is settled, accruing, or outstanding** (F6.14a), on both dashboards.
->
-> **No clock is stopped by suspension** (§2.10) — not the 60-day deletion clock
-> and not the billing period. Suspension stops _service_, and therefore usage and
-> any new charge; it does not buy time back.
->
-> **The delivery plan was then rebuilt from scratch** by deriving the order from
-> Part 1's dependencies rather than patching the existing one (§2.16). It moved:
-> billing from phase 6 to **phase 4**, because the dashboard reports billing and
-> the dependency had been pointing the wrong way; lifecycle to **phase 5**, onto
-> the critical path; recurrence later, since it needs the provider abstraction
-> and hours. **Migrations are renumbered so their order matches ship order** —
-> the old plan had 008 shipping after 011, which cannot happen. §2.16.1 names the
-> minimum set that can charge a real customer (phases 0–5) and §2.16.2 lists every
-> difference from the previous plan.
->
-> **A test strategy and a scenario catalogue were added** (§2.20, §2.21): 269
-> end-to-end scenarios covering every requirement in Part 1, written against a
-> product-level vocabulary so the test bodies survive implementation change. Four
-> decisions shape them — an injectable clock, simulated Retell payloads, Stripe in
-> test mode with the other vendors faked, and assertions on projections rather
-> than tables. What the suite cannot prove is listed rather than glossed
-> (§2.20.3), and the vendor behaviour that needs a human is **action item A1**.
-> **§2.20.3 is the honest half**: requirements no test can hold, requirements only
-> a human can confirm, **scenarios that pass on something narrower than the
-> requirement they hold**, premises that are not behaviours at all, and the two
-> isolation rules enforced by lint rather than by tests.
-> **§2.20.3 is the honest half**: requirements no test can hold, requirements only
-> a human can confirm, **scenarios that pass on something narrower than the
-> requirement they hold**, premises that are not behaviours at all, and the two
-> isolation rules enforced by lint rather than by tests.
->
-> **A final pass over the whole document** then fixed: an invariant that claimed
-> a business is never charged for an unanswered day, which the fixed-period model
-> contradicts (I5); an operator alert firing for every business that used its
-> five test calls rather than only those that cannot activate (F1.13a); and three
-> more instances of the migration-ordering bug — `calendar_incidents`,
-> `email_log` and `billing_status` all owned by migrations later than the phase
-> that reads them, plus **no phase owning the email dispatcher at all** (now
-> its own phase) and the billing history assigned to a phase before the table it reads
-> exists. Migration 007 is split into 007 and 012, since two phases each needed
-> half of it.
->
-> The same pass corrected the contradictions and gaps found reading Part 1
-> against Part 2. The substantive ones: the 30-day/60-day retention conflict
-> (F7.15), a recording TTL that outlives an unactivated business (F10.5, R18),
-> no rule for a billing period ending mid-grace or mid-suspension (F7.11b),
-> `contact_email` and the horizons arriving in a migration three phases after the
-> phase that needs them (005), no `is_test_call` column for the counter F1.13
-> depends on, no schema behind the outcome definitions F6.5–F6.6 promise, and an
-> activation step that onboarding could not finish without billing (§2.16). New
-> requirements: F1.13a–d (the allowance, the unbind, and what makes a call a test call), F2.10–F2.11 (no transfer,
-> no voicemail), F3.5–F3.6 (hours are editable, timezone is not), F6.14 (say how
-> fresh the dashboard is), N8, N9, N10.
+> **Where to start.** **§1.4** draws the scope boundaries the rest of the document
+> assumes — most consequentially that there is no channel to the calling customer,
+> no healthcare business, and one owner account per business. **§1.8** carries the
+> questions still open (Q1, Q3, Q6) and the action items that are not phases.
+> **§2.19** maps every requirement to the design that serves it, and is the
+> quickest way to check whether something is covered. **§2.20.3** is the honest
+> half of the test strategy: what the 269 scenarios in §2.21 cannot prove.
+
+> **Revision history is in `git log docs/Ringly_PRD_EDD_v3.md`** — one commit per
+> decision, each carrying the reasoning for that decision alone. Every decision is
+> stated in the section that owns it, and this cover deliberately does not
+> summarise them: a summary drifts from the sections it describes, and a reader
+> who trusts it then acts on something the document no longer says.
 
 ---
 
