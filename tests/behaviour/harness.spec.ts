@@ -1,16 +1,18 @@
+import * as harness from "./harness";
 import {
   NotImplementedError,
+  Refused,
   aBusiness,
-  billingHistory,
+  aCustomerNumber,
+  aProspect,
   caller,
   cents,
   day,
-  google,
   money,
   operator,
   owner,
-  serviceStatus,
-  system,
+  remember,
+  resetWorld,
 } from "./harness";
 
 /**
@@ -18,9 +20,223 @@ import {
  *
  * Not a behaviour scenario — §2.21 owns those. This exists so the barrel, the
  * types and the not-implemented mechanism cannot rot silently while every real
- * scenario sits in `test.todo`, which is exactly the window in which a
- * scaffold quietly stops compiling.
+ * scenario sits in `test.todo`, which is exactly the window in which a scaffold
+ * quietly stops compiling.
+ *
+ * **It is written by enumeration, not by sampling.** An earlier version tested
+ * two projections out of seventeen; mutation testing showed the other fifteen
+ * could be deleted outright with the suite still reporting green. Every
+ * assertion below is over the whole exported surface, so anything removed,
+ * renamed, or quietly switched to a synchronous throw fails here.
  */
+
+/** Every free function the barrel exports. Adding one means adding it here. */
+const EXPECTED_EXPORTS = [
+  "NotImplementedError",
+  "Refused",
+  "aBusiness",
+  "aCustomerNumber",
+  "aProspect",
+  "activationChecklist",
+  "allEmailSent",
+  "appointments",
+  "billingHistory",
+  "calendarIncident",
+  "callAnalytics",
+  "caller",
+  "candidates",
+  "cents",
+  "connectedCalendar",
+  "contentDeleteRequestedFor",
+  "dataExportIsOffered",
+  "day",
+  "departureRecord",
+  "enrichedDraft",
+  "everythingStoredAbout",
+  "hasCardOnFile",
+  "inbox",
+  "isReadableBy",
+  "ledger",
+  "money",
+  "numberAnswers",
+  "numberIsReusable",
+  "numbersHeld",
+  "openingHours",
+  "operatorMoneyTable",
+  "operatorQueue",
+  "opsIsReachableBy",
+  "owed",
+  "owedAtDeparture",
+  "owner",
+  "platformTotals",
+  "policy",
+  "remember",
+  "resetWorld",
+  "serviceStatus",
+  "services",
+  "unearningNumbers",
+];
+
+/**
+ * The exports that are real code rather than adapters, so the pending-check
+ * below skips them: value constructors, factories, and the teardown no-op.
+ */
+const NOT_ADAPTERS = new Set([
+  "NotImplementedError",
+  "Refused",
+  "aBusiness",
+  "aCustomerNumber",
+  "aProspect",
+  "caller",
+  "cents",
+  "day",
+  "money",
+  "owner",
+  "remember",
+  "resetWorld",
+]);
+
+/** Every stub object, and the exact members it must have. */
+const STUB_OBJECTS: Record<string, readonly string[]> = {
+  operator: [
+    "clearsCancelled",
+    "marksCancelled",
+    "pausesDeletionClock",
+    "resetsTestCallAllowance",
+    "resumesDeletionClock",
+    "setsPolicy",
+    "viewsAsBusiness",
+  ],
+  system: ["advanceBy", "advanceTo", "runDueWorkers", "runWorker"],
+  calendar: [
+    "becomesSlow",
+    "becomesUnreachable",
+    "ownerCreatesEvent",
+    "recovers",
+    "revokesConsent",
+    "willDeclineCalendarScope",
+  ],
+  telephony: [
+    "willFailNextBind",
+    "willFailNextUnbind",
+    "willSilentlyIgnoreNextBind",
+    "willSilentlyIgnoreNextUnbind",
+  ],
+  email: ["comesBack", "dropsNextDelivery", "goesDown"],
+  payments: [
+    "comesBack",
+    "declineNextCharge",
+    "dropsNextWebhook",
+    "filesChargeback",
+    "goesDown",
+    "payOutstanding",
+    "pays",
+    "redeliversLastWebhook",
+    "sendsUnsignedWebhook",
+  ],
+  classifier: [
+    "deliverPending",
+    "holdsNextResult",
+    "willClassifyNextAs",
+    "willFailNext",
+  ],
+  enrichment: [
+    "comesBack",
+    "goesDown",
+    "websiteOffers",
+    "websiteUnreachable",
+    "willReturnCandidates",
+  ],
+  storage: ["failsNextWrite", "recovers"],
+};
+
+const OWNER_METHODS = [
+  "addsPaymentMethod",
+  "addsService",
+  "cancels",
+  "changesContactEmail",
+  "confirmsTestCallWorked",
+  "deactivatesService",
+  "deletesCustomer",
+  "deletesService",
+  "editsService",
+  "optsOutOfStatsDigest",
+  "pressesActivate",
+  "reconnectsCalendar",
+  "reordersServices",
+  "repricesService",
+  "setsBookingHorizon",
+  "setsOpeningHours",
+  "setsRecurrenceHorizon",
+  "verifiesEmail",
+];
+
+const SESSION_TURNS = [
+  "andAsksAboutServices",
+  "andAsksForSomethingElse",
+  "andAsksToBook",
+  "andAsksToCancel",
+  "andAsksToReschedule",
+  "andAsksToSetUpRecurring",
+  "andChooses",
+  "andConfirms",
+  "andCorrects",
+  "andHangsUp",
+  "andSays",
+  "transcript",
+];
+
+const PROSPECT_STEPS = [
+  "commits",
+  "declinesCalendarScope",
+  "edits",
+  "grantsConsent",
+  "picksCandidate",
+  "submits",
+];
+
+const BUILDER_STEPS = [
+  "activated",
+  "activatedOn",
+  "inTimezone",
+  "named",
+  "openingHours",
+  "provisioned",
+  "readyToActivate",
+  "withContactEmail",
+  "withDayOneOn",
+  "withServices",
+];
+
+/**
+ * The delivery phases of EDD §2.16, verbatim.
+ *
+ * A stub's phase is **the phase in which that adapter member becomes
+ * implementable** — the one that first ships a surface it can drive or read.
+ * That is usually, but not always, the phase delivering the requirement it
+ * holds: `connectedCalendar` reads the calendar fake and so works from Phase 1,
+ * though F4 lands at 7.
+ */
+const DELIVERY_PHASES = [
+  "Phase 0 — Google verification",
+  "Phase 1 — Foundations",
+  "Phase 2 — Email plumbing",
+  "Phase 3 — Onboarding",
+  "Phase 4 — Billing",
+  "Phase 5 — Lifecycle",
+  "Phase 6 — Catalogue + hours",
+  "Phase 7 — Provider abstraction",
+  "Phase 8 — Business dashboard",
+  "Phase 9 — Recurrence",
+  "Phase 10 — Operator dashboard",
+];
+
+const B = { id: "b1" };
+
+/** Calls a stub with throwaway arguments; an unimplemented adapter ignores them. */
+const invoke = (fn: unknown): unknown =>
+  (fn as (...a: unknown[]) => unknown)(B, B, B);
+
 describe("harness", () => {
   describe("scalars", () => {
     it("converts dollars to cents without floating-point drift", () => {
@@ -28,6 +244,15 @@ describe("harness", () => {
       expect(money(0.29).cents).toBe(29);
       expect(money(100).cents).toBe(10_000);
       expect(money(470.35).cents).toBe(47_035);
+    });
+
+    it("normalises negative zero, which toEqual treats as a different value", () => {
+      // Without this, an `owed()` arriving at zero from below fails
+      // `toEqual(money(0))` and reads as a product bug. Refunds, absorbed
+      // excess and negative margin all make it reachable.
+      expect(Object.is(money(-0.001).cents, -0)).toBe(false);
+      expect(cents(-0)).toEqual(cents(0));
+      expect(money(-0)).toEqual(money(0));
     });
 
     it("takes cents directly for figures the product states in cents", () => {
@@ -38,6 +263,15 @@ describe("harness", () => {
       expect(day(45).index).toBe(45);
     });
 
+    it("rejects a day index it cannot mean, rather than yielding NaN", () => {
+      // Jest holds NaN equal to NaN, so an unvalidated index would make two
+      // mistyped days compare equal and assert nothing.
+      expect(() => day(NaN)).toThrow(/whole day index/);
+      expect(() => day(0)).toThrow(/whole day index/);
+      expect(() => day(-3)).toThrow(/whole day index/);
+      expect(() => day(1.5)).toThrow(/whole day index/);
+    });
+
     it("names a moment within a day, for the window and DST scenarios", () => {
       expect(day(45, "19:00")).toEqual({ dayIndex: 45, minuteOfDay: 1140 });
       expect(day(1, "00:00").minuteOfDay).toBe(0);
@@ -45,8 +279,6 @@ describe("harness", () => {
     });
 
     it("rejects a time it cannot parse rather than yielding NaN", () => {
-      // Jest holds NaN equal to NaN, so a silently-mistyped time would compare
-      // equal to any other mistyped time and the assertion would prove nothing.
       expect(() => day(45, "2pm")).toThrow(/hh:mm/);
       expect(() => day(45, "9:00")).toThrow(/hh:mm/);
       expect(() => day(45, "24:00")).toThrow(/not a time of day/);
@@ -54,114 +286,222 @@ describe("harness", () => {
     });
 
     it("distinguishes the two passes through a fall-back hour", () => {
-      // Scenario 253. Without the third argument both 01:30s are the same
-      // value and the requirement cannot be stated at all.
       expect(day(310, "01:30", "first")).not.toEqual(
         day(310, "01:30", "second"),
       );
-      // Absent unless asked for, so ordinary times stay comparable.
       expect(day(310, "01:30")).toEqual({ dayIndex: 310, minuteOfDay: 90 });
     });
 
     it("keeps both forms plain data, so toEqual compares structurally", () => {
-      // A method on these would make two separately built day(60) values
-      // unequal under Jest — the trap this shape exists to avoid.
       expect(day(60)).toEqual(day(60));
       expect(day(60, "09:00")).toEqual(day(60, "09:00"));
       expect(Object.values(day(60)).every((v) => typeof v !== "function")).toBe(
         true,
       );
     });
-  });
 
-  describe("unimplemented methods", () => {
-    it("names the requirement and the phase rather than failing blankly", async () => {
-      await expect(billingHistory({ id: "b1" })).rejects.toThrow(
-        NotImplementedError,
-      );
-      await expect(billingHistory({ id: "b1" })).rejects.toThrow(
-        /F6\.7.*Phase 4/,
-      );
+    it("hands out distinct caller numbers from the reserved range", () => {
+      const a = aCustomerNumber();
+      const b = aCustomerNumber();
+      expect(a).not.toEqual(b);
+      // 555 is reserved for fiction, so no fixture can dial a real person.
+      expect(a).toMatch(/^\+1555\d{7}$/);
     });
 
-    it("rejects from actors too, not only projections", async () => {
-      await expect(operator.pausesDeletionClock({ id: "b1" })).rejects.toThrow(
-        /F10\.1b.*Phase 5/,
-      );
-      await expect(system.runWorker("lifecycle_sweeper")).rejects.toThrow(
-        /Phase 1/,
-      );
-      await expect(system.advanceBy({ seconds: 61 })).rejects.toThrow(/F3\.2/);
-      await expect(google.becomesUnreachable()).rejects.toThrow(/F2\.7/);
+    it("captures a handle that outlives the business it names", () => {
+      expect(remember({ id: "gone" })).toEqual({ departedId: "gone" });
+    });
+  });
+
+  describe("the exported surface", () => {
+    it("is exactly this set, so nothing can be dropped unnoticed", () => {
+      const actual = Object.entries(harness)
+        .filter(([, v]) => typeof v === "function")
+        .map(([k]) => k)
+        .sort();
+      expect(actual).toEqual([...EXPECTED_EXPORTS].sort());
+    });
+
+    it("exposes each stub object with exactly its declared members", () => {
+      for (const [name, members] of Object.entries(STUB_OBJECTS)) {
+        const obj = (harness as unknown as Record<string, object>)[name];
+        expect({ [name]: Object.keys(obj).sort() }).toEqual({
+          [name]: [...members].sort(),
+        });
+      }
+    });
+
+    it("does not hand specs the not-implemented plumbing", () => {
+      expect(harness).toHaveProperty("NotImplementedError");
+      expect(harness).not.toHaveProperty("pending");
+      expect(harness).not.toHaveProperty("notImplemented");
+    });
+  });
+
+  describe("every unimplemented member", () => {
+    const adapters = EXPECTED_EXPORTS.filter((n) => !NOT_ADAPTERS.has(n));
+
+    it.each(adapters)("%s rejects rather than throwing", async (name) => {
+      // `rejects` — not try/catch — because a synchronous throw from a
+      // promise-returning function escapes `.catch()` and detonates
+      // `Promise.all`. That bug shipped once; this is the guard, and it now
+      // covers every member rather than the two it used to.
+      const fn = (harness as unknown as Record<string, unknown>)[name];
+      await expect(invoke(fn)).rejects.toThrow(NotImplementedError);
+    });
+
+    it.each(Object.entries(STUB_OBJECTS))(
+      "%s's members all reject",
+      async (name, members) => {
+        const obj = (
+          harness as unknown as Record<string, Record<string, unknown>>
+        )[name];
+        for (const m of members) {
+          await expect(invoke(obj[m])).rejects.toThrow(NotImplementedError);
+        }
+      },
+    );
+
+    it("names a requirement and a real phase, never a blank failure", async () => {
+      const seen: NotImplementedError[] = [];
+      const collect = async (fn: unknown) => {
+        await (invoke(fn) as Promise<unknown>).catch((e) => seen.push(e));
+      };
+      for (const name of adapters) {
+        await collect((harness as unknown as Record<string, unknown>)[name]);
+      }
+      // Stub-object members and call turns too, not just the free functions —
+      // an earlier version checked only the latter, and a bogus phase on
+      // `operator.setsPolicy` sailed through.
+      for (const [name, members] of Object.entries(STUB_OBJECTS)) {
+        const obj = (
+          harness as unknown as Record<string, Record<string, unknown>>
+        )[name];
+        for (const m of members) await collect(obj[m]);
+      }
+      const session = caller("+15550000000").calls(B) as unknown as Record<
+        string,
+        unknown
+      >;
+      for (const t of SESSION_TURNS) await collect(session[t]);
+      for (const m of OWNER_METHODS) {
+        await collect((owner(B) as unknown as Record<string, unknown>)[m]);
+      }
+      for (const st of PROSPECT_STEPS) {
+        await collect((aProspect() as unknown as Record<string, unknown>)[st]);
+      }
+
+      const expected =
+        adapters.length +
+        Object.values(STUB_OBJECTS).reduce((n, m) => n + m.length, 0) +
+        SESSION_TURNS.length +
+        OWNER_METHODS.length +
+        PROSPECT_STEPS.length;
+      expect(seen).toHaveLength(expected);
+      for (const e of seen) {
+        // The label is the map an implementer follows, so it is checked
+        // against the closed set of real phases. A loose `/^Phase \d+/` would
+        // accept "Phase 99 — Nonexistent", which is exactly the typo that
+        // sends someone looking for a phase that does not exist.
+        expect(e.holds).toMatch(/^[FNA]\d|^§\d/);
+        expect(DELIVERY_PHASES).toContain(e.phase);
+      }
     });
 
     it("rejects rather than throwing, so Promise.all does not detonate", async () => {
       const settled = await Promise.allSettled([
-        billingHistory({ id: "b1" }),
-        serviceStatus({ id: "b1" }),
+        harness.billingHistory(B),
+        harness.serviceStatus(B),
       ]);
       expect(settled.map((s) => s.status)).toEqual(["rejected", "rejected"]);
     });
+  });
 
-    it("throws from a caller session, which is reached through a factory", () => {
-      expect(() => caller("+15550000000").calls({ id: "b1" })).toThrow(
-        NotImplementedError,
-      );
+  describe("a product refusal is not the same as an unbuilt path", () => {
+    it("does not let `rejects.toThrow()` pass for free", () => {
+      // Seventeen scenarios in §2.21 assert the product *refuses* something.
+      // Written as a bare `rejects.toThrow()`, every one of them passed against
+      // an implementation that did not exist. They must name `Refused`, and
+      // `Refused` must be unsatisfiable by `NotImplementedError`.
+      const notBuilt = new NotImplementedError("F2.8", "Phase 1 — Foundations");
+      const refused = new Refused("outside opening hours");
+      expect(notBuilt).not.toBeInstanceOf(Refused);
+      expect(refused).not.toBeInstanceOf(NotImplementedError);
+      expect(refused.reason).toBe("outside opening hours");
+    });
+
+    it("still fails a refusal assertion written against today's stubs", async () => {
+      // The point of the split, demonstrated: this is how a refusal scenario
+      // must be written, and it correctly fails while unimplemented instead of
+      // passing on the not-implemented rejection.
+      await expect(
+        expect(owner(B).setsBookingHorizon(9999)).rejects.toThrow(Refused),
+      ).rejects.toThrow();
     });
   });
 
-  describe("the builder", () => {
-    it("chains configuration without touching anything", () => {
+  describe("factories", () => {
+    it("opens a call session without touching anything, so callers can race", () => {
+      // `calls()` must not throw synchronously: the concurrency scenarios fan
+      // out with Promise.all, which a sync throw would take down before either
+      // booking started.
+      expect(() => caller("+15550000000").calls(B)).not.toThrow();
+      expect(Object.keys(caller("+15550000000").calls(B)).sort()).toEqual(
+        [...SESSION_TURNS].sort(),
+      );
+    });
+
+    it("rejects from every turn of a call", async () => {
+      const session = caller("+15550000000").calls(B);
+      for (const turn of SESSION_TURNS) {
+        await expect(
+          invoke((session as unknown as Record<string, unknown>)[turn]),
+        ).rejects.toThrow(NotImplementedError);
+      }
+    });
+
+    it.each([
+      ["owner", () => owner(B), OWNER_METHODS],
+      ["aProspect", () => aProspect(), PROSPECT_STEPS],
+    ] as const)(
+      "%s exposes exactly its declared methods, all pending",
+      async (_n, make, expected) => {
+        const obj = make() as unknown as Record<string, unknown>;
+        expect(Object.keys(obj).sort()).toEqual([...expected].sort());
+        for (const m of expected) {
+          await expect(invoke(obj[m])).rejects.toThrow(NotImplementedError);
+        }
+      },
+    );
+
+    it("chains builder configuration without touching anything", () => {
       const builder = aBusiness()
         .named("Shear Genius")
         .inTimezone("America/Los_Angeles")
         .withServices([{ name: "Cut", price: money(45), durationMinutes: 30 }]);
-      expect(typeof builder.activated).toBe("function");
+      expect(Object.keys(builder).sort()).toEqual([...BUILDER_STEPS].sort());
     });
 
-    it("throws only when a step would actually create something", async () => {
+    it("throws only when a builder step would actually create something", async () => {
       await expect(aBusiness().activated()).rejects.toThrow(/F1\.12a.*Phase 4/);
+      await expect(aBusiness().provisioned()).rejects.toThrow(/Phase 3/);
     });
   });
 
-  describe("the barrel", () => {
-    it("does not hand specs the not-implemented plumbing", async () => {
-      const barrel = await import("./harness");
-      expect(barrel).toHaveProperty("NotImplementedError");
-      // A spec asserting `pending(...)` would be testing the harness, not the
-      // product; only the error type is public.
-      expect(barrel).not.toHaveProperty("pending");
-      expect(barrel).not.toHaveProperty("notImplemented");
+  describe("teardown", () => {
+    it("resolves, so a rejection from it always means a real leak", async () => {
+      // Deliberately swallowing nothing: an earlier version caught
+      // NotImplementedError here, and mutation testing showed the catch could
+      // be widened to hide any teardown failure with no test noticing.
+      await expect(resetWorld()).resolves.toBeUndefined();
     });
   });
 
-  describe("owner methods", () => {
-    it("are all present and all pending", async () => {
-      const o = owner({ id: "b1" });
-      const methods = Object.keys(o).sort() as (keyof typeof o)[];
-      // The exact set, not a lower bound: a method silently dropped during a
-      // refactor is precisely what this test is here to catch, and
-      // `toBeGreaterThan(10)` would keep passing.
-      expect(methods).toEqual([
-        "addsPaymentMethod",
-        "addsService",
-        "confirmsTestCallWorked",
-        "deactivatesService",
-        "deletesCustomer",
-        "optsOutOfStatsDigest",
-        "pressesActivate",
-        "reconnectsCalendar",
-        "repricesService",
-        "setsBookingHorizon",
-        "setsOpeningHours",
-        "setsRecurrenceHorizon",
-        "verifiesEmail",
-      ]);
-      for (const m of methods) {
-        await expect((o[m] as () => Promise<unknown>)()).rejects.toThrow(
-          NotImplementedError,
-        );
-      }
+  describe("the operator surface", () => {
+    it("changes policy through the operator, not through a constant", async () => {
+      await expect(
+        operator.setsPolicy({ testCallAllowance: 5 }),
+      ).rejects.toThrow(/F7\.8/);
     });
   });
 });

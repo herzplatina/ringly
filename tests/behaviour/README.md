@@ -5,9 +5,10 @@ The catalogue is EDD **§2.21**; the strategy behind them is **§2.20**.
 
 ## Why this directory is not called `e2e`
 
-It would be a lie. These drive Ringly with **simulated Retell payloads** and
-**faked Google, Retell and Resend**. They are integration tests of Ringly with
-fake edges — thorough, but not end-to-end. `e2e/` stays free for the real thing.
+It would be a lie. These drive Ringly with **simulated telephony payloads** and
+**faked calendar, telephony, email and enrichment**. They are integration tests
+of Ringly with fake edges — thorough, but not end-to-end. `e2e/` stays free for
+the real thing.
 
 ## The one rule
 
@@ -18,13 +19,25 @@ Those live in `harness/` and nowhere else.
 Test bodies use actors and projections only:
 
 ```
-await caller('+1555…').calls(biz).andAsksToBook({ service: 'Cut', at: 'Tue 2pm' })
+await caller(aCustomerNumber()).calls(biz).andAsksToBook({ service: 'Cut', at: 'Tue 2pm' })
 await system.advanceTo(day(45))
-expect(await billingHistory(biz)).toMatchObject([{ status: 'in progress' }])
+expect(await billingHistory(biz)).toMatchObject([{ status: 'in_progress' }])
 ```
 
 If you find yourself wanting a column name in a spec file, the projection is
 missing — add it to the harness.
+
+**The fakes are named for the capability, not the supplier** — `calendar`, not
+`google`; `telephony`, not `retell`. The supplier is exactly the sort of thing
+that gets renamed, and §2.6 already treats the scheduling provider as abstract.
+
+### Refusals must name `Refused`
+
+Roughly seventeen scenarios assert the product _declines_ something. Write them
+as `rejects.toThrow(Refused)`, never a bare `rejects.toThrow()` — every adapter
+member currently rejects with `NotImplementedError`, so the bare form passes
+against an implementation that does not exist. That defect was found by mutation
+testing and the two error types are deliberately unrelated so it cannot recur.
 
 ## ⚠️ The adapter can hide real bugs
 
@@ -79,11 +92,22 @@ while these need a database, Stripe test mode, and the fakes standing up.
 
 ## Status
 
-The **interface is complete**; the implementations are not. Every actor,
-projection and fake throws `NotImplementedError` naming the requirement it holds
-and the phase that will make it real (EDD §2.16). Scenarios for unbuilt phases
-are `test.todo`, so the suite is always green-or-todo rather than a wall of red
-nobody reads.
+**None of the 269 scenarios is written yet.** `scenarios.spec.ts` turns the
+whole of §2.21 into `test.todo`, so the runner prints `269 todo` and the gap
+between what is claimed and what is covered is on its own summary line. A
+scenario leaves that list by being written; an accounting test fails if one is
+merely deleted.
+
+The interface covers Phases 1–5 well and the later phases thinly — the
+operator-dashboard and catalogue read-back projections land with their phases.
+Every actor, projection and fake rejects with `NotImplementedError` naming the
+requirement it holds and the phase in which that member becomes implementable.
+
+`harness.spec.ts` guards the scaffold **by enumeration, not by sampling**. An
+earlier version tested two projections out of seventeen, and mutation testing
+showed the other fifteen could be deleted with the suite still green. It now
+pins the exact export set, every stub object's exact members, and asserts every
+member rejects rather than throwing synchronously.
 
 The vocabulary derives from Part 1, not from code, which is why it could be
 written before the implementation exists — and why it should not need to change

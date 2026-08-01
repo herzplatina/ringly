@@ -1,29 +1,26 @@
+import { NotImplementedError } from "./errors";
+
 /**
  * Every adapter method is declared up front — the vocabulary derives from the
  * PRD, not from code, so it can be written before the implementation exists.
  * Each one is *implemented* only when its phase arrives (EDD §2.16).
  *
- * Until then it throws `NotImplementedError`, naming the requirement it holds
- * and the phase that will make it real. Specs for unbuilt phases use
- * `test.todo`, so the suite is always green-or-todo and never a wall of red
- * that people learn to ignore.
+ * Until then it rejects with `NotImplementedError`, naming the requirement it
+ * holds and the phase that will make it real, so an unimplemented path says
+ * where to go rather than failing blankly.
  */
-export class NotImplementedError extends Error {
-  constructor(
-    readonly holds: string,
-    readonly phase: string,
-  ) {
-    super(`Not implemented — holds ${holds}, lands in ${phase} (EDD §2.16)`);
-    this.name = "NotImplementedError";
-  }
-}
 
 /**
  * Synchronous contexts only — a method whose declared return type is not a
  * promise.
  *
  * @param holds Requirement ids this will satisfy, e.g. `"F1.12a"`.
- * @param phase Delivery phase from EDD §2.16, e.g. `"Phase 4 — Billing"`.
+ * @param phase The phase in which *this adapter member* becomes implementable
+ *              — the one that first ships a surface it can drive or read.
+ *              Usually, but not always, the phase delivering the requirement it
+ *              holds: `connectedCalendar` reads the calendar fake and works
+ *              from Phase 1 even though F4 lands at Phase 7. Must be one of the
+ *              names in EDD §2.16; `harness.spec.ts` checks the whole set.
  */
 export function notImplemented(holds: string, phase: string): never {
   throw new NotImplementedError(holds, phase);

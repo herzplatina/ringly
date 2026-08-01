@@ -22,8 +22,11 @@ export * from "./fakes";
 export * from "./world";
 
 /**
- * Deliberately *not* `export *`: `notImplemented` and `pending` are the
- * harness's own plumbing and a spec has no business calling either. Only the
- * error type is public, so a spec can assert on a still-unimplemented path.
+ * `NotImplementedError` so a spec can assert on a still-unbuilt path, and
+ * `Refused` because a product refusal must be a *different* type — otherwise
+ * `rejects.toThrow()` passes against an implementation that does not exist.
+ *
+ * Deliberately not exported: `notImplemented` and `pending`. Those are the
+ * harness's own plumbing and a spec has no business calling either.
  */
-export { NotImplementedError } from "./pending";
+export { NotImplementedError, Refused } from "./errors";

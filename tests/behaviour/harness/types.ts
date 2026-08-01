@@ -13,11 +13,20 @@
 /** Money is always cents. Tests never do floating-point arithmetic on dollars. */
 export type Money = { readonly cents: number };
 
+/**
+ * `+ 0` is not decoration: it normalises negative zero.
+ *
+ * `Math.round(-0.001 * 100)` is `-0`, and Jest holds `{cents: -0}` *unequal* to
+ * `{cents: 0}`. In a suite full of refunds (171), absorbed excess (133) and
+ * negative margin (228), a total arriving at zero from below would fail
+ * `toEqual(money(0))` and read as a product bug. Same family as the `NaN` trap
+ * guarded in `day()`.
+ */
 export const money = (dollars: number): Money => ({
-  cents: Math.round(dollars * 100),
+  cents: Math.round(dollars * 100) + 0,
 });
 
-export const cents = (n: number): Money => ({ cents: n });
+export const cents = (n: number): Money => ({ cents: Math.round(n) + 0 });
 
 /**
  * A day on the test timeline. `day(1)` is the day the world was created.
@@ -34,8 +43,12 @@ export type Instant = {
   readonly minuteOfDay: number;
   /**
    * Which pass through a local time that happens twice (N5.3, scenario 253).
-   * Only ever set for the hour a fall-back transition duplicates — everywhere
-   * else a local time names exactly one instant and this stays undefined.
+   *
+   * A projection sets this **whenever the local time is ambiguous, and never
+   * otherwise**. The rule has to be stated, because Jest holds
+   * `{occurrence: "first"}` unequal to an absent one — leaving it to taste
+   * would make every ordinary `toEqual(day(45, "14:00"))` in the DST group
+   * pass or fail by accident.
    */
   readonly occurrence?: "first" | "second";
 };
@@ -74,11 +87,15 @@ export function day(
   hhmm?: string,
   occurrence?: "first" | "second",
 ): Day | Instant {
+  // Both arguments are validated, because Jest holds NaN equal to NaN. An
+  // unvalidated `day(someUndefinedThing)` or `day(45, "2pm")` would produce two
+  // structurally "equal" values and a green test asserting nothing.
+  if (!Number.isInteger(index) || index < 1) {
+    throw new Error(
+      `day(): expected a whole day index of 1 or more, got ${JSON.stringify(index)}`,
+    );
+  }
   if (hhmm === undefined) return { index };
-  // Validated rather than parsed loosely: `day(45, "2pm")` would otherwise
-  // yield minuteOfDay NaN, and Jest's toEqual holds NaN equal to NaN — so a
-  // mistyped time would produce two "equal" instants and a green test that
-  // asserts nothing.
   const match = /^(\d{2}):(\d{2})$/.exec(hhmm);
   if (!match) {
     throw new Error(
@@ -103,12 +120,25 @@ export type EmailAddress = string;
 export type BusinessRef = { readonly id: string };
 
 /**
+ * A business that has been deleted.
+ *
+ * Captured *before* teardown, because the scenarios that read a departure
+ * record (193, 194) or a released number (192) run after the `BusinessRef`
+ * has stopped referring to anything. A distinct type rather than a bare string,
+ * so the compiler stops a live `BusinessRef` being passed where only a departed
+ * one makes sense — and vice versa.
+ */
+export type DepartedRef = { readonly departedId: string };
+
+/**
  * One entry in the catalogue. Priced in `Money`, never in float dollars — the
  * seeding path and the owner's own edits must agree, or a test seeds $45.00 and
  * then asserts on 4499.
  */
 export type ServiceSpec = {
   readonly name: string;
+  /** F3.1 — name, description, price and duration are all editable. */
+  readonly description?: string;
   readonly price: Money;
   readonly durationMinutes: number;
 };
@@ -143,6 +173,15 @@ export type OpeningHours = ReadonlyArray<{
 export type CallOutcome =
   "booked" | "rescheduled" | "cancelled" | "enquiry_only" | "dropped";
 
+/**
+ * A call the classifier has labelled, or `null` for one it has not.
+ *
+ * `null` is load-bearing: F7.6 requires a call whose classification errored or
+ * expired to stay unclassified *and unbilled*, and the classifier fake can hold
+ * a batch open. Without a null member those scenarios cannot be asserted.
+ */
+export type ClassifiedAs = CallOutcome | null;
+
 /*
  * Deliberately absent: a `BillingStatus` union.
  *
@@ -158,6 +197,17 @@ export type PeriodStatus = "in_progress" | "paid" | "failed" | "refunded";
 
 /** F6.14a. Every money figure on either dashboard carries one of these. */
 export type MoneyState = "settled" | "accruing" | "outstanding";
+
+/**
+ * A money figure and the state it is in.
+ *
+ * F6.14a says *every* money figure states this, so the pairing belongs in the
+ * type rather than in a sibling field that a projection can forget.
+ */
+export type StatedMoney = {
+  readonly amount: Money;
+  readonly state: MoneyState;
+};
 
 /** F6.2. */
 export type ReportingUnit = "calendar_month" | "billing_period";
@@ -227,11 +277,35 @@ export type EndedBy = "never_activated" | "non_payment" | "cancelled";
 export type ServiceStatus = {
   /** Is the agent bound and the number answering? */
   readonly numberLive: boolean;
-  readonly number: PhoneNumber;
+  /** Null before provisioning completes (F1.9) and after release (F10.4b). */
+  readonly number: PhoneNumber | null;
   /** Present only when `numberLive` is false: why, and what turns it back on. */
   readonly reason?: "allowance_spent" | "suspended" | "dormant";
   /** Pre-activation only (F1.13). */
   readonly testCallsRemaining?: number;
+};
+
+/** F1.12 — three tasks in any order, plus the allowance. */
+export type ActivationChecklist = {
+  readonly emailVerified: boolean;
+  readonly testCallConfirmed: boolean;
+  readonly paymentMethodAdded: boolean;
+  /** F1.12a — false until all three are green. */
+  readonly activateAvailable: boolean;
+  readonly testCallsRemaining: number;
+};
+
+/** F1.1–F1.6 — what enrichment produced, before the owner commits it. */
+export type EnrichedDraft = {
+  readonly name: string | null;
+  readonly address: string | null;
+  readonly phone: PhoneNumber | null;
+  readonly website: string | null;
+  readonly timezone: string | null;
+  readonly openingHours: OpeningHours;
+  readonly services: readonly ServiceSpec[];
+  /** F1.5 — every enriched field is editable before commit. */
+  readonly editableFields: readonly string[];
 };
 
 /** F6.7 — one row per period, the open one first. */
@@ -242,12 +316,27 @@ export type BillingPeriodRow = {
   readonly billableMinutes: number;
   readonly usageCharge: Money;
   readonly total: Money;
+  /** F7.14 — stored as the payment provider calculated it, never derived here. */
+  readonly tax: Money;
   readonly percentOfCap: number;
-  readonly chargedOn?: Day;
+  /**
+   * An `Instant`, not a `Day`: the fixed fee and the usage settlement are
+   * separate movements, and scenarios 129 and 158 turn on their order within a
+   * single day.
+   */
+  readonly chargedAt?: Instant;
   readonly status: PeriodStatus;
   /** F7.11b — true when service was suspended for part of this period. */
   readonly suspended: boolean;
   readonly moneyState: MoneyState;
+};
+
+/** F7.16 — every movement, immutably (scenario 134). */
+export type LedgerEntry = {
+  readonly kind: "fixed_fee" | "usage" | "refund" | "failure" | "chargeback";
+  readonly amount: Money;
+  readonly at: Instant;
+  readonly periodStartsOn: Day;
 };
 
 /** F6.3, F6.3a. Counts are of calls, never appointments (F6.3). */
@@ -257,53 +346,128 @@ export type CallAnalytics = {
   /** Computed live, labelled live (F6.14). */
   readonly medianDurationSeconds: number;
   readonly callsThatBooked: number;
-  readonly revenueBooked: Money;
+  readonly revenueBooked: StatedMoney;
   readonly revenueIsEstimate: boolean;
+  /** F7.6 — calls the classifier has not labelled are their own bucket. */
+  readonly unclassified: number;
   readonly outcomes: Readonly<Record<CallOutcome, number>>;
   /**
    * F6.3c — outcome × window, both directions, because scenario 100 filters
-   * each by the other. Storage is five `*_by_window` arrays for exactly this
-   * reason; a flat per-window total would force the projection to sum them,
-   * which is the one thing a projection may not do.
+   * each by the other. Storage is five `*_by_window` arrays for the same
+   * reason.
    */
   readonly byWindow: Readonly<
     Record<CallOutcome, Readonly<Record<TimeWindow, number>>>
   >;
   /** F6.14 — the date the figures are complete to. */
   readonly completeTo: Day;
+  /** F6.14/scenario 115 — which figures are live rather than from the roll-up. */
+  readonly liveFigures: readonly string[];
 };
 
 export type AppointmentView = {
   readonly customer: PhoneNumber | null;
-  readonly customerName: string | null;
+  /**
+   * `null` when the caller never gave one; `"__erased__"` after an F10.1a-i
+   * deletion. Two distinct values, because scenario 204 turns on telling an
+   * erased customer apart from an anonymous booking — one `null` for both would
+   * pass on the wrong state.
+   */
+  readonly customerName: string | null | "__erased__";
   readonly service: string;
   /** An `Instant`: a ±2h shift (F5.4) is invisible at day resolution. */
   readonly startsAt: Instant;
   readonly durationMinutes: number;
   readonly seriesId: string | null;
+  /** F3.4 — the price captured at booking, not today's price. */
+  readonly pricedAt: Money;
 };
 
-/** What the *connected calendar* holds — read from the Google fake, not from Ringly. */
+/** F3.1 — the catalogue as the business sees it, in its own order. */
+export type ServiceView = ServiceSpec & {
+  readonly active: boolean;
+  readonly position: number;
+};
+
+/** What the *connected calendar* holds — read from the calendar fake, not from Ringly. */
 export type CalendarEvent = {
   readonly title: string;
   readonly startsAt: Instant;
   readonly durationMinutes: number;
 };
 
-/** Captured by the Resend fake. Assertions are on content, never on transport. */
+/** F2.7 — the dashboard banner, raised above the filters (scenario 66). */
+export type CalendarIncident = {
+  readonly active: boolean;
+  readonly offersReconnect: boolean;
+  readonly since?: Instant;
+};
+
+/** Captured by the email fake. Assertions are on content, never on transport. */
 export type CapturedEmail = {
-  readonly kind: EmailKind;
+  /**
+   * A raw string, deliberately **not** `EmailKind`.
+   *
+   * Scenario 210 is "nothing outside the registry is ever sent". Were this the
+   * closed union, the adapter would have to coerce or throw on an unregistered
+   * kind and the assertion would be against the harness's own type rather than
+   * the product. `EmailKind` stays, for the expected side of the comparison.
+   */
+  readonly kind: string;
   readonly to: EmailAddress;
   readonly from: SendingIdentity;
+  /** The literal envelope address, for F8.11's four-identity separation. */
+  readonly fromAddress: EmailAddress;
   readonly subject: string;
   readonly body: string;
-  readonly sentOn: Day;
+  /** An `Instant`: scenario 154 checks a 48-hour lead, unmeasurable at day grain. */
+  readonly sentAt: Instant;
 };
 
 export type OperatorQueueRow = {
   readonly business: BusinessRef;
   readonly condition: OperatorCondition;
   readonly sinceDay: Day;
+};
+
+/** F9.4 — one row per business in the operator's money table. */
+export type OperatorMoneyRow = {
+  readonly business: BusinessRef;
+  readonly revenue: StatedMoney;
+  readonly cost: Money;
+  readonly margin: Money;
+};
+
+/** F9.5 — platform-wide, across tenants. */
+export type PlatformTotals = {
+  readonly businesses: number;
+  readonly revenue: StatedMoney;
+  readonly cost: Money;
+  readonly margin: Money;
+  readonly paymentFailureRate: number;
+};
+
+/** F9.11 — a rented number earning nothing (scenario 239). */
+export type UnearningNumber = {
+  readonly number: PhoneNumber;
+  readonly business: BusinessRef | null;
+  readonly idleDays: number;
+};
+
+/**
+ * F7.8, F1.13, F6.6 — the policy rows.
+ *
+ * These are data, not constants in code: scenarios 35, 105, 126 and 135 all
+ * turn on a policy changing "without a deploy", which cannot be stated unless
+ * a test can change one.
+ */
+export type Policy = {
+  readonly testCallAllowance: number;
+  readonly fixedFee: Money;
+  readonly perMinuteRate: Money;
+  readonly usageCap: Money;
+  readonly outcomeDefinitions: Readonly<Record<CallOutcome, string>>;
+  readonly outcomeRulesetVersion: number;
 };
 
 /** F10.9 — identity and money only. The absence of consumer data is the assertion. */

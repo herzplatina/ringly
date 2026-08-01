@@ -1,12 +1,14 @@
-import { notImplemented, pending } from "./pending";
+import { pending } from "./pending";
 import type {
   BusinessRef,
-  CallOutcome,
+  ClassifiedAs,
   Day,
+  EmailAddress,
   Instant,
   Money,
   OpeningHours,
   PhoneNumber,
+  Policy,
   ServiceSpec,
 } from "./types";
 
@@ -14,22 +16,59 @@ import type {
  * Actors — the write half of the harness.
  *
  * Every method here drives Ringly through a surface the product actually
- * exposes: the Retell webhooks for a caller, the app's own routes for an owner,
- * `/ops` for the operator. Nothing reaches into the database to make something
- * true; if a state is not reachable through the product, a test may not assume
- * it.
+ * exposes: the telephony webhooks for a caller, the app's own routes for an
+ * owner, `/ops` for the operator. Nothing reaches into the database to make
+ * something true; if a state is not reachable through the product, a test may
+ * not assume it.
  */
 
 // ---------------------------------------------------------------------------
-// The caller — simulated Retell payloads (§2.20.1)
+// The prospect — onboarding, before there is a business (F1.1–F1.8)
+// ---------------------------------------------------------------------------
+
+/**
+ * Someone going through onboarding.
+ *
+ * Distinct from `aBusiness()`, which *sets* what onboarding is supposed to
+ * *derive*. The whole of scenario group A is about the deriving: a builder that
+ * takes a name and a timezone as arguments cannot hold F1.1's "enriches name,
+ * address, phone, hours, timezone and website in one request".
+ */
+export type Prospect = {
+  /** F1.1 — the free-form intake box, one request. */
+  submits(freeForm: string): Promise<void>;
+  /** F1.3 — when enrichment returns several matches. */
+  picksCandidate(index: number): Promise<void>;
+  /** F1.5 — every enriched field is editable before commit. */
+  edits(field: string, value: string): Promise<void>;
+  /** F1.7 — the Google consent screen. */
+  grantsConsent(): Promise<void>;
+  declinesCalendarScope(): Promise<void>;
+  /** Commits the draft, producing a provisioned business (F1.9). */
+  commits(): Promise<BusinessRef>;
+};
+
+export function aProspect(): Prospect {
+  return {
+    submits: () => pending("F1.1, F1.3, F1.6", "Phase 3 — Onboarding"),
+    picksCandidate: () => pending("F1.3", "Phase 3 — Onboarding"),
+    edits: () => pending("F1.5", "Phase 3 — Onboarding"),
+    grantsConsent: () => pending("F1.7, F1.7c", "Phase 3 — Onboarding"),
+    declinesCalendarScope: () => pending("F1.7a", "Phase 3 — Onboarding"),
+    commits: () => pending("F1.9", "Phase 3 — Onboarding"),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// The caller — simulated telephony payloads (§2.20.1)
 // ---------------------------------------------------------------------------
 
 /** What the caller experienced. Assertions read this, never the agent's internals. */
 export type CallResult = {
   /** What the agent said, as the caller would have heard it. */
   readonly saidToCaller: string;
-  /** Recorded outcome. Injected via the classifier fake — not inferred (§2.8.1). */
-  readonly outcome: CallOutcome;
+  /** Recorded outcome, or `null` while unclassified (F7.6). */
+  readonly outcome: ClassifiedAs;
   /** False when the number did not answer at all — allowance spent, or suspended. */
   readonly answered: boolean;
   readonly durationSeconds: number;
@@ -42,6 +81,15 @@ export type BookingRequest = {
   readonly name?: string;
 };
 
+/**
+ * A conversation, not a single exchange.
+ *
+ * Every method returns the result *so far* and leaves the call open, so a test
+ * can keep talking. Seven scenarios need more than one turn — 48 (a corrected
+ * detail re-runs the search), 51 and 61 (the read-back is the confirmation), 52
+ * (this-one-or-the-whole-series), 55, 73 and 256 — and a session whose every
+ * method were terminal could express none of them.
+ */
 export type CallSession = {
   andAsksToBook(req: BookingRequest): Promise<CallResult>;
   /** F5.1 — e.g. `{ every: "fourth Tuesday", at: "2pm", service: "Cut" }`. */
@@ -52,17 +100,46 @@ export type CallSession = {
   andAsksToReschedule(
     identify: BookingRequest,
     to: string,
-    opts?: { wholeSeries?: boolean },
   ): Promise<CallResult>;
-  andAsksToCancel(
-    identify: BookingRequest,
-    opts?: { wholeSeries?: boolean },
-  ): Promise<CallResult>;
+  andAsksToCancel(identify: BookingRequest): Promise<CallResult>;
   /** An enquiry the agent can answer — prices, hours, services (F6.4). */
   andAsksAboutServices(): Promise<CallResult>;
   /** Something the agent cannot help with (F2.10) — expected to end `dropped`. */
   andAsksForSomethingElse(question: string): Promise<CallResult>;
+
+  /** Anything else the caller says. The general case behind the named turns. */
+  andSays(utterance: string): Promise<CallResult>;
+  /** F2.4 — answers the agent's read-back. Scenarios 51 and 61. */
+  andConfirms(): Promise<CallResult>;
+  /** Scenario 48 — supplies a corrected detail, which must re-run the search. */
+  andCorrects(field: string, to: string): Promise<CallResult>;
+  /** Scenario 52 — answers the this-one-or-the-whole-series question. */
+  andChooses(scope: "this_one" | "whole_series"): Promise<CallResult>;
+
   andHangsUp(): Promise<CallResult>;
+
+  /** The conversation so far, for the read-back and disclosure scenarios. */
+  transcript(): Promise<readonly string[]>;
+};
+
+export type CallOptions = {
+  /**
+   * How long the call runs, end to end.
+   *
+   * Required by the usage-billing arithmetic: 124 (the whole call is billable,
+   * not only the minutes up to the booking), 125 (seconds summed across the
+   * period then rounded up once), 133 ($470 of usage → $500 charged), plus
+   * every duration and median scenario. Without it `CallResult.durationSeconds`
+   * is output-only and none of them can be set up.
+   */
+  readonly lastingSeconds?: number;
+  /** F1.13 — a pre-activation test call, which draws on the allowance. */
+  readonly asTestCall?: boolean;
+  /**
+   * Scenario 264 — an unsigned or wrongly-signed webhook, which must be
+   * rejected. The only way to state that without a spec naming the transport.
+   */
+  readonly withBadSignature?: boolean;
 };
 
 export type Caller = {
@@ -71,13 +148,31 @@ export type Caller = {
    * with `Promise.all([a.calls(x).andAsksToBook(…), b.calls(x)…])`, which only
    * races the two bookings if opening the session itself costs nothing.
    */
-  calls(business: BusinessRef): CallSession;
+  calls(business: BusinessRef, opts?: CallOptions): CallSession;
 };
 
 /** `caller('+15551234567').calls(salon).andAsksToBook({ … })` */
 export function caller(_from: PhoneNumber): Caller {
   return {
-    calls: () => notImplemented("F2.1–F2.11", "Phase 1 — Foundations"),
+    // Returns a real session whose *methods* reject. `calls()` itself must not
+    // throw: it is declared synchronous precisely so `Promise.all([...])` can
+    // race two callers, and a synchronous throw would take the whole expression
+    // down before either booking started — the trap `pending()` exists to
+    // prevent, one level up in the factory.
+    calls: () => ({
+      andAsksToBook: () => pending("F2.1–F2.6", "Phase 1 — Foundations"),
+      andAsksToSetUpRecurring: () => pending("F5.1", "Phase 9 — Recurrence"),
+      andAsksToReschedule: () => pending("F2.4", "Phase 1 — Foundations"),
+      andAsksToCancel: () => pending("F2.4", "Phase 1 — Foundations"),
+      andAsksAboutServices: () => pending("F6.4", "Phase 1 — Foundations"),
+      andAsksForSomethingElse: () => pending("F2.10", "Phase 1 — Foundations"),
+      andSays: () => pending("F2.1", "Phase 1 — Foundations"),
+      andConfirms: () => pending("F2.4", "Phase 1 — Foundations"),
+      andCorrects: () => pending("F2.4", "Phase 1 — Foundations"),
+      andChooses: () => pending("F5.3", "Phase 9 — Recurrence"),
+      andHangsUp: () => pending("F2.11", "Phase 1 — Foundations"),
+      transcript: () => pending("F2.2", "Phase 1 — Foundations"),
+    }),
   };
 }
 
@@ -94,38 +189,51 @@ export type Owner = {
   pressesActivate(): Promise<void>;
   /** F1.7b — after a declined or revoked calendar grant. */
   reconnectsCalendar(): Promise<void>;
+  changesContactEmail(to: EmailAddress): Promise<void>;
 
   // Catalogue and hours (F3) — Phase 6
   addsService(s: ServiceSpec): Promise<void>;
+  /** F3.1 — name, description, price and duration are all editable. */
+  editsService(name: string, to: Partial<ServiceSpec>): Promise<void>;
   deactivatesService(name: string): Promise<void>;
+  /** F3.4 — distinct from deactivating: scenario 77 values its appointments. */
+  deletesService(name: string): Promise<void>;
   repricesService(name: string, to: Money): Promise<void>;
+  /** F3.1 — scenario 71 asserts the order the business chose. */
+  reordersServices(namesInOrder: readonly string[]): Promise<void>;
   setsOpeningHours(hours: OpeningHours): Promise<void>;
 
-  // Horizons (F2.9, F5.2) — Phase 6
+  // Dashboard controls (F6.13) — Phase 8
   setsBookingHorizon(days: number): Promise<void>;
   setsRecurrenceHorizon(days: number): Promise<void>;
-
-  // Dashboard controls (F6.13) — Phase 8
   /** F10.1a-i — irreversible, and the product warns before confirming. */
   deletesCustomer(phone: PhoneNumber): Promise<void>;
   optsOutOfStatsDigest(): Promise<void>;
+  /** F7.10 — the business's own cancellation. */
+  cancels(): Promise<void>;
 };
 
 export function owner(_business: BusinessRef): Owner {
   return {
     verifiesEmail: () => pending("F1.11", "Phase 3 — Onboarding"),
     confirmsTestCallWorked: () => pending("F1.12", "Phase 3 — Onboarding"),
-    addsPaymentMethod: () => pending("F7.2", "Phase 3 — Onboarding"),
+    addsPaymentMethod: () => pending("F1.12", "Phase 3 — Onboarding"),
     pressesActivate: () => pending("F1.12a", "Phase 4 — Billing"),
     reconnectsCalendar: () => pending("F1.7b", "Phase 3 — Onboarding"),
+    changesContactEmail: () => pending("F1.11", "Phase 3 — Onboarding"),
     addsService: () => pending("F3.1", "Phase 6 — Catalogue + hours"),
+    editsService: () => pending("F3.1", "Phase 6 — Catalogue + hours"),
     deactivatesService: () => pending("F3.3", "Phase 6 — Catalogue + hours"),
+    deletesService: () => pending("F3.4", "Phase 6 — Catalogue + hours"),
     repricesService: () => pending("F3.4", "Phase 6 — Catalogue + hours"),
+    reordersServices: () => pending("F3.1", "Phase 6 — Catalogue + hours"),
     setsOpeningHours: () => pending("F3.5", "Phase 6 — Catalogue + hours"),
-    setsBookingHorizon: () => pending("F2.9", "Phase 6 — Catalogue + hours"),
-    setsRecurrenceHorizon: () => pending("F5.2", "Phase 6 — Catalogue + hours"),
+    setsBookingHorizon: () => pending("F6.13", "Phase 8 — Business dashboard"),
+    setsRecurrenceHorizon: () =>
+      pending("F6.13", "Phase 8 — Business dashboard"),
     deletesCustomer: () => pending("F10.1a-i", "Phase 8 — Business dashboard"),
     optsOutOfStatsDigest: () => pending("F8.4", "Phase 8 — Business dashboard"),
+    cancels: () => pending("F7.10", "Phase 4 — Billing"),
   };
 }
 
@@ -142,14 +250,29 @@ export type Operator = {
   /** F7.10a, F9.10 — the only control that stops future charges. */
   marksCancelled(business: BusinessRef): Promise<void>;
   clearsCancelled(business: BusinessRef): Promise<void>;
+  /** F9.7 — reads a business's dashboard as it sees it (scenarios 232, 233). */
+  viewsAsBusiness(business: BusinessRef): Promise<void>;
+
+  /**
+   * F7.8, F1.13, F6.6 — change a policy row.
+   *
+   * Four scenarios (35, 105, 126, 135) turn on a policy changing "without a
+   * deploy", and 105 asks whether the outcome panel renders from data or is
+   * hardcoded. None can be distinguished unless a test can move one.
+   */
+  setsPolicy(change: Partial<Policy>): Promise<void>;
 };
 
 export const operator: Operator = {
-  pausesDeletionClock: () => pending("F10.1b", "Phase 5 — Lifecycle"),
-  resumesDeletionClock: () => pending("F10.1b", "Phase 5 — Lifecycle"),
-  resetsTestCallAllowance: () => pending("F10.1c", "Phase 5 — Lifecycle"),
-  marksCancelled: () => pending("F7.10a", "Phase 4 — Billing"),
-  clearsCancelled: () => pending("F7.10a", "Phase 4 — Billing"),
+  pausesDeletionClock: () => pending("F10.1b", "Phase 10 — Operator dashboard"),
+  resumesDeletionClock: () =>
+    pending("F10.1b", "Phase 10 — Operator dashboard"),
+  resetsTestCallAllowance: () =>
+    pending("F10.1c", "Phase 10 — Operator dashboard"),
+  marksCancelled: () => pending("F9.10", "Phase 10 — Operator dashboard"),
+  clearsCancelled: () => pending("F9.10", "Phase 10 — Operator dashboard"),
+  viewsAsBusiness: () => pending("F9.7", "Phase 10 — Operator dashboard"),
+  setsPolicy: () => pending("F7.8", "Phase 4 — Billing"),
 };
 
 // ---------------------------------------------------------------------------
@@ -166,39 +289,29 @@ export type WorkerName =
   | "billing_reconciliation";
 
 /**
- * Which work to run after the clock moves.
- *
- * `true` runs everything due — right for the common case. A named list runs
- * only those: at roughly three advances across 269 tests, defaulting to all six
- * endpoints spends about 4,800 worker invocations to want maybe 800.
- */
-export type DueWorkers = boolean | readonly WorkerName[];
-
-/**
  * Whose clock is moving.
  *
- * `Instant` is business-local and each business owns its own Stripe test clock,
- * so on the cross-tenant scenarios (245–249, 235, 238) "advance to day 45" has
- * no meaning until it says whose day 45. Single-tenant tests — nearly all of
- * them — omit it and get the only business in the world.
+ * `Instant` is business-local and each business owns its own payment-provider
+ * test clock, so on the cross-tenant scenarios (245–249, 235, 238) "advance to
+ * day 45" has no meaning until it says whose day 45. Single-tenant tests —
+ * nearly all of them — omit it and get the only business in the world.
  */
 export type ClockScope = { for?: BusinessRef };
 
 export type System = {
-  now(opts?: ClockScope): Promise<Instant>;
   /**
-   * Moves Ringly's clock and Stripe's test clock together, then runs whatever
-   * work has become due — because in production, time passing is what causes
-   * that work, and 200 tests each remembering to trigger the sweeper is a bug
-   * waiting to happen. Pass `{ runDueWorkers: false }` when the worker itself
-   * is the subject.
+   * Moves Ringly's clock and the payment provider's test clock together, then
+   * runs whatever work has become due — because in production, time passing is
+   * what causes that work, and 200 tests each remembering to trigger the
+   * sweeper is a bug waiting to happen. Pass `{ runDueWorkers: false }` when
+   * the worker itself is the subject.
    *
    * A bare `Day` lands at noon business-local, deliberately not on the 09:00
    * billing anchor — see `day()`.
    */
   advanceTo(
     target: Day | Instant,
-    opts?: ClockScope & { runDueWorkers?: DueWorkers },
+    opts?: ClockScope & { runDueWorkers?: boolean },
   ): Promise<void>;
   /**
    * Short hops, for the propagation rules measured in seconds rather than days
@@ -206,7 +319,7 @@ export type System = {
    */
   advanceBy(
     delta: { seconds?: number; minutes?: number; hours?: number },
-    opts?: ClockScope & { runDueWorkers?: DueWorkers },
+    opts?: ClockScope & { runDueWorkers?: boolean },
   ): Promise<void>;
   /** Run one worker explicitly — for tests where the worker is the subject. */
   runWorker(name: WorkerName): Promise<void>;
@@ -214,36 +327,8 @@ export type System = {
 };
 
 export const system: System = {
-  now: () => pending("§2.20.1", "Phase 1 — Foundations"),
   advanceTo: () => pending("§2.20.1", "Phase 1 — Foundations"),
-  advanceBy: () => pending("F3.2", "Phase 1 — Foundations"),
+  advanceBy: () => pending("§2.20.1", "Phase 1 — Foundations"),
   runWorker: () => pending("§2.2a", "Phase 1 — Foundations"),
   runDueWorkers: () => pending("§2.2a", "Phase 1 — Foundations"),
-};
-
-// ---------------------------------------------------------------------------
-// Stripe — real test mode (§2.20.1)
-// ---------------------------------------------------------------------------
-
-export type StripeControl = {
-  /** Makes the next charge decline for real, in Stripe test mode. */
-  declineNextCharge(business: BusinessRef): Promise<void>;
-  /** Clears everything owed, the way a successful retry or a new card would. */
-  payOutstanding(business: BusinessRef): Promise<void>;
-  /** F7.17 — a chargeback, which follows the non-payment path exactly. */
-  filesChargeback(business: BusinessRef): Promise<void>;
-  /** Simulates the provider being unreachable (N7.1): calls must keep working. */
-  goesDown(): Promise<void>;
-  comesBack(): Promise<void>;
-  /** Drops the webhook for the next event, so the reconciliation backstop is exercised (F7.10b-i). */
-  dropsNextWebhook(): Promise<void>;
-};
-
-export const stripe: StripeControl = {
-  declineNextCharge: () => pending("F7.11", "Phase 4 — Billing"),
-  payOutstanding: () => pending("F7.10b", "Phase 4 — Billing"),
-  filesChargeback: () => pending("F7.17", "Phase 4 — Billing"),
-  goesDown: () => pending("N7.1", "Phase 4 — Billing"),
-  comesBack: () => pending("N7.1", "Phase 4 — Billing"),
-  dropsNextWebhook: () => pending("F7.10b-i", "Phase 4 — Billing"),
 };

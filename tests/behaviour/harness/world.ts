@@ -1,7 +1,8 @@
-import { notImplemented, pending } from "./pending";
+import { pending } from "./pending";
 import type {
   BusinessRef,
   Day,
+  DepartedRef,
   EmailAddress,
   OpeningHours,
   PhoneNumber,
@@ -17,22 +18,27 @@ import type {
  * scenarios (245–249) and the operator's platform totals (235, 238), both of
  * which read across tenants.
  *
- * Each business also gets **its own Stripe test clock**, because those are
- * per-customer objects — which happens to fit one-tenant-per-test exactly. A
- * Stripe customer must be created *on* a clock, so the clock is created with
- * the business rather than lazily; `system.advanceTo` therefore needs to know
- * whose clock it is moving (`ClockScope`) once more than one exists.
+ * Each business also gets **its own payment-provider test clock**, because
+ * those are per-customer objects — which happens to fit one-tenant-per-test
+ * exactly. A customer must be created *on* a clock, so the clock is created
+ * with the business rather than lazily; `system.advanceTo` therefore needs to
+ * know whose clock it is moving (`ClockScope`) once more than one exists.
  *
  * The implementation should keep a worker-local `Map<BusinessRef["id"], …>` of
- * resolved handles — sessions, Stripe ids, tenant keys — so that repeated
+ * resolved handles — sessions, provider ids, tenant keys — so that repeated
  * `owner(biz).x()` calls in one test do not re-authenticate. `resetWorld`
- * clears it.
+ * clears it, and also restores every fake to its healthy default.
  */
 
 /**
  * Fluent builder. Each step is a *product* action, not a database insert:
- * `.activated()` really presses the button and really charges the card in
- * Stripe test mode. A test may not conjure a state the product cannot reach.
+ * `.activated()` really presses the button and really charges the card in the
+ * provider's test mode. A test may not conjure a state the product cannot
+ * reach.
+ *
+ * For the scenarios that are *about* onboarding, use `aProspect()` instead —
+ * this builder sets what onboarding is supposed to derive, so it cannot hold
+ * the enrichment requirements.
  */
 export type BusinessBuilder = {
   /** Defaults to a salon in `America/Los_Angeles` with three services. */
@@ -77,18 +83,45 @@ export function aBusiness(): BusinessBuilder {
   return self;
 }
 
-/** A number the caller can dial. Convenience for the many scenarios that need one. */
-export function aCustomerNumber(): PhoneNumber {
-  return notImplemented("F2.4", "Phase 1 — Foundations");
+/**
+ * Captures a handle that outlives deletion.
+ *
+ * Scenarios 190–194 read a departure record, a released number and a content
+ * delete *after* the business is gone, when a `BusinessRef` no longer refers to
+ * anything. Call this while it still does.
+ */
+export function remember(_b: BusinessRef): DepartedRef {
+  return { departedId: _b.id };
 }
 
 /**
- * Tear down whatever the test created — Stripe customer and test clock, the
- * tenant's rows, the fakes' captured state.
+ * A number a caller can dial, distinct within the worker.
  *
- * Wired as a global `afterEach` in `tests/behaviour/setup.ts`; a spec should
- * not need to call it.
+ * Implemented rather than stubbed: it needs nothing from the product, and
+ * stubbing it would block scenarios (26, 49, 50) that only need two callers to
+ * be different. Drawn from the reserved 555 range so no fixture can dial a real
+ * person.
  */
-export function resetWorld(): Promise<void> {
-  return pending("§2.20.2", "Phase 1 — Foundations");
+let customerNumberCounter = 0;
+export function aCustomerNumber(): PhoneNumber {
+  const worker = Number(process.env.JEST_WORKER_ID ?? 1);
+  customerNumberCounter += 1;
+  const suffix = String(worker * 10_000 + customerNumberCounter).padStart(
+    7,
+    "0",
+  );
+  return `+1555${suffix}`;
+}
+
+/**
+ * Tear down whatever the test created — the provider customer and test clock,
+ * the tenant's rows, every fake's captured *and arranged* state.
+ *
+ * A no-op until Phase 1, deliberately: there is nothing to reset yet, and a
+ * `pending()` here would either redden every test or force the teardown hook to
+ * swallow errors — and a hook that swallows is a hook that hides the leak it
+ * exists to prevent.
+ */
+export async function resetWorld(): Promise<void> {
+  customerNumberCounter = 0;
 }
