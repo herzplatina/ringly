@@ -318,8 +318,10 @@ _(Carried from v2; renumbered. v2 FR1–FR10 map to F1.1–F1.10.)_
     because every other component believes service has stopped.
 
   **A verification that fails is treated as a failed operation**: retried, and
-  raised to the operator (F9.6). The read-back is cheap, deterministic, and tests
-  the thing that actually goes wrong.
+  raised to the operator — a failed bind as an activation-stuck alert, a failed
+  unbind under its own alert (F8.13a), because an unbind failure has no other
+  symptom. The read-back is cheap, deterministic, and tests the thing that
+  actually goes wrong.
 
   **It is a check against provider state, never a placed call.** Ringly does not
   dial its own number: a synthetic call costs telephony minutes on every bind and
@@ -1554,8 +1556,18 @@ open, or what is destroyed in forty-eight hours.
 - **F8.13** The set: business hit its cap (with cost-to-serve and margin, so an
   unprofitable tenant is visible immediately), payment failed, calendar
   unreachable, activation stuck, **unactivated and about to expire** (F9.6a),
-  **business deleted** — the last carrying lifetime net revenue and the amount
-  left owing, since deletion is the only moment those totals are final (F10.3c).
+  **a number that would not release** (F8.13a), and **business deleted** — the
+  last carrying lifetime net revenue and the amount left owing, since deletion
+  is the only moment those totals are final (F10.3c).
+- **F8.13a** **A failed unbind is raised to the operator**, naming the business,
+  the number still answering, and the reason Ringly tried to release it. F1.12a-ii
+  establishes that a failed unbind leaves a number **answering calls Ringly has
+  decided to stop serving and stopped metering** — a revenue leak and a
+  correctness failure at once — and that _nothing else in the system would ever
+  notice it_, because every other component believes service has stopped. An
+  alert is therefore the only thing standing between that state and a number
+  that answers, unmetered, until someone happens to look. It carries the same
+  urgency as a cap breach: it is money leaving.
 - **F8.14** These move to Slack later (F9.6). The format carries the same
   information either way, so the move is a transport change rather than a
   rewrite.
@@ -1621,7 +1633,8 @@ open, or what is destroyed in forty-eight hours.
 - **F9.6** **Operator alerts** are the set in F8.13 and no other: a business
   reaching its cap (F7.9b, with cost-to-serve and margin), a payment failure,
   a calendar unreachable (F2.7), an activation stuck (F1.13a), **an unactivated
-  business approaching deletion** (F9.6a), and a business deleted (F10.3c).
+  business approaching deletion** (F9.6a), **a number that would not release**
+  (F8.13a, F1.12a-ii), and a business deleted (F10.3c).
   Delivered by **email** initially. _Moving operator alerting to Slack is
   deferred (§1.9)._
 - **F9.6a** **An unactivated business is raised to the operator before its 10-day
@@ -1688,10 +1701,11 @@ open, or what is destroyed in forty-eight hours.
 
   **Costing Ringly money**
 
-  | Condition           | Trigger                                  | Operator action                                               |
-  | ------------------- | ---------------------------------------- | ------------------------------------------------------------- |
-  | **At cap**          | Reached $500 for the period (F7.9b)      | Everything further is absorbed; check the pricing fits them   |
-  | **Negative margin** | Cost exceeded revenue for the range (R8) | The unbooked-call economics are not working for this business |
+  | Condition               | Trigger                                            | Operator action                                                                                         |
+  | ----------------------- | -------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+  | **At cap**              | Reached $500 for the period (F7.9b)                | Everything further is absorbed; check the pricing fits them                                             |
+  | **Negative margin**     | Cost exceeded revenue for the range (R8)           | The unbooked-call economics are not working for this business                                           |
+  | **Number not released** | An unbind failed its read-back (F1.12a-ii, F8.13a) | Release it by hand. It is still answering calls nobody is metering, and no other signal will surface it |
 
   **Needs a human, or nothing will happen**
 
@@ -4006,7 +4020,7 @@ in the phase beside it.
 | **2 — Email plumbing**       | Dispatcher, `registry.ts`, idempotency against `email_log`, four sending identities (F8). Templates already exist (PR #4); no business logic here                                                                                                                                                                                               | —         | 1          | no   |
 | **3 — Onboarding**           | Scope check and declined-calendar path (F1.7a–c); contact email and verification (F1.11); test-call allowance, unbind at five, confirmation (F1.13); enrichment rate limit and spend ceiling (N9); the checklist (§2.4a) **up to but not including the charge**                                                                                 | —         | 1, 2       | yes  |
 | **4 — Billing**              | State machine (§2.9.1); settlement and the cap (§2.9.2); Stripe configuration (§2.9.3); recovery and reconciliation (§2.9.5); **the Activate button that completes Phase 3**; F7                                                                                                                                                                | **006**   | 1, 2, 3    | yes  |
-| **5 — Lifecycle**            | Sweeper and deadlines (§2.10); unbind/rebind (§2.10.1); unactivated-expiring alert (F9.6a); teardown and the deletion emails (§2.9.4, F10.3c); departure record; F10                                                                                                                                                                            | **007**   | 1, 2, 4    | yes  |
+| **5 — Lifecycle**            | Sweeper and deadlines (§2.10); unbind/rebind (§2.10.1) **and the failed-unbind alert (F8.13a)**; unactivated-expiring alert (F9.6a); teardown and the deletion emails (§2.9.4, F10.3c); departure record; F10                                                                                                                                   | **007**   | 1, 2, 4    | yes  |
 | **6 — Catalogue + hours**    | Service versioning and reordering; opening-hours editing; the tenant config cache; F3                                                                                                                                                                                                                                                           | **008**   | 1          | no   |
 | **7 — Provider abstraction** | Extract `SchedulingProvider` (§2.6); port Google behind it; F4                                                                                                                                                                                                                                                                                  | **009**   | 1          | no   |
 | **8 — Business dashboard**   | Rollup worker; `outcome_rulesets`; the whole of §2.8a — service status, KPIs, charts, definitions, freshness, **billing history**; delete-a-customer (F10.1a-i); F6                                                                                                                                                                             | **010**   | 1, 4, 6    | no   |
@@ -4233,6 +4247,7 @@ designed for.
 | **F10.1a-i, -ii deletion**      | **§2.10.2 — path 1 self-serve, path 2 by sweeper; both automated**                           |
 | F1.12a–F1.12b activation        | §2.4a.1 step 9 — one button, one `billing_status` write, nothing else                        |
 | **F1.12a-i, -ii feedback**      | **§2.4a.1 — per-step failure messaging; read-after-write bind verification**                 |
+| **F8.13a failed-unbind alert**  | **§2.10.1 unbind/rebind; §2.12 registry; F9.12 "number not released"; Phase 5**              |
 | **F7.11d–f both failure cases** | **F7.11d works each in full; §2.9.5 the restore branch; F7.11f one open period at a time**   |
 | **F2.7 dashboard warning**      | **§2.8a business banner, above the filters; §2.5.4 incident drives it**                      |
 | F10.4–F10.4b the number         | §2.10.1, including the reassignment chain                                                    |
@@ -4277,29 +4292,64 @@ implementation means changing the adapter, not the tests.
 
 The vocabulary a test body may use is deliberately small:
 
-**Actors** — `caller`, `owner`, `operator`, `system`. Everything is something one
-of them does.
+**Actors** — `aProspect`, `caller`, `owner`, `operator`, `system`. Everything is
+something one of them does. `caller` and `owner` are factories, because who is
+speaking and which business they own are part of the act:
 
 ```
-await caller.calls(biz).andAsksToBook({ service: 'Cut', at: 'Tuesday 2pm' })
-await owner.pressesActivate()
+await aProspect().submits('Shear Genius, Portland')
+caller(aCustomerNumber()).calls(biz).andAsksToBook({ service: 'Cut', at: 'Tuesday 2pm' })
+await owner(biz).pressesActivate()
 await operator.pausesDeletionClock(biz)
 await system.advanceTo(day(45))
+```
+
+A call is a **conversation, not one exchange** — every turn returns the result so
+far and leaves the call open, because the read-back, correction and
+this-one-or-all scenarios each need a second turn:
+
+```
+const call = caller(n).calls(biz, { lastingSeconds: 180 })
+await call.andAsksToBook({ service: 'Cut', at: 'Tuesday 2pm' })
+await call.andCorrects('name', 'Nguyen')     // re-runs the search (F2.4)
+await call.andConfirms()
 ```
 
 **Projections** — named, product-level views of state. A projection is what the
 _product_ says is true, not where it is stored:
 
 ```
-serviceStatus(biz)   -> { numberLive, reason, testCallsRemaining }
-billingHistory(biz)  -> [{ dates, fixedFee, minutes, usage, total, status, suspended }]
-callAnalytics(biz,r) -> { calls, avgDuration, medianDuration, booked, outcomes, byWindow }
-appointments(biz)    -> [{ customer, service, start, duration, series }]
-calendar(biz)        -> [{ start, end, title }]        // the connected calendar
-inbox(address)       -> [{ kind, subject, body, sentAt }]
-operatorQueue()      -> [{ business, condition, since }]
-owed(biz)            -> Money
+serviceStatus(biz)          -> { numberLive, number, reason, testCallsRemaining }
+billingHistory(biz)         -> [{ startsOn, endsOn, fixedFee, billableMinutes,
+                                  usageCharge, total, tax, chargedAt, status,
+                                  suspended, moneyState }]
+callAnalytics(biz, range)   -> { calls, averageDurationSeconds, medianDurationSeconds,
+                                 callsThatBooked, unclassified, outcomes, byWindow,
+                                 completeTo, liveFigures }
+appointments(biz, window)   -> [{ customer, customerName, service, startsAt,
+                                  durationMinutes, seriesId, pricedAt }]
+connectedCalendar(biz)      -> [{ title, startsAt, durationMinutes }]
+inbox(address)              -> [{ kind, to, from, subject, body, sentAt }]
+allEmailSent(biz)           -> the whole output, for "nothing else was sent" (F8.2)
+operatorQueue()             -> [{ business, condition, sinceDay }]
+owed(biz)                   -> { amount, state }       // F6.14a: every figure states one
+isReadableBy(target, actor) -> boolean                 // N1.1 cross-tenant attempt
+everythingStoredAbout(biz)  -> unknown                 // the one escape hatch, below
 ```
+
+**Two of these need explaining.** `appointments` takes a window because several
+scenarios turn on _past_ appointments still being present, and a future-only
+read — the natural dashboard query — would return `[]` and pass them all.
+`everythingStoredAbout` is unshaped on purpose: a typed read model cannot hold a
+negative assertion, because a projection mapping known columns into a fixed
+shape discards a leaked one by construction, and `toEqual` never sees what the
+shape already dropped. Assert on its key set.
+
+**A refusal is its own error type.** Roughly seventeen scenarios assert the
+product _declines_ something. They must be written `rejects.toThrow(Refused)`,
+never a bare `rejects.toThrow()`: every adapter member rejects
+`NotImplementedError` until its phase lands, so the bare form passes against an
+implementation that does not exist.
 
 **Why projections rather than the database.** Asserting `billingHistory(biz)[0].total`
 survives the table being renamed, split, or replaced by an API. Asserting
@@ -4318,16 +4368,24 @@ is correct, and is the only thing that should.
 
 ```
 test('suspension does not extend the period', async () => {
-  const biz = await aBusiness().activated().on(day(1))
-  await system.advanceTo(day(31)); await stripe.declineNextCharge()
+  const biz = await aBusiness().activatedOn(day(1))
+  await payments.declineNextCharge(biz)
+  await system.advanceTo(day(31))
   await system.advanceTo(day(38))
   expect(await serviceStatus(biz)).toMatchObject({ numberLive: false })
-  await stripe.payOutstanding(biz)
+  expect(await numberAnswers(biz)).toBe(false)   // and the provider agrees
+  await payments.payOutstanding(biz)
   const [current] = await billingHistory(biz)
-  expect(current.endsOn).toEqual(day(60))      // unchanged, not extended
-  expect(await owed(biz)).toEqual(money(0))
+  expect(current.endsOn).toEqual(day(60))        // unchanged, not extended
+  expect(await owed(biz)).toEqual({ amount: money(0), state: 'settled' })
 })
 ```
+
+**The vendors are named for the capability, not the supplier** — `calendar` not
+`google`, `telephony` not `retell`, `payments` not `stripe`. The one rule above
+forbids a test body from naming anything the implementation could rename, and
+the supplier is exactly that; §2.6 already treats the scheduling provider as
+abstract.
 
 ### 2.20.3 What the suite cannot prove
 
@@ -4339,23 +4397,23 @@ and **claims that are premises rather than behaviours**.
 
 #### Requirements no end-to-end test can hold
 
-| Requirement                                           | Why not                                                                                                                                                                             | What covers it instead                                  |
-| ----------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------- |
-| **N2.1** 10k businesses × 10k customers               | A suite runs against a handful of rows. The target is a property of production data volume                                                                                          | **Action item A2** — a load exercise                    |
-| **N2.2** no degradation with platform size            | Needs two populations orders of magnitude apart                                                                                                                                     | A2                                                      |
-| **N2.3** background work sustains steady-state volume | Same — lag only appears under real throughput                                                                                                                                       | A2                                                      |
-| **N3** latency budgets                                | Measurable in CI, meaningless there: no network, no cold starts, no contention. A CI number that passes proves nothing about a caller's experience                                  | Production monitoring; §1.7 tracks it                   |
-| **N4.1, N4.3, N4.4** serving cost                     | Cost is a bill, not an assertion                                                                                                                                                    | The operator dashboard (F9) is the instrument           |
-| **N10.1–N10.7** durability                            | Proving a backup means destroying something and restoring it. That is a drill, not a test                                                                                           | **Action item A3** — a restore drill                    |
-| **N8.1–N8.4** hosting portability                     | A constraint on decisions, not a behaviour. Nothing to execute                                                                                                                      | Code review; the §2.2a checklist                        |
-| **N6.2** PCI SAQ-A scope                              | A compliance posture, not an observable output                                                                                                                                      | The self-assessment questionnaire                       |
-| **F7.18** tax correctness                             | Stripe Tax computes it; asserting our own expectation would be re-implementing the thing we chose not to own                                                                        | Reconciliation against Stripe's reports                 |
-| **F2.1a** legal sufficiency of the disclosure         | Whether the wording satisfies all-party-consent statutes is a legal question                                                                                                        | Legal review before launch                              |
-| **§1.4** healthcare exclusion                         | Enforced by a schema constraint, which is testable — but that Ringly _has no BAA_ is a commercial fact                                                                              | Commercial decision, re-checked if a BAA is ever signed |
-| **F7.15** terms will change without a redesign        | An assertion about future work                                                                                                                                                      | Demonstrated the first time a policy row changes        |
-| **§1.7** success metrics                              | Outcomes over a population of real businesses                                                                                                                                       | Measured after launch                                   |
-| **R1–R22** risks                                      | Risks are not requirements                                                                                                                                                          | Reviewed, not executed                                  |
-| **§2.8.1** outcome-classification accuracy            | Whether Haiku labels a given transcript correctly is a model-evaluation question. The suite fakes the classifier and injects outcomes, so everything downstream stays deterministic | A labelled transcript dataset, scored separately        |
+| Requirement                                           | Why not                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | What covers it instead                                                             |
+| ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| **N2.1** 10k businesses × 10k customers               | A suite runs against a handful of rows. The target is a property of production data volume                                                                                                                                                                                                                                                                                                                                                                                               | **Action item A2** — a load exercise                                               |
+| **N2.2** no degradation with platform size            | Needs two populations orders of magnitude apart. **Scenario 249 holds the narrower claim** — a query's cost tracks the requesting tenant's size — which is the design's mechanism, not the guarantee                                                                                                                                                                                                                                                                                     | A2, plus scenario 249 for the mechanism                                            |
+| **N2.3** background work sustains steady-state volume | Same — lag only appears under real throughput                                                                                                                                                                                                                                                                                                                                                                                                                                            | A2                                                                                 |
+| **N3** latency **budgets**                            | Measurable in CI, meaningless there: no network, no cold starts, no contention. A CI number that passes proves nothing about a caller's experience. **The _semantics_ around the budgets are testable and are held** — that a timeout counts as failure and never as "no conflicts" (64, N3.1), that exceeding the hard ceiling is treated as failed (257, N3.1), and that work not needed to answer happens after the response (258, N3.2). What no test holds is the p95 number itself | Production monitoring; §1.7 tracks it. Scenarios 64, 256–258 hold the semantics    |
+| **N4.1, N4.3, N4.4** serving cost                     | Cost is a bill, not an assertion                                                                                                                                                                                                                                                                                                                                                                                                                                                         | The operator dashboard (F9) is the instrument                                      |
+| **N10.1–N10.7** durability                            | Proving a backup means destroying something and restoring it. That is a drill, not a test                                                                                                                                                                                                                                                                                                                                                                                                | **Action item A3** — a restore drill                                               |
+| **N8.1–N8.4** hosting portability                     | A constraint on decisions, not a behaviour. Nothing to execute                                                                                                                                                                                                                                                                                                                                                                                                                           | Code review; the §2.2a checklist                                                   |
+| **N6.2** PCI SAQ-A **scope**                          | A compliance posture, not an observable output. **The behaviour it rests on is testable and is held** by scenario 121 — raw card details never reach Ringly. That the posture is _accepted_ as SAQ-A is not                                                                                                                                                                                                                                                                              | The self-assessment questionnaire; scenario 121 holds the behaviour                |
+| **F7.18** tax **correctness**                         | Stripe Tax computes it; asserting our own expectation would be re-implementing the thing we chose not to own. **That Ringly stores what Stripe returned and never computes its own is testable and is held** by scenario 136                                                                                                                                                                                                                                                             | Reconciliation against Stripe's reports; scenario 136 holds the division of labour |
+| **F2.1a** **legal sufficiency** of the disclosure     | Whether the wording satisfies all-party-consent statutes is a legal question. **Three adjacent claims are testable and are held**: that the default text is used verbatim (41), that a business cannot alter it through its greeting (40), and that it is configured on every provisioned agent (39). That a caller _hears_ it is A1                                                                                                                                                     | Legal review before launch; scenarios 39–41 hold what is mechanical                |
+| **§1.4** healthcare exclusion                         | Enforced by a schema constraint, which is testable — but that Ringly _has no BAA_ is a commercial fact                                                                                                                                                                                                                                                                                                                                                                                   | Commercial decision, re-checked if a BAA is ever signed                            |
+| **F7.15** terms will change without a redesign        | An assertion about future work                                                                                                                                                                                                                                                                                                                                                                                                                                                           | Demonstrated the first time a policy row changes                                   |
+| **§1.7** success metrics                              | Outcomes over a population of real businesses                                                                                                                                                                                                                                                                                                                                                                                                                                            | Measured after launch                                                              |
+| **R1–R22** risks                                      | Risks are not requirements                                                                                                                                                                                                                                                                                                                                                                                                                                                               | Reviewed, not executed                                                             |
+| **§2.8.1** outcome-classification accuracy            | Whether Haiku labels a given transcript correctly is a model-evaluation question. The suite fakes the classifier and injects outcomes, so everything downstream stays deterministic                                                                                                                                                                                                                                                                                                      | A labelled transcript dataset, scored separately                                   |
 
 #### Requirements only a human can confirm
 
@@ -4410,6 +4468,18 @@ tests (scenarios 245–247, 224–225) and partly by **lint rules** — that
 `createServiceClient` is not imported outside the tenant module, and that no
 tenant module transitively imports `lib/ops`. Those are static checks. They
 belong in CI beside the suite, not in it.
+
+**Scenario 225 is the lint rule, not a runtime test.** It appears in the §2.21
+count because it is a claim the codebase must satisfy, but it is discharged by
+`eslint.config.mjs`, not by the behaviour suite. The same is true of the import
+half of 245. Nothing else in the 269 is static.
+
+**A note on the granularity of this table.** Every row above names a requirement
+id, but a requirement is rarely wholly testable or wholly not: the usual shape is
+a mechanism that a scenario can hold sitting under a guarantee that only
+production can. Where that is so, the row says which is which and names the
+scenarios. A row that named only the id would read as "no scenario should exist
+for this", and five of them do.
 
 ### 2.20.4 Action item: manual QA against the real vendors
 
@@ -4627,38 +4697,38 @@ _F7.1–F7.18 — 18 scenarios_
 
 _F7.10b–F7.11f, F10.3 — 30 scenarios_
 
-| #   | Scenario                                                                           | Holds          |
-| --- | ---------------------------------------------------------------------------------- | -------------- |
-| 137 | A declined fixed fee starts grace with service continuing                          | F7.11          |
-| 138 | Grace usage is billable when a period is open to bill it to                        | F7.11c-ii      |
-| 139 | Day 7 unpaid suspends the business, unbinds the agent and stops the number         | F10.3          |
-| 140 | A failed unbind is retried and raised to the operator                              | F1.12a-ii      |
-| 141 | Suspension adds no fixed fee, no usage and no new period                           | F7.11b, F7.11c |
-| 142 | Suspension does not extend the billing period                                      | F7.11b         |
-| 143 | A period ending mid-suspension settles on its original last day with no successor  | F7.11d         |
-| 144 | The debt is frozen through suspension — day 55 owes exactly what day 8 owed        | F7.11c         |
-| 145 | Case (a): paying on day 20 resumes inside the period with nothing new charged      | F7.11d         |
-| 146 | Case (a): the day-30 settlement covers days 1–8 and 20–30                          | F7.11d         |
-| 147 | Case (a): paying on day 45 clears $100 plus usage, then opens a new period at $100 | F7.11d         |
-| 148 | Case (b): a declined settlement closes the period and opens no successor           | F7.11d         |
-| 149 | Case (b): the grace days are served, not billed, and their cost is still recorded  | F7.11c-ii      |
-| 150 | Case (b): paying on day 45 and on day 70 are identical transactions                | F7.11d         |
-| 151 | A partial payment leaves the business suspended and the email says what remains    | F7.10b         |
-| 152 | Stripe retries continue throughout suspension                                      | F7.11b-i       |
-| 153 | Every payment email is Ringly's; Stripe's dunning stays silent                     | F7.11b-ii      |
-| 154 | The 48-hour deletion warning arrives before the deadline                           | F10.3a         |
-| 155 | Payment clearing restores service the same day and emails the business             | F7.10b         |
-| 156 | Restoring into a still-running period charges nothing extra                        | F7.11b-iii     |
-| 157 | Restoring with no open period opens exactly one, at $100 that day                  | F7.11b-iii     |
-| 158 | The debt clears before the new period's fee — two movements on the same day        | F7.11b-iii     |
-| 159 | A decline on the new period's fee starts a fresh grace and deletion clock          | F7.11b-iv      |
-| 160 | A missed webhook is caught by the daily reconciliation                             | F7.10b-i       |
-| 161 | Reconciliation finding a stranded business raises an operator alert                | §2.9.5         |
-| 162 | A redelivered webhook cannot restore twice or open two periods                     | §2.9.5         |
-| 163 | A chargeback follows the non-payment path exactly                                  | F7.17          |
-| 164 | The 60-day deletion clock is not paused by suspension                              | §2.10          |
-| 165 | Debt never exceeds $500 exclusive of tax                                           | I3             |
-| 166 | Case (a) can reach $500; case (b) can reach $400                                   | F7c            |
+| #   | Scenario                                                                           | Holds                   |
+| --- | ---------------------------------------------------------------------------------- | ----------------------- |
+| 137 | A declined fixed fee starts grace with service continuing                          | F7.11                   |
+| 138 | Grace usage is billable when a period is open to bill it to                        | F7.11c-ii               |
+| 139 | Day 7 unpaid suspends the business, unbinds the agent and stops the number         | F10.3                   |
+| 140 | A failed unbind is retried and raised to the operator                              | F1.12a-ii, F8.13a, F9.6 |
+| 141 | Suspension adds no fixed fee, no usage and no new period                           | F7.11b, F7.11c          |
+| 142 | Suspension does not extend the billing period                                      | F7.11b                  |
+| 143 | A period ending mid-suspension settles on its original last day with no successor  | F7.11d                  |
+| 144 | The debt is frozen through suspension — day 55 owes exactly what day 8 owed        | F7.11c                  |
+| 145 | Case (a): paying on day 20 resumes inside the period with nothing new charged      | F7.11d                  |
+| 146 | Case (a): the day-30 settlement covers days 1–8 and 20–30                          | F7.11d                  |
+| 147 | Case (a): paying on day 45 clears $100 plus usage, then opens a new period at $100 | F7.11d                  |
+| 148 | Case (b): a declined settlement closes the period and opens no successor           | F7.11d                  |
+| 149 | Case (b): the grace days are served, not billed, and their cost is still recorded  | F7.11c-ii               |
+| 150 | Case (b): paying on day 45 and on day 70 are identical transactions                | F7.11d                  |
+| 151 | A partial payment leaves the business suspended and the email says what remains    | F7.10b                  |
+| 152 | Stripe retries continue throughout suspension                                      | F7.11b-i                |
+| 153 | Every payment email is Ringly's; Stripe's dunning stays silent                     | F7.11b-ii               |
+| 154 | The 48-hour deletion warning arrives before the deadline                           | F10.3a                  |
+| 155 | Payment clearing restores service the same day and emails the business             | F7.10b                  |
+| 156 | Restoring into a still-running period charges nothing extra                        | F7.11b-iii              |
+| 157 | Restoring with no open period opens exactly one, at $100 that day                  | F7.11b-iii              |
+| 158 | The debt clears before the new period's fee — two movements on the same day        | F7.11b-iii              |
+| 159 | A decline on the new period's fee starts a fresh grace and deletion clock          | F7.11b-iv               |
+| 160 | A missed webhook is caught by the daily reconciliation                             | F7.10b-i                |
+| 161 | Reconciliation finding a stranded business raises an operator alert                | §2.9.5                  |
+| 162 | A redelivered webhook cannot restore twice or open two periods                     | §2.9.5                  |
+| 163 | A chargeback follows the non-payment path exactly                                  | F7.17                   |
+| 164 | The 60-day deletion clock is not paused by suspension                              | §2.10                   |
+| 165 | Debt never exceeds $500 exclusive of tax                                           | I3                      |
+| 166 | Case (a) can reach $500; case (b) can reach $400                                   | F7c                     |
 
 ### J — Cancellation and dormancy
 

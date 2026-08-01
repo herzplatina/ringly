@@ -244,6 +244,8 @@ export type OperatorEmailKind =
   | "operator_calendar_unreachable"
   | "operator_activation_stuck"
   | "operator_unactivated_expiring"
+  /** F8.13a — a number that would not release. No other signal surfaces it. */
+  | "operator_number_release_failed"
   | "operator_business_deleted";
 
 export type EmailKind = BusinessEmailKind | OperatorEmailKind;
@@ -262,6 +264,8 @@ export type OperatorCondition =
   | "payment_failed"
   | "at_cap"
   | "negative_margin"
+  /** F9.12 — an unbind failed its read-back; the number is still answering. */
+  | "number_not_released"
   | "clock_paused"
   | "dispute_open"
   | "debt_on_departure";
