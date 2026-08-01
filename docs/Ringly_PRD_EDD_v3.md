@@ -1076,11 +1076,13 @@ charge failed first (F6.11).
 - **F6.19** **Deleting a business tears down its external state before its own,
   in order**: capture the lifetime totals (F9.10) → cancel the subscription →
   void any open invoices → detach the payment method → delete the payment-provider
-  customer → **release the phone number to the telephony provider** (F9.4b) →
-  **email the business and the operator** (F9.3c) → delete Ringly's rows → write
-  the departure record. Deleting Ringly's rows first
+  customer → **email the business and the operator** (F9.3c) → **release the phone
+  number to the telephony provider** (F9.4b) → **delete Ringly's rows and write the
+  departure record, together in a single transaction** (F9.10). Deleting Ringly's
+  rows first
   destroys the identifier every one of those steps needs, leaving a saved card on
-  file belonging to nobody and a rented number belonging to nobody. The full
+  file belonging to nobody and a rented number belonging to nobody. The email goes
+  before the number because releasing the number cannot be undone (F9.3d). The full
   reasoning for each position in that order is at EDD §2.9.4.
 - **F6.20** **The division of responsibility with the payment provider is
   explicit, and nothing is done twice.** Where both could act, exactly one does:
@@ -1222,10 +1224,11 @@ its $100 is charged then** (F6.10c) — two movements on the same day, both in t
 billing history. Period 3 runs to day 104. If _that_ $100 had declined, it would
 be a **fresh** failure with a fresh 7-day grace (F6.11b-iv), not a continuation.
 
-**They never pay.** At **day 91** — 60 days from the day-31 decline — the number
-is released to Retell, every Ringly row is deleted, and a departure record is
-written with **$100 + 8 days of usage** as owed and never collected (F9.9). The
-customer records, appointments and call history go with it (F9.1a-ii).
+**They never pay.** At **day 91** — 60 days from the day-31 decline — the salon
+is emailed, the number is released to Retell, and every Ringly row is deleted in
+the same transaction that writes a departure record showing **$100 + 8 days of
+usage** owed and never collected (F9.9). The customer records, appointments and
+call history go with it (F9.1a-ii).
 
 **What the salon paid across the whole story:** $100 for period 1, plus period
 1's usage, plus — on the paying ending — the $100 and 8 days it owed for period
@@ -1344,24 +1347,24 @@ payment-succeeded notices are **absent by design** — they are Stripe's (F7.3a)
 and duplicating them is how a business ends up with two differently-worded
 messages from what looks like one company (F6.21).
 
-| Email                   | When                                          | Tone default                                                                                                                                                          |
-| ----------------------- | --------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Email verification      | Contact email entered (F1.11)                 | Functional; one link, nothing else                                                                                                                                    |
-| Welcome / now live      | Activation completes (F1.12a)                 | Welcoming; **states the number is now taking customer calls**                                                                                                         |
-| Upcoming charge         | Before each period's fixed fee                | Neutral; no action needed                                                                                                                                             |
-| Payment failed          | First decline (F6.11)                         | Calm, **leads with "your service is still running"**                                                                                                                  |
-| Payment follow-up       | Through the grace period                      | Firmer, counts down to the date service stops                                                                                                                         |
-| Suspension notice       | Day 7 (F9.3)                                  | Direct, **leads with "nothing has been deleted"**                                                                                                                     |
-| **Service restored**    | Nothing outstanding after suspension (F6.10b) | **Leads with "your number is answering again"**; states the new period end date, since the period was paused (F6.11b)                                                 |
-| Deletion warning        | 48 hours before deletion (F9.3a)              | Unambiguous; itemises exactly what is destroyed                                                                                                                       |
-| Cap reached             | $500 reached (F6.9b)                          | **Good news** — they earned it, the rest is on Ringly                                                                                                                 |
-| Cancellation confirmed  | Operator marks cancelled (F6.10a)             | Matter-of-fact; **states the fixed fee is not refunded** (F6.12b)                                                                                                     |
-| Cancellation countdown  | Through the reconsideration window (F6.12)    | Neutral; the date service stops, and how to revoke                                                                                                                    |
-| Closing statement       | Cancellation window closes (F6.12c)           | Final; usage charged, fee not refunded, deletion date                                                                                                                 |
-| Calendar access failing | Bookings being refused (F2.7)                 | Urgent, explains _why_ refusing beats double-booking                                                                                                                  |
-| **Account deleted**     | Teardown completes, on every path (F9.3c)     | Final and factual: what was deleted, that the number is gone for good, and any amount recorded as owed. **Sent before the record holding their address is destroyed** |
-| Test calls exhausted    | 5th test call, not activated (F1.13a)         | States plainly that the number has stopped answering, that they are not charged, and that activating turns it back on (F1.13b)                                        |
-| Stats digest            | Each billing period (F7.4)                    | Light; the only unsubscribable email                                                                                                                                  |
+| Email                   | When                                          | Tone default                                                                                                                                                                                                   |
+| ----------------------- | --------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Email verification      | Contact email entered (F1.11)                 | Functional; one link, nothing else                                                                                                                                                                             |
+| Welcome / now live      | Activation completes (F1.12a)                 | Welcoming; **states the number is now taking customer calls**                                                                                                                                                  |
+| Upcoming charge         | Before each period's fixed fee                | Neutral; no action needed                                                                                                                                                                                      |
+| Payment failed          | First decline (F6.11)                         | Calm, **leads with "your service is still running"**                                                                                                                                                           |
+| Payment follow-up       | Through the grace period                      | Firmer, counts down to the date service stops                                                                                                                                                                  |
+| Suspension notice       | Day 7 (F9.3)                                  | Direct, **leads with "nothing has been deleted"**                                                                                                                                                              |
+| **Service restored**    | Nothing outstanding after suspension (F6.10b) | **Leads with "your number is answering again"**; states the new period end date, since the period was paused (F6.11b)                                                                                          |
+| Deletion warning        | 48 hours before deletion (F9.3a)              | Unambiguous; itemises exactly what is destroyed                                                                                                                                                                |
+| Cap reached             | $500 reached (F6.9b)                          | **Good news** — they earned it, the rest is on Ringly                                                                                                                                                          |
+| Cancellation confirmed  | Operator marks cancelled (F6.10a)             | Matter-of-fact; **states the fixed fee is not refunded** (F6.12b)                                                                                                                                              |
+| Cancellation countdown  | Through the reconsideration window (F6.12)    | Neutral; the date service stops, and how to revoke                                                                                                                                                             |
+| Closing statement       | Cancellation window closes (F6.12c)           | Final; usage charged, fee not refunded, deletion date                                                                                                                                                          |
+| Calendar access failing | Bookings being refused (F2.7)                 | Urgent, explains _why_ refusing beats double-booking                                                                                                                                                           |
+| **Account deleted**     | Teardown completes, on every path (F9.3c)     | Final and factual: what was deleted, that the number is gone for good, and any amount recorded as owed. **Sent before anything irreversible — the number release and the row deletion both follow it** (F9.3d) |
+| Test calls exhausted    | 5th test call, not activated (F1.13a)         | States plainly that the number has stopped answering, that they are not charged, and that activating turns it back on (F1.13b)                                                                                 |
+| Stats digest            | Each billing period (F7.4)                    | Light; the only unsubscribable email                                                                                                                                                                           |
 
 **Who raises the money and who writes the words — every scenario**
 
@@ -1703,12 +1706,25 @@ open, or what is destroyed in forty-eight hours.
   - **It is sent even when the address was never verified** (F1.11). An
     unactivated business may never have confirmed its email; best effort to the
     address on file is better than deleting in silence.
-- **F9.3d** **The business's deletion email must be sent before the row holding
-  its address is destroyed.** `departed_businesses` deliberately keeps no contact
-  details (F9.9), so once teardown removes the tenant rows there is no address
-  left to write to. This fixes the position of the send inside the teardown
-  order (F6.19, EDD §2.9.4) — it is not a step that can be moved to the end for
-  tidiness.
+- **F9.3d** **The deletion email is sent before anything irreversible happens to
+  the business.** Two constraints fix its position and both are load-bearing:
+  - **Before the tenant rows are deleted**, because `departed_businesses`
+    deliberately keeps no contact details (F9.9) and once teardown removes the
+    tenant row there is no address left to write to.
+  - **Before the number is released** (F9.4b), because that step cannot be
+    undone: the number goes back to the carrier and neither Ringly nor the
+    business can have it again. Sending first means a send that fails outright
+    halts teardown while the business is still whole and still recoverable,
+    rather than after it is neither.
+
+  **The send is enqueued, not waited on.** The idempotency key is written before
+  the send (F7.5), so the message is durable the moment it is queued and teardown
+  never blocks on the email provider retrying (N7). A rented number must not stay
+  open, billing Ringly, because Resend is slow.
+
+  This fixes the position of the send inside the teardown order (F6.19, EDD
+  §2.9.4) — it is not a step that can be moved to the end for tidiness.
+
 - **F9.4** A business's telephone number is its public identity, printed on
   signage and listings, and losing it is not recoverable. **How long it is held
   after service ends depends on why service ended:**
@@ -1795,13 +1811,25 @@ open, or what is destroyed in forty-eight hours.
   answer "what did this customer earn us, and what did they leave owing" years
   later, and must not become a way for customer records to survive deletion.
 
-- **F9.10** **The financial record is captured before teardown begins.** Net
-  revenue is derived from payment-processor records that the teardown deletes, so
-  the order is fixed: **capture the totals → tear down the payment provider
-  (F6.19) → send the deletion emails (F9.3d) → release the number → write the departure record. --> delete Ringly's rows**
-  Each step destroys something the one before
-  it needed: the totals come from Stripe, the emails need an address on the
-  tenant row, and the record needs the business id.
+- **F9.10** **The financial record is captured before teardown begins, and
+  written by the same transaction that removes the business.** Net revenue is
+  derived from payment-processor records that the teardown deletes, so the order
+  is fixed: **capture the totals → tear down the payment provider (F6.19) → send
+  the deletion emails (F9.3d) → release the number → delete Ringly's rows and
+  write the departure record, together, in one transaction.** Each step destroys
+  something the one before it needed: the totals come from Stripe, and the emails
+  need an address on the tenant row.
+  - **The last two are one transaction because they are the only two that can
+    be.** Every other step is a call to an external provider and cannot join a
+    database transaction; these two are both local to Ringly's own database.
+  - **Ordering them against each other was the mistake.** Writing the record
+    first leaves a window in which a business is both present and departed —
+    still counted among active businesses (F8.4) if the process then dies.
+    Deleting first leaves a window in which a crash loses a money record
+    permanently, which is worse (N10.1, N10.6). **Committing them together
+    removes both windows**, and there is no third state to reason about: either
+    the business is gone and its record exists, or neither happened and teardown
+    can be run again.
 
 ---
 
@@ -1989,8 +2017,10 @@ totals, or the usage they were derived from.
 - **N10.5** **Restores are exercised on a schedule and the result recorded.** A
   backup never restored is a belief.
 - **N10.6** **Deleting a business is not an exception.** The departure record is
-  written last and deliberately outlives everything else (F9.9, F9.10); it is a
-  money record and is covered by the above.
+  written by the transaction that removes the tenant, and deliberately outlives
+  it (F9.9, F9.10); it is a money record and is covered by the above. **It is
+  never left unwritten and never written alone**: a business cannot be deleted
+  without its record, and no record can exist for a business still present.
 - **N10.7** **Stripe is a second copy of the payments, though not of the
   reasoning.** Every charge, refund and dispute also exists in Stripe's own
   records, which fail independently of Ringly's infrastructure. What Stripe does
@@ -3392,7 +3422,7 @@ up. Webhooks are the fast path, not the only path.
 - **A business found paid-up but suspended is also an operator alert.** It means
   a webhook was lost, and one lost webhook usually means others were too.
 
-### 2.9.4 Teardown, in order (F7.19, F10.10)
+### 2.9.4 Teardown, in order (F6.19, F9.10)
 
 ```
 1  capture lifetime net revenue and outstanding balance   ← from Stripe
@@ -3400,32 +3430,44 @@ up. Webhooks are the fast path, not the only path.
 3  void open invoices
 4  detach payment method
 5  delete Stripe customer
-6  HAND THE NUMBER BACK to Retell (rental ends)           ← before the row goes
-7  EMAIL the business, and the operator                   ← before the address goes
-8  delete Ringly's rows
-9  write departed_businesses
+6  EMAIL the business, and the operator (enqueue, do not await)
+7  HAND THE NUMBER BACK to Retell (rental ends)           ← before the row goes
+8  delete Ringly's rows AND write departed_businesses     ← ONE transaction
 ```
 
 **Every step of that order is load-bearing.**
 
 - **1 before 5** — net revenue comes from Stripe balance transactions that
   deleting the customer destroys.
-- **2–6 before 8** — deleting Ringly's rows first orphans everything upstream: a
+- **2–7 before 8** — deleting Ringly's rows first orphans everything upstream: a
   saved card in Stripe belonging to nobody, and a Retell number belonging to
   nobody.
-- **7 before 8** — the business's contact email lives on the tenant row, and
-  `departed_businesses` deliberately keeps no contact details (F10.9). Send after
-  the delete and there is no address to send to (F10.3c, F10.3d). Both totals
+- **6 before 8** — the business's contact email lives on the tenant row, and
+  `departed_businesses` deliberately keeps no contact details (F9.9). Send after
+  the delete and there is no address to send to (F9.3c, F9.3d). Both totals
   the emails quote are already in hand from step 1.
-- **8 before 9** — `business_id` and the totals are needed to write the record,
-  and step 8 removes the row holding them.
-- **6 before 8, specifically.** This is the one that matters most and is easiest
+- **6 before 7** — releasing the number is the first step that cannot be undone:
+  it goes back to the carrier and nobody can have it again (F9.4b). Emailing
+  first means a send that fails outright halts teardown while the business is
+  still whole. **Step 6 enqueues and moves on** — the idempotency key is written
+  before the send (F7.5), so the message is durable once queued, and teardown
+  must never hold a rented number open while Resend retries (N7).
+- **7 before 8, specifically.** This is the one that matters most and is easiest
   to get backwards. While the business row exists the number is in `takenNumbers`
   and cannot be reassigned. The moment the row is deleted that protection is
   gone. Releasing the number first means the failure mode of a crash mid-teardown
   is a row whose number no longer exists — visible, recoverable, harmless.
   Releasing it after means a window in which an unbound number has no row
   protecting it, and a business provisioning in that window can be handed it.
+- **8 is one transaction, not two ordered steps**, and these are the only two
+  steps that can be — every other step is an external provider call that cannot
+  join a database transaction. Sequencing them either way leaves a window worth
+  avoiding: writing the record first means a business is briefly both present and
+  departed, and would stay that way, still counted in active businesses (F8.4),
+  if the process died in between; deleting first means a crash there loses a
+  money record permanently (N10.1, N10.6), which is worse. Committed together
+  there is no window and no third state — either the business is gone and its
+  record exists, or nothing happened and the sweeper retries.
 
 ## 2.10 Lifecycle and retention
 
@@ -3450,7 +3492,7 @@ restores service on the same number, which is the whole point of holding it
 | `cancelling → dormant`, window close (F7.12b)                            | It left; the number is held in case it returns                                  | It returns (F7.12e)                                                      |
 
 - **Release** — as distinct from unbind — happens **only at deletion**: day 10
-  for a business that never activated, day 60 otherwise (§2.9.4 step 6).
+  for a business that never activated, day 60 otherwise (§2.9.4 step 7).
 - **The unactivated case is the only one driven by a call**, not by a clock or a
   payment, so it fires inline in the post-call webhook rather than on a sweeper
   pass (§2.4a.2). Every other trigger is a scheduled transition.
@@ -3486,7 +3528,7 @@ keep them apart, and all three are required:
    mistake to guard against: a number is taken because the row exists, not
    because the business is paying. _(The shipped `provision/route.ts` already
    does this correctly and must not be "optimised" into a status filter.)_
-2. **The number is handed back before the row is deleted** (§2.9.4 step 6). The
+2. **The number is handed back before the row is deleted** (§2.9.4 step 7). The
    row is what protects the number, so releasing first means a crash mid-teardown
    leaves a row whose number is gone — visible and recoverable — rather than an
    unprotected number a concurrent signup can be handed.
@@ -3621,7 +3663,7 @@ Triggered by the owner pressing delete on the dashboard. One transaction:
 #### Path 2 — the whole business, on a lifecycle deadline (F10.1a-ii)
 
 Triggered by the sweeper, not by a request. Customers and appointments are
-ordinary tenant rows and are removed at §2.9.4 step 7 along with everything else;
+ordinary tenant rows and are removed at §2.9.4 step 8 along with everything else;
 no special handling and nothing exempt.
 
 **What survives a business deletion, in full:**
@@ -4586,14 +4628,14 @@ _F10.1–F10.10 — 20 scenarios_
 | 184 | Nothing is deleted without a 48-hour warning, on any path                    | F10.3a, I4 |
 | 185 | Deletion emails both the business and the operator, on every path            | F10.3c     |
 | 186 | The deletion email is sent before the address that receives it is destroyed  | F10.3d     |
-| 187 | Teardown runs in order: capture, Stripe, number, emails, rows, record        | §2.9.4     |
+| 187 | Teardown runs in order: capture, Stripe, emails, number, then rows + record  | §2.9.4     |
 | 188 | The number is handed back to the provider and not pooled                     | F10.4b     |
 | 189 | A suspended business's number is never offered as reusable                   | F10.4a     |
 | 190 | A dormant business's number is never offered as reusable                     | F10.4a     |
 | 191 | An unactivated business that spent its allowance keeps its number reserved   | F10.4a     |
 | 192 | A deleted business's number leaves the pool                                  | F10.4a     |
 | 193 | The departure record holds identity and money and no consumer data           | F10.9      |
-| 194 | The departure record is captured before teardown destroys its source         | F10.10     |
+| 194 | The record is captured before its source goes, and commits with the row drop | F9.10      |
 | 195 | The 10-day path issues an explicit provider-side content delete              | F10.5, R18 |
 | 196 | The 60-day paths need no provider-side delete                                | F10.5      |
 | 197 | Ringly never stores a transcript or a recording                              | F10.6      |
