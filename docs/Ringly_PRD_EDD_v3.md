@@ -42,20 +42,20 @@ served at launch, behind an interface built so others can follow.
 
 ## 1.2 What changed from v2
 
-| Area         | v2                                   | v3                                                                |
-| ------------ | ------------------------------------ | ----------------------------------------------------------------- |
-| Tenancy      | Implicitly single-tenant assumptions | Explicit multi-tenant model, isolation and scale targets          |
-| Scheduling   | Google Calendar only, hardwired      | Still Google only, but behind an interface others can plug into   |
-| Services     | Set at onboarding                    | Editable any time; changes reach the agent for the next caller    |
-| Hours        | Set at onboarding                    | Editable; timezone stays an operator action (F3.5–F3.6)           |
-| Customers    | A messaging channel was planned      | **None, ever.** The call is the only contact (§1.4)               |
-| Analytics    | None                                 | Per-business dashboard, plus an operator cost/revenue dashboard   |
-| Money        | None                                 | $100/30 days in advance, usage in arrears, $500 cap, card on file |
-| Email        | None                                 | Billing and stats emails **to the business**                      |
-| Verticals    | Salons, clinics, tax offices         | **No healthcare** — no BAA, so clinics are out (§1.4)             |
-| Hosting      | Assumed Vercel                       | **Undecided** — Vercel or Cloud Run; design stays portable (N8)   |
-| Latency      | Not a stated requirement             | Explicit per-turn budget on the call path                         |
-| Cost         | Not a stated requirement             | Explicit per-tenant serving-cost target                           |
+| Area       | v2                                   | v3                                                                |
+| ---------- | ------------------------------------ | ----------------------------------------------------------------- |
+| Tenancy    | Implicitly single-tenant assumptions | Explicit multi-tenant model, isolation and scale targets          |
+| Scheduling | Google Calendar only, hardwired      | Still Google only, but behind an interface others can plug into   |
+| Services   | Set at onboarding                    | Editable any time; changes reach the agent for the next caller    |
+| Hours      | Set at onboarding                    | Editable; timezone stays an operator action (F3.5–F3.6)           |
+| Customers  | A messaging channel was planned      | **None, ever.** The call is the only contact (§1.4)               |
+| Analytics  | None                                 | Per-business dashboard, plus an operator cost/revenue dashboard   |
+| Money      | None                                 | $100/30 days in advance, usage in arrears, $500 cap, card on file |
+| Email      | None                                 | Billing and stats emails **to the business**                      |
+| Verticals  | Salons, clinics, tax offices         | **No healthcare** — no BAA, so clinics are out (§1.4)             |
+| Hosting    | Assumed Vercel                       | **Undecided** — Vercel or Cloud Run; design stays portable (N8)   |
+| Latency    | Not a stated requirement             | Explicit per-turn budget on the call path                         |
+| Cost       | Not a stated requirement             | Explicit per-tenant serving-cost target                           |
 
 ## 1.3 Personas
 
@@ -93,7 +93,7 @@ served at launch, behind an interface built so others can follow.
   not a deferral with a date.
 - Multi-location businesses (one location per business row).
 - Recurring Appointments. Only the first instanced booked if a recurring is requested by the customer. The customer is
-  told about what was actually booked. 
+  told about what was actually booked.
 - Multi-staff / resource-level scheduling (one implicit calendar per business).
 - Multiple logins per business. **One business has exactly one owner account**,
   the Google identity that signed it up (F1.7). There are no staff logins, no
@@ -478,9 +478,9 @@ _(Carried from v2; renumbered. v2 FR1–FR10 map to F1.1–F1.10.)_
 
 ### F5 — Business dashboard
 
-The dashboard has the following : 
+The dashboard has the following :
 a) the aggregate shape of the calls Ringly handled
-b) what the business has paid for them. 
+b) what the business has paid for them.
 c) **the state of the service itself** (F5.15), the **controls** a
 business needs.
 
@@ -504,11 +504,11 @@ business needs.
     headline number, and it is the same figure as the `booked` bar in the outcome
     breakdown, promoted to a tile because it is what an owner looks for first.
   - **revenue booked** — an **estimate** wherever the range includes
-  future appointments, labelled as such, because price resolves at occurrence
-  time (F3.4).
+    future appointments, labelled as such, because price resolves at occurrence
+    time (F3.4).
 - **F5.4** A chart for showing the distributions of customer calls by time-of-day (time of call arrival)
-    grouping and outcome (booked / rescheduled / cancelled / enquiry-only /
-    dropped) grouping.
+  grouping and outcome (booked / rescheduled / cancelled / enquiry-only /
+  dropped) grouping.
   **"Dropped"** covers both a caller who hung up without a resolved
   outcome **and** a call the agent could not help with. If the caller did not get
   what they rang for, it is dropped. A completed enquiry — the caller asked
@@ -1081,7 +1081,6 @@ charge failed first (F6.11).
 
 ### F6a — The billing model, end to end
 
-
 **Activation.** A business signs up, gets a number, and places up to **five** test
 calls. To go live it must do three things — verify its email, confirm on its
 dashboard that a test call worked, and add a card — and then **press Activate**.
@@ -1222,7 +1221,7 @@ change that breaks one is a change to the commercial model, not a detail._
 | **I1** | **A billing period is 30 calendar days and is never extended** — not by suspension, not by grace, not by anything (F6.11b)                                                                                                                                         | **One:** cancellation settles the final period **early** (F6.12b). Periods can be cut short; none is ever lengthened                       |
 | **I2** | **At most one period is open at a time, and none opens while the business owes anything** (F6.11c, F6.11f)                                                                                                                                                         | None                                                                                                                                       |
 | **I3** | **A period's total is clamped to $500 inclusive of the fee (F6.9), and what is owed is that total less anything already collected.** Because only one period can ever be outstanding (I2), **$500 is the ceiling on what any business can owe** — exclusive of tax | None                                                                                                                                       |
-| **I4** | **Nothing is deleted without a 48-hour warning email** (F9.3a)                                                                                                                                                                                                    | None                                                                                                                                       |
+| **I4** | **Nothing is deleted without a 48-hour warning email** (F9.3a)                                                                                                                                                                                                     | None                                                                                                                                       |
 | **I5** | **No _new_ charge ever arises while a business is suspended** — no fee, no usage, no period (F6.11b, F6.11c). Its debt is frozen at what it owed when service stopped                                                                                              | **Not the same as "pays only for days served":** the fee already taken for the current period covers days it will not now receive (F6.11b) |
 | **I6** | **The $100 is never prorated or refunded** (F6.11e, F6.12b)                                                                                                                                                                                                        | Goodwill refunds, by hand, which no rule produces (F5.7)                                                                                   |
 
@@ -1326,9 +1325,9 @@ messages from what looks like one company (F6.21).
 | Upcoming charge         | Before each period's fixed fee                | Neutral; no action needed                                                                                                                                             |
 | Payment failed          | First decline (F6.11)                         | Calm, **leads with "your service is still running"**                                                                                                                  |
 | Payment follow-up       | Through the grace period                      | Firmer, counts down to the date service stops                                                                                                                         |
-| Suspension notice       | Day 7 (F9.3)                                 | Direct, **leads with "nothing has been deleted"**                                                                                                                     |
+| Suspension notice       | Day 7 (F9.3)                                  | Direct, **leads with "nothing has been deleted"**                                                                                                                     |
 | **Service restored**    | Nothing outstanding after suspension (F6.10b) | **Leads with "your number is answering again"**; states the new period end date, since the period was paused (F6.11b)                                                 |
-| Deletion warning        | 48 hours before deletion (F9.3a)             | Unambiguous; itemises exactly what is destroyed                                                                                                                       |
+| Deletion warning        | 48 hours before deletion (F9.3a)              | Unambiguous; itemises exactly what is destroyed                                                                                                                       |
 | Cap reached             | $500 reached (F6.9b)                          | **Good news** — they earned it, the rest is on Ringly                                                                                                                 |
 | Cancellation confirmed  | Operator marks cancelled (F6.10a)             | Matter-of-fact; **states the fixed fee is not refunded** (F6.12b)                                                                                                     |
 | Cancellation countdown  | Through the reconsideration window (F6.12)    | Neutral; the date service stops, and how to revoke                                                                                                                    |
@@ -1345,25 +1344,25 @@ decides the amounts and writes every message except the three Stripe already
 sends well.** Stripe's dunning is off throughout (F6.21), including during
 suspension (F6.11b-ii).
 
-| Scenario                    | Invoice + charge                                   | Email to the business                                      |
-| --------------------------- | -------------------------------------------------- | ---------------------------------------------------------- |
-| Activation, period 1's $100 | **Stripe** (Ringly triggers)                       | Receipt: **Stripe** · "You're live": **Ringly**            |
-| Each period's $100          | **Stripe**                                         | Upcoming charge: **Ringly** · Receipt: **Stripe**          |
-| Usage settlement            | **Stripe** — Ringly computes and clamps (F6.9)     | Receipt: **Stripe**                                        |
-| $500 cap reached            | — nothing charged                                  | **Ringly**                                                 |
-| Payment declines            | Stripe retries, 60-day schedule                    | **Ringly**                                                 |
-| Through grace               | Stripe still retrying                              | **Ringly** — follow-ups                                    |
-| Suspension                  | Stripe **still retrying**; no new invoice (F6.11c) | **Ringly** — suspension notice, then follow-ups            |
-| Service restored            | New period's $100, if one opens: **Stripe**        | **Ringly**                                                 |
-| 48h before deletion         | —                                                  | **Ringly**                                                 |
+| Scenario                    | Invoice + charge                                   | Email to the business                                     |
+| --------------------------- | -------------------------------------------------- | --------------------------------------------------------- |
+| Activation, period 1's $100 | **Stripe** (Ringly triggers)                       | Receipt: **Stripe** · "You're live": **Ringly**           |
+| Each period's $100          | **Stripe**                                         | Upcoming charge: **Ringly** · Receipt: **Stripe**         |
+| Usage settlement            | **Stripe** — Ringly computes and clamps (F6.9)     | Receipt: **Stripe**                                       |
+| $500 cap reached            | — nothing charged                                  | **Ringly**                                                |
+| Payment declines            | Stripe retries, 60-day schedule                    | **Ringly**                                                |
+| Through grace               | Stripe still retrying                              | **Ringly** — follow-ups                                   |
+| Suspension                  | Stripe **still retrying**; no new invoice (F6.11c) | **Ringly** — suspension notice, then follow-ups           |
+| Service restored            | New period's $100, if one opens: **Stripe**        | **Ringly**                                                |
+| 48h before deletion         | —                                                  | **Ringly**                                                |
 | Deletion                    | Teardown voids open invoices (§2.9.4)              | **Ringly** — to the business **and** the operator (F9.3c) |
-| Cancellation requested      | — nothing charged in the window                    | **Ringly** — confirmation, then countdown                  |
-| Cancellation settles        | Final usage: **Stripe**                            | **Ringly** — closing statement                             |
-| Refund (goodwill only)      | **Stripe**, by hand (F5.7)                         | none automated                                             |
-| Test calls exhausted        | — never charged                                    | **Ringly**                                                 |
-| Calendar unreachable        | —                                                  | **Ringly**                                                 |
-| Recurring occurrence moved  | —                                                  | **Ringly**                                                 |
-| Stats digest                | —                                                  | **Ringly**                                                 |
+| Cancellation requested      | — nothing charged in the window                    | **Ringly** — confirmation, then countdown                 |
+| Cancellation settles        | Final usage: **Stripe**                            | **Ringly** — closing statement                            |
+| Refund (goodwill only)      | **Stripe**, by hand (F5.7)                         | none automated                                            |
+| Test calls exhausted        | — never charged                                    | **Ringly**                                                |
+| Calendar unreachable        | —                                                  | **Ringly**                                                |
+| Recurring occurrence moved  | —                                                  | **Ringly**                                                |
+| Stats digest                | —                                                  | **Ringly**                                                |
 
 **Stripe sends exactly three things to a business: invoices, receipts, and
 payment-succeeded** (F7.3a). Everything else in the table is Ringly's, because
@@ -1425,7 +1424,7 @@ open, or what is destroyed in forty-eight hours.
   **This does not exclude the aggregate outcomes × time-of-day chart** in F8.2b,
   which answers a different question — how calls behave across the platform, or
   across whichever businesses are selected — and cannot be got by opening one
-  dashboard at a time. 
+  dashboard at a time.
 
 - **F8.2d** **No unique-caller or per-customer figures anywhere.** Same reason as
   F5.3: a customer cannot be reliably identified, so the number would be a guess.
@@ -1506,20 +1505,20 @@ open, or what is destroyed in forty-eight hours.
 
   **Broken now — a customer is being turned away as you read this**
 
-  | Condition            | Trigger                                                                               | Operator action                                                                                                 |
-  | -------------------- | ------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
-  | **Bookings failing** | An open calendar incident (F2.7)                                                      | Get them to reconnect the calendar; every caller meanwhile is refused                                           |
+  | Condition            | Trigger                                                                               | Operator action                                                                                                |
+  | -------------------- | ------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+  | **Bookings failing** | An open calendar incident (F2.7)                                                      | Get them to reconnect the calendar; every caller meanwhile is refused                                          |
   | **Activation stuck** | 5 test calls used, never confirmed (F1.13a) — **their number is no longer answering** | Investigate; then reset the allowance and rebind (F9.1c). They are waiting on Ringly and are not being charged |
 
   **About to lose the business**
 
-  | Condition                    | Trigger                             | Operator action                                             |
-  | ---------------------------- | ----------------------------------- | ----------------------------------------------------------- |
+  | Condition                    | Trigger                            | Operator action                                             |
+  | ---------------------------- | ---------------------------------- | ----------------------------------------------------------- |
   | **Deletion imminent**        | Inside the 48-hour warning (F9.3a) | Last chance; number and data go permanently at the deadline |
   | **Suspended**                | Day 7+ of non-payment (F9.3)       | Their phone is not being answered; recoverable until day 60 |
-  | **Cancellation window open** | Requested, not yet settled (F6.12)  | They can still revoke; the window is short                  |
+  | **Cancellation window open** | Requested, not yet settled (F6.12) | They can still revoke; the window is short                  |
   | **Unactivated, expiring**    | Approaching day 10 (F9.1)          | Pause the clock (F10.1b) or let it lapse                    |
-  | **Payment failed**           | Inside the 7-day grace (F6.11)      | Service still running; Stripe is retrying                   |
+  | **Payment failed**           | Inside the 7-day grace (F6.11)     | Service still running; Stripe is retrying                   |
 
   **Costing Ringly money**
 
@@ -1531,11 +1530,11 @@ open, or what is destroyed in forty-eight hours.
 
   **Needs a human, or nothing will happen**
 
-  | Condition             | Trigger                                          | Operator action                                               |
-  | --------------------- | ------------------------------------------------ | ------------------------------------------------------------- |
+  | Condition             | Trigger                                         | Operator action                                               |
+  | --------------------- | ----------------------------------------------- | ------------------------------------------------------------- |
   | **Clock paused**      | An operator paused a lifecycle deadline (F9.1b) | Resolve and unpause — a paused clock never resumes itself     |
-  | **Dispute open**      | A chargeback was filed (F6.17)                   | Contest or concede by hand in Stripe; may outlast the account |
-  | **Debt on departure** | A settlement charge failed (F6.12f)              | Informational — recorded as owed, not pursued                 |
+  | **Dispute open**      | A chargeback was filed (F6.17)                  | Contest or concede by hand in Stripe; may outlast the account |
+  | **Debt on departure** | A settlement charge failed (F6.12f)             | Informational — recorded as owed, not pursued                 |
 
   A business can appear under several conditions at once and is listed once per
   condition, because they need different actions.
@@ -1571,7 +1570,7 @@ open, or what is destroyed in forty-eight hours.
   | **What triggers it** | The business owner presses delete on the dashboard, having been asked by that customer | A lifecycle deadline expires — day 10 unactivated, day 60 suspended or dormant |
   | **Who acts**         | The business owner, self-serve                                                         | Nobody. The lifecycle sweeper, on a timer                                      |
   | **Scope**            | That one customer                                                                      | Every customer the business ever had, and the business itself                  |
-  | **Requirement**      | F9.1a-i                                                                               | F9.1a-ii                                                                      |
+  | **Requirement**      | F9.1a-i                                                                                | F9.1a-ii                                                                       |
 
 - **F9.1a-i** **Path 1 — deleting one customer, self-serve and immediate.** The
   owner enters the caller's phone number, is shown what will be erased, confirms
@@ -1588,11 +1587,11 @@ open, or what is destroyed in forty-eight hours.
   |                                           | Outcome                                                                                                          | Why                                                                                                                                                                                                                                                    |
   | ----------------------------------------- | ---------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
   | **The `customers` row** — name, phone     | **Deleted**                                                                                                      | It is the PII. This is the point of the operation                                                                                                                                                                                                      |
-  | **Future appointments** for that customer | **Cancelled and deleted**, from the Ringly DB                                  | An appointment whose customer no longer exists is a slot the business holds open for a ghost                                                                                                                                                           |
+  | **Future appointments** for that customer | **Cancelled and deleted**, from the Ringly DB                                                                    | An appointment whose customer no longer exists is a slot the business holds open for a ghost                                                                                                                                                           |
   | **Past appointments**                     | **Kept, with the customer link removed** — service, duration, price and date survive; the name and number do not | They carry revenue the business already earned and the rollups already counted (F5.3a), and invoices already settled against them (F6.16). Deleting them would silently rewrite closed figures. What is left is a transaction with nobody's name on it |
-  | **`calls`**                               | **Untouched — nothing to touch**                                                                                 | Calls carry no customer link (F5.3) and no transcript or recording (F9.6). There is no PII in them to erase                                                                                                                                           |
+  | **`calls`**                               | **Untouched — nothing to touch**                                                                                 | Calls carry no customer link (F5.3) and no transcript or recording (F9.6). There is no PII in them to erase                                                                                                                                            |
   | **Analytics rollups**                     | **Untouched**                                                                                                    | Daily aggregates only; no customer grain exists anywhere in them (§2.8)                                                                                                                                                                                |
-  | **Billing and money records**             | **Untouched**                                                                                                    | They are about the business, never about its callers (F9.9)                                                                                                                                                                                           |
+  | **Billing and money records**             | **Untouched**                                                                                                    | They are about the business, never about its callers (F9.9)                                                                                                                                                                                            |
   | **The business's own calendar**           | Future events removed; **past events left alone**                                                                | Past events are the business's own record in a system Ringly does not own                                                                                                                                                                              |
 
   **It is irreversible, and says so before the confirmation.**
@@ -1640,7 +1639,7 @@ open, or what is destroyed in forty-eight hours.
   | 7    | **Suspended.** Calls stop being answered; **the number and all data are retained**. Any open period keeps running and is not extended (F6.11b); **none opens** (F6.11c).          |
   | 7–60 | Suspended and **charged nothing whatsoever** — no fee, no usage, no new period. Fully recoverable: paying what is owed restores service and resumes the period that day (F6.10b). |
   | ~58  | **48-hour final warning by email**, itemising exactly what will be deleted.                                                                                                       |
-  | 60   | **Full stop.** Number released, Ringly-held data deleted, the paused period settled for what was served, amount owed recorded permanently (F9.9).                                |
+  | 60   | **Full stop.** Number released, Ringly-held data deleted, the paused period settled for what was served, amount owed recorded permanently (F9.9).                                 |
 
   Days 7–60 cost Ringly almost nothing — service has already stopped, and only
   the number rental continues — so the window is long, because the business's
@@ -1658,7 +1657,7 @@ open, or what is destroyed in forty-eight hours.
   | **Window closes**   | Period settled early. Usage to the request date charged; **no refund of the fixed fee**. Service stops. **Closing statement sent** (F6.12b–c). |
   | + 0 to 60 days      | **Dormant.** Number and all data retained. Returning resumes the same number and history on a new period (F6.12e).                             |
   | + 58 days           | **48-hour final warning** before deletion.                                                                                                     |
-  | + 60 days           | Number released, Ringly-held data deleted (F9.8). A later return is a wholly new account.                                                     |
+  | + 60 days           | Number released, Ringly-held data deleted (F9.8). A later return is a wholly new account.                                                      |
 
 - **F9.3a** **Nothing is ever deleted without a 48-hour warning email first.**
   This applies to both paths and is not conditional on the business having read
