@@ -92,16 +92,12 @@ function bookingTools() {
       "record_whatsapp_consent",
       "Record whether the customer agrees to receive WhatsApp confirmations and reminders. Ask for consent before booking.",
       {
-        phone_number: {
-          type: "string",
-          description: "The customer's phone number in E.164 format.",
-        },
         consent: {
           type: "boolean",
           description: "true if the customer agreed, false if they declined.",
         },
       },
-      ["phone_number", "consent"],
+      ["consent"],
     ),
     bookingTool(
       "book_appointment",
@@ -155,14 +151,9 @@ function bookingTools() {
     ),
     bookingTool(
       "get_customer_appointments",
-      "Look up a customer's upcoming appointments by phone number. Use before rescheduling or cancelling to get the appointment_id.",
-      {
-        phone_number: {
-          type: "string",
-          description: "The customer's phone number in E.164 format.",
-        },
-      },
-      ["phone_number"],
+      "Look up the appointments of the person currently on the call. Use before rescheduling or cancelling to get the appointment_id. Takes no arguments: it always uses the caller's own number, and cannot look up anyone else.",
+      {},
+      [],
     ),
   ];
 }
