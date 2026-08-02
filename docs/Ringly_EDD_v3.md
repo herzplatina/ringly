@@ -276,11 +276,14 @@ a feature that may arrive, and no table for recurrence.
 
 ```
 businesses(id pk, name, address, timezone, website, business_type,
-           contact_email, contact_email_verified_at,
+           contact_email, contact_email_verified_at, test_call_confirmed_at,
            phone_number, telephony_agent_id, agent_bound_at,
            billing_status, activated_at,
            booking_horizon_days default 70 check between 7 and 180,
            test_calls_used, created_at)
+
+billing_events(id pk, business_id fk, kind, amount_cents null,
+               provider_ref null, period_id fk null, occurred_at)
 
 services(id pk, business_id fk, name, description, position, active,
          deleted_at, created_at)
@@ -308,6 +311,33 @@ call_sessions(provider_call_id pk, business_id fk, snapshot jsonb,
 ```
 
 The decisions in that block that are load-bearing:
+
+**`billing_events` is in 005, not in 007 with the rest of billing.** It is the
+append-only money ledger (F6.14, N10.4), and a ledger has to exist before the
+first thing worth recording — which is a stored card, in the checklist, before
+any period exists. N10.4's "nothing is ever hard-deleted or updated in place"
+is explicitly cheapest to hold from the first migration, and holding it from the
+_second_ one means the first payment fact the product learns has nowhere to go.
+**`amount_cents` and `provider_ref` are nullable** because the ledger records
+events that carry no money — a payment method attached, a SetupIntent confirmed —
+and those are exactly the ones the checklist reads (§2.5.1.7).
+
+**The checklist's three items are answered from three different places, and that
+is deliberate**: `contact_email_verified_at` and `test_call_confirmed_at` are
+Ringly's own facts and live here; the card is Stripe's fact and is read from the
+ledger of what Stripe told us (§2.5.1.7). There is no `payment_method_attached_at`
+column, and there should not be one.
+
+**`test_call_confirmed_at` is a timestamp rather than a boolean for one honest
+reason: every "has this happened" in this schema is a nullable `*_at`.**
+`contact_email_verified_at`, `agent_bound_at`, `activated_at`, `classified_at`,
+`closed_at`, `bounced_at`, `warned_at`, `revoked_at`, `usage_settled_at` — a
+boolean here would be the single exception, and two idioms for one concept cost
+a reader more than seven bytes saves. A nullable timestamp is also a strict
+superset at the same price: `IS NULL` reads exactly as `= false` would.
+**Nothing reads the value today** — §2.5.4's alert test is `IS NULL` — and that
+is stated rather than dressed up. Where it would earn its keep is a support
+conversation and F8.6a outreach, neither of which is a stated requirement.
 
 **`is_test_call` is written at the time of the call, never derived** (F1.13c).
 Billing status changes; a call's history must not. Deriving it from today's
@@ -418,10 +448,11 @@ billing_periods(id pk, business_id fk, policy_id fk,
 
 usage_records(id pk, business_id fk, period_id fk null, call_id fk,
               connected_seconds, created_at)
-
-billing_events(id pk, business_id fk, kind, amount_cents,
-               provider_ref, period_id fk null, occurred_at)
 ```
+
+**`billing_events` is not here — it is in 005** (above), because the ledger has to
+predate the first payment fact the product learns, which arrives in the checklist
+before any period exists.
 
 **Pricing is policy data, not code** (F6.15, F6.8). The fixed fee, the cap, the
 per-minute rate, the test-call allowance and **the set of outcomes that count as
@@ -437,9 +468,18 @@ to. Those seconds are recorded and never charged. A non-null constraint here
 would force the design to invent a period to hold them — which is exactly the
 $100 charge F6.11c refuses to manufacture.
 
-**`billing_events` is the append-only ledger** (F6.14, N10.4). Every charge,
-refund, failure and chargeback is a row. Nothing in it is updated; corrections
-are new rows.
+**`billing_events` is the append-only ledger of everything the payment provider
+tells Ringly** (F6.14, N10.4), not only of money moving. Charges, refunds,
+failures and chargebacks are rows; so are `setup_intent_succeeded`,
+`payment_method_attached` and `payment_method_detached`, which carry no amount
+and are what §2.5.1.7 reads to answer "has this business added a card". Nothing
+in it is updated; corrections are new rows.
+
+**Recording the whole payment lifecycle rather than only the money is the point.**
+A ledger that holds charges but not the card those charges will be made against
+forces every other part of the design to ask Stripe directly, which is how a
+second source of truth for a Stripe fact gets invented in three different places.
+One table, one answer.
 
 **`usage_records.created_at` earns its place where `calls.created_at` did not.**
 This is a money table (N10.1): it is append-only, corrections arrive as new rows
@@ -883,7 +923,7 @@ Background, off the response, and **gated on the calendar credential existing.**
 6  UPDATE businesses SET agent_bound_at = now()
 ```
 
-**Decision, not settled by the PRD — provisioning waits for the calendar.** F1.9
+**Decision, ratified 2026-08-01 — provisioning waits for the calendar.** F1.9
 says number purchase runs in the background but does not say from what moment.
 F4.1 says a business without a connected calendar cannot activate and cannot
 take bookings, so buying it a number is spending on an account that cannot
@@ -908,23 +948,43 @@ thing that can detect a silent bind failure believe the write instead.
 Three items, no ordering, each answered from a single row read so the screen is
 never stale (F5.18 applies the same rule to the dashboard):
 
-| Item                   | Answered by                              | Cleared by                           |
-| ---------------------- | ---------------------------------------- | ------------------------------------ |
-| Contact email verified | `businesses.contact_email_verified_at`   | Editing the address                  |
-| Test call confirmed    | `businesses.test_call_confirmed_at`      | Nothing; it is the owner's judgement |
-| Card added             | `businesses.payment_method_attached_at`  | Nothing                              |
-| Test calls remaining   | allowance − `businesses.test_calls_used` | —                                    |
+| Item                   | Answered by                                                                                  | Cleared by                           |
+| ---------------------- | -------------------------------------------------------------------------------------------- | ------------------------------------ |
+| Contact email verified | `businesses.contact_email_verified_at`                                                       | Editing the address                  |
+| Test call confirmed    | `businesses.test_call_confirmed_at`                                                          | Nothing; it is the owner's judgement |
+| Card added             | a `payment_method_attached` row in `billing_events`, with no later `payment_method_detached` | The provider detaching it            |
+| Test calls remaining   | allowance − `businesses.test_calls_used`                                                     | —                                    |
 
-**Decision, not settled by the PRD — 005 carries two columns the current listing
-does not name.** F1.12's items 2 and 3 are state, and §2.4/005 has a column for
-item 1 and none for the others. `test_call_confirmed_at` cannot be derived at
-all: F1.12 makes it explicitly the owner's judgement rather than something
-Ringly infers. `payment_method_attached_at` could be read from the payment
-provider, but then every render of the checklist is a third-party call on a
-screen a business refreshes while it decides, and the answer would be
-unavailable whenever that provider is (N7.1). Both are in 005 rather than a
-Phase 3 migration for the reason given in §2.5.1.2. Neither is scaffolding —
-each is required by a requirement that ships in the same phase.
+**The three items have three different owners, and the schema follows the
+ownership rather than the screen.**
+
+**Item 2 is Ringly's own fact and cannot be anything else.** F1.12 makes the test
+call explicitly _the owner's judgement, not something Ringly infers_, so there is
+no signal in `calls` that could produce it — a ninety-second call that sounded
+like gibberish is indistinguishable from a ninety-second call that sounded
+perfect. `test_call_confirmed_at` therefore lives on `businesses` (§2.4/005), is
+written by one `UPDATE` when the owner presses confirm, and is never inferred and
+never cleared. It is also the column that makes F1.13d's business B and business
+C different people: §2.5.4 raises the activation-stuck alert **only** when it is
+null, and without it the operator queue either alerts on every spent allowance —
+which F1.13a says would make it meaningless — or on none, and businesses that can
+never activate are never rescued (F9.1b, F9.1c).
+
+**Item 3 is Stripe's fact, and Ringly stores no second copy of it.** _(Decision,
+ratified 2026-08-01, replacing an earlier `payment_method_attached_at` column.)_
+The checklist reads `billing_events` for a `payment_method_attached` row with no
+later `payment_method_detached` (§2.4/005). A dedicated column would be a second
+copy of somebody else's state, and it drifts in exactly the direction that hurts:
+a card detached or a SetupIntent invalidated leaves the column saying "added", so
+the Activate button is available, the press charges, and the charge declines —
+reaching F1.12a-i's declined-card row _through a green checklist_, which is the
+state the checklist exists to prevent.
+
+**Reading the ledger rather than calling Stripe on every render** is what makes
+that safe without a third-party call on a screen a business refreshes while it
+decides. The ledger is Ringly's durable record of what Stripe has told it
+(§2.4/005), kept current by the webhook (§2.10), so the answer survives Stripe
+being unreachable (N7.1) without being a fact Ringly invented.
 
 **Editing the contact address clears its verification**, because F1.11 exists to
 stop the 48-hour deletion warning going to an address nobody reads, and a
@@ -936,14 +996,23 @@ on it.
 of the route setting `contact_email_verified_at` and refusing an address that no
 longer matches. Nothing to store, nothing to sweep.
 
-**Decision, not settled by the PRD — an address that is the Google identity's
-own verified address needs no second link.** The user has just proved control of
-it to Google, and Ringly received the `email_verified` claim in the same token
-exchange as the sign-in. Sending a link there adds a click that proves nothing
-and pads a three-item checklist with a no-op. Any address the owner types
-instead — which is the common case, since billing and personal mail are usually
-different — takes the link. The alternative, always sending, is defensible and
-was rejected on that ground alone.
+**Decision, ratified 2026-08-01 — an address Google has already verified needs
+no second link.** The user has just proved control of it to Google, and sending a
+link there adds a click that proves nothing and pads a three-item checklist with
+a no-op.
+
+**The test is the claim, not the string.** `contact_email_verified_at` is stamped
+at commit when **both** hold: the contact address equals the signed-in identity's
+address, **and** the ID token carried `email_verified: true` for it in the same
+exchange as the sign-in. A string comparison alone is not enough — some Google
+account types carry an unverified primary address, and in that case Ringly has
+been told nothing and the link is sent.
+
+Any address the owner types instead takes the link, which is the common case since
+billing and personal mail usually differ. And **editing the address clears the
+verification either way** — F1.11 exists to stop the 48-hour deletion warning
+going somewhere nobody reads, and a verified tick that survives an edit is that
+failure wearing a green badge.
 
 **Adding a card stores it off-session and charges nothing** (F6.2, F6.3). Raw
 card details never reach Ringly (N6.2); the browser talks to the payment
@@ -1370,18 +1439,20 @@ it** (F9.1, §2.13.1). The two limits are independent and bite in either order.
 Collected so they are reviewable as decisions rather than discovered as
 implementation:
 
-| #   | Decision                                                                                      | Because                                                                                                                             |
-| --- | --------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| 1   | Commit the business row **before** checking granted scopes (steps 5 and 6 swapped)            | F1.7b's "the draft is kept" is only durable if it is a row                                                                          |
-| 2   | `enrichment_requests`, `test_call_confirmed_at`, `payment_method_attached_at` land in **005** | N9.1 and F1.12 need them; 005 has not run, and §2.16 gives Phase 3 no migration                                                     |
-| 3   | Provisioning waits for the calendar credential                                                | F4.1 makes a calendar-less business unable to become a customer; N9.3's argument, one step on                                       |
-| 4   | The idempotency key includes the payment method id                                            | Otherwise a second card replays the first decline                                                                                   |
-| 5   | Activate is submit-and-poll                                                                   | F1.12a-i's "never press it again" cannot survive the state living in a response                                                     |
-| 6   | An `activation_charge_attempted` ledger row precedes the charge                               | Makes the charge-without-record window repairable from Ringly's own data                                                            |
-| 7   | `starts_on` comes from the charge's timestamp, not from the clock at repair time              | A late repair must compute the same period boundary or it moves every one after it                                                  |
-| 8   | Intended bind state is derived from `billing_status` and never stored                         | A stored intent has a crash window; a derived one has none, and it is what makes a failed unbind retryable                          |
-| 9   | The lifecycle sweeper owns bind reconciliation                                                | It already owns every other bind and unbind (§2.13.2); two components issuing binds for one number is worse than an hour of latency |
-| 10  | The Google identity's own verified address needs no second verification link                  | The proof already happened in the token exchange; the alternative is defensible and was rejected on that ground                     |
+| #   | Decision                                                                                                  | Because                                                                                                                                                                                                       |
+| --- | --------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | Commit the business row **before** checking granted scopes (steps 5 and 6 swapped)                        | F1.7b's "the draft is kept" is only durable if it is a row                                                                                                                                                    |
+| 2   | `enrichment_requests` and `test_call_confirmed_at` land in **005**; `billing_events` moves there from 007 | N9.1 and F1.12 need them, and the money ledger has to predate the first payment fact — a stored card, in the checklist. **Ratified 2026-08-01**: delivery order does not get to decide the schema             |
+| 3   | Provisioning waits for the calendar credential                                                            | F4.1 makes a calendar-less business unable to become a customer; N9.3's argument, one step on                                                                                                                 |
+| 4   | The idempotency key includes the payment method id                                                        | Otherwise a second card replays the first decline                                                                                                                                                             |
+| 5   | Activate is submit-and-poll                                                                               | F1.12a-i's "never press it again" cannot survive the state living in a response                                                                                                                               |
+| 6   | An `activation_charge_attempted` ledger row precedes the charge                                           | Makes the charge-without-record window repairable from Ringly's own data                                                                                                                                      |
+| 7   | `starts_on` comes from the charge's timestamp, not from the clock at repair time                          | A late repair must compute the same period boundary or it moves every one after it                                                                                                                            |
+| 8   | Intended bind state is derived from `billing_status` and never stored                                     | A stored intent has a crash window; a derived one has none, and it is what makes a failed unbind retryable                                                                                                    |
+| 9   | The lifecycle sweeper owns bind reconciliation                                                            | It already owns every other bind and unbind (§2.13.2); two components issuing binds for one number is worse than an hour of latency                                                                           |
+| 10  | An address carrying Google's `email_verified` claim needs no second link. **Ratified 2026-08-01**         | The proof already happened in the token exchange. The test is the claim, not a string comparison                                                                                                              |
+| 11  | **No `payment_method_attached_at` column.** The card item reads `billing_events`. **Ratified 2026-08-01** | A column is a second copy of a Stripe fact and drifts toward a green checklist over a dead card — the one state the checklist exists to prevent                                                               |
+| 12  | `test_call_confirmed_at` is a nullable timestamp, not a boolean                                           | Every "has this happened" in this schema is a nullable `*_at`; a second idiom costs a reader more than seven bytes saves. Nothing reads the value today, and that is stated rather than dressed up (§2.4/005) |
 
 **Testing this section**
 
@@ -5245,19 +5316,19 @@ The scenario manifest and `CATALOGUE_SIZE` are regenerated with the catalogue
 Ordered by dependency, not by layer. Each phase is deliverable and leaves `main`
 deployable; anything spanning more than one PR lives behind a feature flag.
 
-| Phase                           | Delivers                                                                  | Needs | Migration |
-| ------------------------------- | ------------------------------------------------------------------------- | ----- | --------- |
-| **0 — Harness**                 | §2.15 corrections; fakes; time control; the catalogue as `test.todo`      | —     | —         |
-| **1 — Foundations**             | Tenancy, isolation, call path, booking, fail-closed, scheduling interface | 0     | 005, 006  |
-| **2 — Email plumbing**          | Registry, templates, idempotency, four identities, dispatcher             | 1     | 010       |
-| **3 — Onboarding + activation** | Intake, enrichment, consent, checklist, Activate, bind read-back          | 1, 2  | —         |
-| **4 — Billing**                 | Policy, periods, settlement, cap, grace, Stripe division                  | 3     | 007       |
-| **5 — Lifecycle**               | Deadlines, sweeper, unbind/rebind, suspension, teardown, PII deletion     | 4     | 008       |
-| **6 — Catalogue + hours**       | Editing, versioning, propagation                                          | 1     | —         |
-| **7 — Analytics**               | Classification, rollup, cost records                                      | 1, 4  | 009       |
-| **8 — Business dashboard**      | Tiles, the chart, trends, billing history, status, controls               | 6, 7  | —         |
-| **9 — Operator dashboard**      | Money table, needs-attention queue, borrowed view, controls               | 5, 7  | 011       |
-| **10 — Hardening**              | DST, load exercise (A2), restore drill (A3), manual vendor QA (A1)        | all   | —         |
+| Phase                           | Delivers                                                                  | Needs | Migration                    |
+| ------------------------------- | ------------------------------------------------------------------------- | ----- | ---------------------------- |
+| **0 — Harness**                 | §2.15 corrections; fakes; time control; the catalogue as `test.todo`      | —     | —                            |
+| **1 — Foundations**             | Tenancy, isolation, call path, booking, fail-closed, scheduling interface | 0     | 005, 006                     |
+| **2 — Email plumbing**          | Registry, templates, idempotency, four identities, dispatcher             | 1     | 010                          |
+| **3 — Onboarding + activation** | Intake, enrichment, consent, checklist, Activate, bind read-back          | 1, 2  | 005 (already run in Phase 1) |
+| **4 — Billing**                 | Policy, periods, settlement, cap, grace, Stripe division                  | 3     | 007                          |
+| **5 — Lifecycle**               | Deadlines, sweeper, unbind/rebind, suspension, teardown, PII deletion     | 4     | 008                          |
+| **6 — Catalogue + hours**       | Editing, versioning, propagation                                          | 1     | —                            |
+| **7 — Analytics**               | Classification, rollup, cost records                                      | 1, 4  | 009                          |
+| **8 — Business dashboard**      | Tiles, the chart, trends, billing history, status, controls               | 6, 7  | —                            |
+| **9 — Operator dashboard**      | Money table, needs-attention queue, borrowed view, controls               | 5, 7  | 011                          |
+| **10 — Hardening**              | DST, load exercise (A2), restore drill (A3), manual vendor QA (A1)        | all   | —                            |
 
 **Why this order.** Email is phase 2 because almost everything after it needs to
 tell a business something, and retrofitting idempotency to a system that already
