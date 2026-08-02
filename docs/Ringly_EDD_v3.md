@@ -1339,10 +1339,10 @@ connects while the business is `unbilled` and ends after Activate has been
 pressed is a test call — "the business had not yet pressed Activate when it
 arrived" is the requirement's own wording, and it is a rule about arrival. The
 status must therefore be read from the per-call snapshot frozen at call start
-(§2.6.6.2), not from the live row at call end. §2.6.2.3 currently describes it
-as the status "at this moment"; the two disagree only in this one window, and
-F1.13c is what settles it. **Flagged as a correction owed to §2.6.2.3, not a new
-requirement.**
+(§2.6.6.2), not from the live row at call end. Reading the live row at call end
+would disagree in exactly this one window, and F1.13c is what settles it.
+**§2.6.2.3 states the same rule at the point of use**, and the two may not be
+allowed to drift apart.
 
 #### 2.5.4.3 The two ways out
 
