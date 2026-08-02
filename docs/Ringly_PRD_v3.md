@@ -2180,8 +2180,7 @@ that assumed one is retired.
   switched on for real customers until it is set**.
 - **Q3 — Ringly's contact email address** (F9.2). It is the single channel for
   cancellation, deletion and reactivation, so it is needed by the dashboard, the
-  transactional emails, and the footer of every message Ringly sends. **Blocks
-  Phase 5.**
+  transactional emails, and the footer of every message Ringly sends.
 - **Q6 — Where the application is hosted (N8).** **Vercel** or **Google Cloud
   Run**; undecided. It does not block any phase — N8.2 keeps the application
   portable while it is open — but it must be settled before the first paying

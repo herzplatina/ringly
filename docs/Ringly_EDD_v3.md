@@ -5318,7 +5318,7 @@ Stripe's configuration surface._
   billing can be built and tested with a placeholder but **cannot be switched on
   for real customers until it is set**. Blocks nothing before Phase 4 ships.
 - **Q3 — Ringly's contact email address** (F9.2). The single channel for
-  cancellation, deletion and reactivation. **Blocks Phase 5.**
+  cancellation, deletion and reactivation.
 - **Q6 — where the application is hosted** (N8). Does not block a phase; 2.1.6
   keeps the design portable while it is open. Must be settled before the first
   paying customer.
