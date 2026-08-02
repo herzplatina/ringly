@@ -3609,52 +3609,97 @@ suspended, and resuming collection requires setting `auto_advance = true` on the
 drafts you want. **A restore that forgot to void them would raise exactly the
 charge F6.11b forbids**, silently, for a phone nobody answered.
 
-**Decision D1 — Ringly uses no Stripe `Subscription` object. Every charge is a
-standalone invoice raised by the settlement worker (§2.10.9).** Flagged clearly
-because it needs ratifying: F6.19's teardown step "cancel the subscription", the
-parenthetical in F6.11b-ii, and §2.13.4's step 2 all presume one exists.
+**Decision D1, ratified 2026-08-01 — Ringly uses no Stripe `Subscription`
+object. Every charge is a standalone invoice raised by the settlement worker
+(§2.10.9).**
 
-The reasoning is three-fold and the first is decisive:
+**The decisive reason is structural and was confirmed against Stripe's
+documentation, not assumed.** A subscription bills the recurring fee **one
+service interval in advance** and combines it with the closing period's metered
+usage **on a single invoice at the period boundary** — Stripe's own wording is
+that at the end of the period it "sends an invoice that combines the flat fee
+with any usage". F6 requires the opposite, deliberately: the fee on day 1, that
+period's usage on day 30, the next fee on day 31, **so that a card which has gone
+bad fails one charge at a time and there is only ever one grace clock**. Under a
+subscription a single decline is both charges failing together, and F6.11d's two
+asymmetric cases — fee-fails with a $500 ceiling, settlement-fails with a $400
+one — collapse into a third case the PRD does not describe.
 
-- **A Stripe subscription bills the recurring fee in advance and metered usage in
-  arrears on one invoice, at one moment.** F6 requires them separated. Getting
-  them apart needs a second subscription with an offset anchor, or a subscription
-  for the fee and manual invoices for the usage — which is the manual path plus a
-  subscription, not instead of one.
-- **It removes R21 rather than mitigating it.** With no recurring-invoice
-  generator there is nothing to pause: "no new invoice during suspension" becomes
-  "the worker's step 5 predicate is false", which is F6.11c, which is already
-  tested. The retries on the open invoice are untouched because nothing touches
-  them. **Both of R21's failure modes are silent; the best mitigation is a design
-  in which neither is reachable.**
-- **`billing_periods` is then the only clock.** With a subscription there are two
-  — Stripe's cycle anchor and Ringly's period — and F6.11b-iii's "a new period
-  opens on the day service is restored" becomes a `billing_cycle_anchor` reset
-  with `proration_behavior: 'none'`, on a system where the two clocks silently
-  disagreeing is a wrong charge.
+**None of the ways out are cheaper than not using one:**
 
-**What it costs:** Ringly must raise every invoice on time itself. That is work
-the hourly settlement worker already does for usage, driven by rows that have
-come due exactly as §2.2.2 describes, and a period that opens late is visible as
-a due row rather than as a missing charge.
+| Way out                                         | Why it is worse                                                                |
+| ----------------------------------------------- | ------------------------------------------------------------------------------ |
+| Two subscriptions with offset anchors           | Two dunning states, two things to pause, R21 doubled                           |
+| Subscription for the fee, manual usage invoices | The manual path **plus** a subscription, not instead of one                    |
+| Prebilling the fee                              | Stripe: "Prebilling doesn't apply to any usage-based prices in a subscription" |
 
-**Consequential edits if D1 is ratified:** §2.13.4's step 2 becomes an assertion
-that no subscription exists for the customer rather than a cancellation — kept as
-a step, because a subscription created by hand during support would otherwise
-survive teardown and bill a deleted business. F6.19's wording would want the same
-change. R21's mitigation text changes from "confirm the mechanism against the
-live API" to "assert that no subscription object is ever created"; **its
-acceptance test is unchanged and remains the criterion** — suspend, cross a
-would-be period boundary, restore, then assert that no new invoice was raised and
-that the original was retried throughout.
+**The second reason is that R21's mitigation rests on behaviour Stripe does not
+document unambiguously.** Suspension needs two things pulled apart that are
+normally set together — stop raising new invoices (F6.11b) while the outstanding
+one keeps being retried (F6.11b-i). `pause_collection.behavior = 'keep_as_draft'`
+was the candidate, and the pause guide says both of these:
 
-**If D1 is not ratified**, the configuration is: one subscription per business at
-a 30-day interval carrying only the fixed fee; usage settled by standalone
-invoices exactly as designed; `pause_collection.behavior = 'keep_as_draft'` on
-suspension, **never `void` and never `mark_uncollectible`**; and every draft
-invoice created during the pause voided by the restore path before collection
-resumes. The behaviour is reachable; it is the third of those clauses that is
-easy to omit and impossible to notice.
+> "All invoices created before the `resumes_at` date remain in `draft` status and
+> `auto_advance` is set to `false`."
+
+> "Invoices created before subscriptions are paused continue to be retried unless
+> you void them."
+
+Those cannot both hold for the already-finalised, already-open invoice, and the
+API reference does not distinguish it — it says only "Keep all invoices as
+`draft` while collection is paused". **If `keep_as_draft` reaches back and sets
+`auto_advance: false` on the open invoice, retries stop and the entire recovery
+path dies silently**, which is the failure R21 exists to warn about. `void`
+stops retries by definition and `mark_uncollectible` stops collection, so if that
+reading is the true one, **no pause behaviour satisfies F6.11b and F6.11b-i at
+once** and a subscription cannot meet the requirements at all.
+
+**D1 removes R21 rather than mitigating it.** With no recurring-invoice generator
+there is nothing to pause: "no new invoice during suspension" becomes "the
+worker's step 5 predicate is false", which is F6.11c, which is already tested.
+Retries on the open invoice are untouched because nothing touches them. **Both of
+R21's failure modes are silent, and the best mitigation for a silent failure is a
+design in which it is unreachable.**
+
+**Third, `billing_periods` becomes the only clock.** With a subscription there
+are two — Stripe's cycle anchor and Ringly's period — and F6.11b-iii's "a new
+period opens on the day service is restored" becomes a `billing_cycle_anchor`
+reset with `proration_behavior: 'none'`, on a system where two clocks silently
+disagreeing is a wrong charge.
+
+**Two smaller things a subscription cannot express anyway.** F6.9's $500 clamp is
+inclusive of the fee and applied at settlement; under a subscription it means
+intercepting `invoice.created` and injecting a negative line before finalisation,
+mutating Stripe's own invoice inside a webhook. And F6.12b's cancellation wants
+**no** proration — the fee is not refunded and usage to the request date is
+charged — which is most of what a subscription offers at cancellation.
+
+**What D1 costs, stated plainly.** Ringly raises every invoice on time itself,
+and gives up Stripe's dashboard analytics — MRR, churn, subscriber counts — which
+is the one real loss, partly covered by the operator dashboard (F8.2a, F8.4). The
+customer portal is already disabled (§1.9), proration and plan changes are out of
+scope, and billing thresholds are deliberately unconfigured (F6.20). The invoice
+scheduling it gives up is work the hourly settlement worker does anyway, driven
+by rows that have come due (§2.2.2), and a period that opens late is visible as a
+due row rather than as a missing charge.
+
+**Consequential edits, now made rather than proposed:** §2.13.4's step 2 is an
+_assertion_ that no subscription exists for the customer rather than a
+cancellation — kept as a step, because one created by hand during support would
+otherwise survive teardown and bill a deleted business. F6.19 carries the same
+wording. R21 is recorded as dissolved rather than mitigated, and **its acceptance
+test is unchanged and remains the criterion**: suspend, cross a would-be period
+boundary, restore, then assert that no new invoice was raised and that the
+original was retried throughout.
+
+**What D1 does not settle, and what still needs a test account (A4).** Ringly
+depends on Stripe retrying **one standalone open invoice for as long as
+suspension lasts**, and that is a longer window than it first appears: in
+F6.11d's case (a) the fee fails on day 1 and deletion is at day 60, so the
+invoice must be retried for **59 days** against a Smart Retries window of roughly
+two months. F6.11b-i's "retries that never stopped" is the whole recovery path,
+and it is running very close to the edge of what Stripe will do unprompted. This
+question exists under D1 exactly as it would have under a subscription.
 
 **A chargeback is treated exactly as non-payment** (F6.17): same grace, same
 suspension, same 60 days. No dispute workflow, no pausing of the deletion clock,
@@ -4897,7 +4942,9 @@ carrier's responsibility.
 
 ```
 1  capture lifetime net revenue and outstanding balance   ← from Stripe
-2  cancel subscription
+2  assert no subscription exists  (D1 — never created; a hand-made one would
+                                  otherwise survive teardown and bill a deleted
+                                  business)
 3  void open invoices
 4  detach payment method
 5  delete Stripe customer
@@ -5349,6 +5396,19 @@ _Verified 2026-07-30, and carried forward unchanged: no vendor in this design is
 new, because N7 fixes the dependency list. Re-verify before Phase 4 commits to
 Stripe's configuration surface._
 
+- **Stripe** _(billing model re-verified 2026-08-01 for D1)_ — a subscription
+  bills the recurring fee **one service interval in advance** and combines it
+  with the closing period's metered usage **on one invoice at the period
+  boundary**, which is why §2.10.8 uses none; prebilling "doesn't apply to any
+  usage-based prices in a subscription", so it is not a way out.
+  **`pause_collection` is documented ambiguously** on the case that matters: the
+  guide says invoices "created before the `resumes_at` date remain in `draft`…
+  and `auto_advance` is set to `false`" and also that invoices "created before
+  subscriptions are paused continue to be retried unless you void them", and the
+  API reference does not distinguish an already-open invoice at all. **Unresolved
+  and deliberately not depended upon** (D1, R21).
+  **Not verified: whether one open invoice is still retried on day 59** — Smart
+  Retries runs about two months and suspension needs 59 days (A4, R27).
 - **Stripe** — `SetupIntent` stores a card off-session; usage-based billing via
   Meters; billing thresholds exist and are deliberately unused; dunning,
   receipts, proration and the customer portal are each independently
@@ -5456,16 +5516,27 @@ freeing it.
   dropped call and a lost customer, with no transfer and no message taken. The
   `dropped` metric (F5.4) exists to show how often; revisit when it is measured
   rather than guessed.
-- **R21 — Suspension has to stop one payment-provider behaviour and preserve
-  another, and the two are usually configured together.** New invoices must stop
-  (F6.11b) while the open invoice stays retried and chased (F6.11b-i). Wrong in
-  one direction and a business is billed for a phone nobody answers; wrong in the
-  other and a recoverable business sits un-chased until it is deleted. **Both
-  failures are silent** — each system behaves correctly on its own terms.
-  Mitigation: §2.10.4 and §2.10.8 are the acceptance criteria, the mechanism is
-  confirmed against the live API before Phase 4, and the test covers the pair —
-  suspend, cross a would-be period boundary, restore, then assert that no new
-  invoice was raised and that the original was retried throughout.
+- **R21 — Retired, dissolved by D1 (2026-08-01).** It held that suspension must
+  stop one payment-provider behaviour (F6.11b, no new invoices) while preserving
+  another (F6.11b-i, the open invoice still retried), that the two are normally
+  configured together, and that **both failure directions are silent**. It was
+  the strongest argument for D1: `pause_collection` is the only lever, and
+  Stripe's documentation does not state unambiguously whether `keep_as_draft`
+  disables `auto_advance` on an invoice that was already open — while `void` and
+  `mark_uncollectible` stop collection by definition. With no subscription there
+  is nothing to pause and neither failure is reachable. **The acceptance test
+  survives the risk** and stays in the catalogue: suspend, cross a would-be period
+  boundary, restore, then assert that no new invoice was raised and that the
+  original was retried throughout.
+- **R27 — Stripe's automatic retry window may be shorter than suspension.**
+  F6.11b-i makes the retries that never stopped the entire recovery path, and
+  case (a) of F6.11d needs one invoice retried from a day-1 decline to a day-60
+  deletion — 59 days, against a Smart Retries window of roughly two months. **This
+  is unaffected by D1**; it would be equally true under a subscription. If the
+  window runs out first, a recoverable business is quietly un-chased for exactly
+  the days when chasing matters, and nothing in the system notices. Answered by
+  A4 against a test account; if it fails, Ringly issues its own retry against the
+  stored payment method on the days the provider has stopped.
 - **R22 — Every backup of the money records lives in one provider account**
   (N10.2). A credential compromise or an account closure takes point-in-time
   recovery and the cross-region copies together. **Accepted for v3 and deferred**
