@@ -1333,15 +1333,32 @@ should be:
 - **F7.4** **Transactional email cannot be unsubscribed from.** A business
   cannot opt out of being told its payment failed or its data is about to be
   deleted. **Only the periodic stats digest is optional.**
-- **F7.5** Sending is **idempotent**: the key is written before the send, so a
-  retried worker can never send twice. Three key shapes, chosen per email:
-  - **per period** — at most once per business per billing period (the digest,
-    the upcoming-charge notice, the cap notice);
-  - **per incident** — at most once per continuous failure, however many calls
-    it affects (calendar outage). An outage must never produce one email per
-    lost customer;
-  - **per event** — once per discrete occurrence (a
-    deletion warning).
+- **F7.5** **Sending is at-least-once, and a duplicate is the acceptable
+  failure.** A worker that dies between handing a message to the provider and
+  recording that it did will send it again. That is chosen, not tolerated: the
+  only way to guarantee no duplicate is to risk losing the message, and **these
+  are the messages a business cannot afford to miss** — a payment failure, a
+  suspension, and the 48-hour warning that I4 makes unconditional. Reading
+  something twice is an annoyance. Never being told your data is about to be
+  deleted is a broken promise, and it is one nobody would discover until the data
+  was gone.
+  - **Every email carries one line telling the reader to ignore it if they have
+    already had it** (F7.7). It costs a sentence and turns a duplicate from a
+    defect into a non-event.
+  - **The provider's own idempotency key is sent with every message** where the
+    provider supports one, so most duplicates are collapsed before delivery
+    rather than apologised for after it.
+  - **A separate key still governs how many times there is a _reason_ to send.**
+    That is a different question from how many times a send is attempted, and
+    both are needed — without it an outage emails a business once per lost
+    customer. Three shapes:
+    - **per period** — at most one reason per business per billing period (the
+      digest, the upcoming-charge notice, the cap notice);
+    - **per incident** — at most one reason per continuous failure, however many
+      calls it affects (calendar outage);
+    - **per event** — one reason per discrete occurrence (a deletion warning).
+  - **Nothing outside the registry is ever sent** (F7.2), whatever a retry
+    does.
 
 **Format defaults — every email**
 
@@ -1350,7 +1367,10 @@ should be:
   they should read like a utility bill and survive Gmail clipping and Outlook.
 - **F7.7** Structure is fixed: wordmark, one heading stating the situation, body
   copy in plain language, a facts table for any figures, **at most one call to
-  action**, then the footer.
+  action**, then the footer. **The footer carries the line telling the reader to
+  ignore the message if they have already received it** (F7.5) — on every email,
+  without exception, because the email that gets duplicated is the one whose
+  worker died and there is no way to know in advance which that is.
 - **F7.8** Every email states **what has happened, what it means for the reader,
   and what happens next if they do nothing**. An email that leaves the reader
   unsure whether they must act has failed. Email should include call to action, if needed.

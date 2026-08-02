@@ -174,6 +174,9 @@ _Behaviours owed to the catalogue_
 
 - Advancing the clock past a due deadline produces its effect with no explicit
   trigger.
+- A clock paused part-way and resumed later falls due that much later, with the
+  time remaining unchanged.
+- A deletion never happens without a warning 48 hours before it, on every path.
 - Running any worker twice over the same due work produces one charge, one
   email, one state change.
 - A worker failing part-way leaves no half-applied state that a later run
@@ -289,11 +292,11 @@ appointments(id pk, business_id fk, customer_id fk not null,
 
 calls(id pk, business_id fk, provider_call_id unique,
       started_at, ended_at, connected_seconds,
-      is_test_call, outcome null, outcome_ruleset_version null,
-      classified_at null, created_at)
+      is_test_call, calendar_incident_id fk null,
+      outcome null, outcome_ruleset_version null, classified_at null)
 ```
 
-Five decisions in that block are load-bearing.
+The decisions in that block that are load-bearing:
 
 **`is_test_call` is written at the time of the call, never derived** (F1.13c).
 Billing status changes; a call's history must not. Deriving it from today's
@@ -333,6 +336,27 @@ customer has gone. A nullable column here would model a state the product does
 not have and invite a `set null` that silently orphans revenue the rollups have
 already counted.
 
+**`calls` has no `created_at`, deliberately.** A call already carries
+`started_at` and `ended_at`, and the row is written seconds after the second of
+them, so a creation timestamp would be a third near-identical instant that
+nothing reads — scaffolding of exactly the kind §1.9 forbids. **The timestamp
+that does earn its place is `classified_at`**, because it is genuinely later than
+the call and the rollup has to reason about that gap (§2.9.2).
+
+**`calls.calendar_incident_id` records that a call was refused because the
+calendar could not be read**, written at the time of the refusal in the same
+spirit as `is_test_call`. It is what makes "how many customers did this outage
+turn away" answerable, and **the answer is a query rather than a counter** —
+counting the calls that point at an incident cannot drift from the calls
+themselves, where a maintained tally on `calendar_incidents` would be a second
+copy of a fact and therefore a second thing that can be wrong.
+
+It cannot be derived without this column, which is why it is a column. A
+refused booking ends `dropped`, but so does a caller the agent could not help
+(F2.10), and an enquiry during an outage still succeeds (F4.5) — outcome alone
+cannot separate "we lost this customer to the calendar" from "we lost this one
+anyway".
+
 ### 006 — scheduling credentials (F4)
 
 ```
@@ -347,7 +371,17 @@ calendar_incidents(id pk, business_id fk, opened_at, closed_at, last_error)
 booking logic and a column added later means a backfill on 10⁴ rows.
 
 `calendar_incidents` is what makes F2.7's "one email per incident, not one per
-lost customer" expressible: the open incident is a row, not a counter.
+lost customer" expressible: the open incident is a row, not a counter. The first
+failure opens it and sends; later failures attach to it silently; the first
+successful read closes it.
+
+**What the incident is worth reading for is how much it cost**, and that is
+carried by the calls that point at it (§2.4/005). The dashboard banner, the
+operator's "bookings failing" row and any look back at a closed incident all show
+**the number of callers turned away while it was open** — counted from
+`calls.calendar_incident_id`, never stored on the incident. An outage that fails
+forty calls should say forty, and it should still say forty a month later when
+somebody asks what it cost.
 
 ### 007 — billing (F6)
 
@@ -388,11 +422,19 @@ $100 charge F6.11c refuses to manufacture.
 refund, failure and chargeback is a row. Nothing in it is updated; corrections
 are new rows.
 
+**`usage_records.created_at` earns its place where `calls.created_at` did not.**
+This is a money table (N10.1): it is append-only, corrections arrive as new rows
+rather than edits (N10.4), and reconciling it against the payment provider means
+being able to order the writes and say what existed at a given moment. N10.3's
+"at most one hour of usage records at risk" is a claim about write time, and it
+is unanswerable without one. A call's creation time is a duplicate of its end
+time; a money row's is part of the audit trail.
+
 ### 008 — lifecycle (F9)
 
 ```
 lifecycle_deadlines(id pk, business_id fk, kind, due_at,
-                    paused_at null, paused_by null, reason null,
+                    warned_at null, paused_at null, paused_by null, reason null,
                     unique (business_id, kind))
 
 departed_businesses(business_id pk, name, joined_at, left_at, ended_by,
@@ -401,9 +443,46 @@ departed_businesses(business_id pk, name, joined_at, left_at, ended_by,
 
 **A deadline is a stored row, not a computed offset.** `created_at + interval
 '10 days'` cannot be paused, and F9.1b requires the operator to pause exactly
-that. A `due_at` with a nullable `paused_at` can. **Silence never pauses
-anything**: the sweeper acts on rows that are due and not paused, so an absent
-operator action leaves the default standing.
+that. A `due_at` with a nullable `paused_at` can.
+
+**The table is a to-do list for the sweeper, one row per clock a business is
+currently under.** The sweeper's entire query is _rows where `due_at` has passed
+and `paused_at` is null_; everything else about lifecycle is which rows exist.
+**Silence never pauses anything** — absent an explicit operator action the
+default stands.
+
+**`kind` is a closed set, and each has exactly one thing that creates it and one
+thing that clears it.** A business usually has none; a failing one has two.
+
+| `kind`                      | Created when                          | Due                                     | Cleared when                         | On due                              |
+| --------------------------- | ------------------------------------- | --------------------------------------- | ------------------------------------ | ----------------------------------- |
+| `unactivated_deletion`      | The business row is created           | +10 days (F9.1)                         | It activates                         | Teardown (§2.13.4)                  |
+| `grace_expiry`              | The **first** charge fails (F6.11)    | +7 days                                 | Nothing is owed                      | Suspend: unbind the agent           |
+| `nonpayment_deletion`       | The **first** charge fails (F9.3)     | +60 days                                | Nothing is owed                      | Teardown                            |
+| `cancellation_window_close` | The operator marks cancelled (F6.10a) | +7 days or period end, whichever sooner | The cancellation is revoked (F6.12a) | Settle early, stop service (F6.12b) |
+| `dormancy_deletion`         | The cancellation window closes        | +60 days (F6.12e)                       | The business returns                 | Teardown                            |
+
+**Both non-payment rows are created together, at the first decline**, not one
+after the other. The 60-day clock runs from the failure, not from the suspension
+(F9.3), so creating it at day 7 would give away a week. It is also why
+`unique (business_id, kind)` is per-kind rather than per-business: a business in
+grace legitimately has two clocks running.
+
+**`warned_at` is how F9.3a is kept unconditional.** Nothing is deleted without a
+48-hour warning, so the sweeper's second job is to warn on any deletion row
+falling due within 48 hours that has not been warned yet, and stamp it. Making
+the warning a milestone on the deadline it warns about — rather than a sixth
+`kind` — means a paused clock cannot warn, an extended clock re-warns at the
+right time, and a deletion whose warning never sent is visible as a due row with
+a null `warned_at` rather than being invisible.
+
+**Pausing stops the clock; it does not cancel the deadline.** On pause,
+`paused_at` is stamped. On resume, `due_at` moves forward by however long the
+pause lasted and `paused_at` returns to null. A clock paused on day 4 of 10 and
+resumed three days later is due on day 13, with six days left — the operator
+bought the business investigation time, not a different deadline. The alternative
+of leaving `due_at` fixed would mean a business emerging from a long pause is
+deleted immediately, which is the opposite of what pausing was for.
 
 **`departed_businesses` carries no consumer data by construction** (F9.9) — no
 caller name, no number, no appointment. It has no RLS policy and is reachable
@@ -440,14 +519,43 @@ which happens before a business exists, is still attributable (N9.2).
 ### 010 — email (F7)
 
 ```
-email_sends(idempotency_key pk, business_id fk null, kind, to_address,
-            identity, queued_at, sent_at null, failed_at null,
-            attempts, last_error null)
+email_sends(id pk, reason_key unique, business_id (no fk), kind,
+            to_address, identity, subject, body,
+            queued_at, claimed_at null, sent_at null, attempts,
+            last_error null, provider_idempotency_key)
 ```
 
-**The key is the primary key**, so a retried worker cannot send twice — the
-insert fails rather than the send repeating (F7.5). It is written _before_ the
-send, not after, which is the difference between at-least-once and at-most-once.
+**Delivery is at-least-once, and the row is what makes it so** (F7.5). The
+dispatcher claims a row, sends, then records the send. A worker dying between the
+send and the record leaves a claimed row that a later run retries — so the
+message may arrive twice, and **that is the failure this design chooses**. The
+alternative, recording the intent before sending, loses the message when the same
+crash happens, and the messages here are the ones a business cannot afford to
+miss: I4 makes the 48-hour deletion warning unconditional, and an at-most-once
+deletion warning is an invariant that silently is not one.
+
+Three things keep the duplicate cheap:
+
+- **`provider_idempotency_key` is sent with the message**, so a redelivery is
+  usually collapsed by the provider before it reaches an inbox.
+- **Every template's footer says to ignore the message if it has already
+  arrived** (F7.7).
+- **`reason_key` is unique and is a different thing from delivery.** It carries
+  F7.5's three shapes — per period, per incident, per event — and answers "is
+  there a reason to send this at all", which is what stops an outage emailing a
+  business once per lost customer. Delivery may repeat; a reason may not.
+
+**`business_id` is a plain value and deliberately not a foreign key.** Teardown
+enqueues the deletion email at step 6 and deletes the business at step 8
+(§2.13.4), so a constrained reference would either block the deletion or take the
+queued message with it — losing precisely the email whose whole purpose is to
+tell someone the business is gone.
+
+**`subject` and `body` are rendered at enqueue, not at send.** For the same
+reason: by the time the dispatcher runs, the tenant row a template would read
+from may no longer exist. A message that cannot be rendered after its subject has
+been deleted is a message that will not be sent on the one path that needs it
+most.
 
 ### 011 — operator economics (F8)
 
@@ -733,6 +841,8 @@ _Behaviours owed to the catalogue_
   refusal, and none writes an appointment.
 - An outage spanning many calls emails the business once; the first successful
   read clears the banner.
+- The number of callers turned away by an outage is visible while it is open and
+  still correct after it has closed.
 - Enquiries still work while booking is refused.
 - A reschedule matches on name plus date, time and service, partially and
   case-insensitively.
@@ -893,6 +1003,14 @@ booked, revenue booked, and the 5 × 6 outcome-by-window matrix.
 **This is what makes N4.3 and F5.14 achievable at 10,000 tenants.** A dashboard
 that scanned raw calls would degrade with total platform volume, which N2.2
 forbids.
+
+**A day can be rolled up before all of its outcomes exist**, because
+classification is batched and asynchronous (§2.9.1). The rollup therefore records
+`computed_at` and **recomputes any day holding a call whose `classified_at` is
+later than that** — which is the reason the call carries the timestamp. Without
+the rule, a call classified after its day was rolled up is counted in the totals
+and missing from the outcome breakdown, and the two figures disagree permanently
+with nothing on the page to explain why.
 
 **The consequence is that today's calls are not shown**, and the dashboard must
 say so in plain words (F5.16): complete to a stated date, today appears
@@ -1330,17 +1448,27 @@ the same scrutiny as a change to what the code does.
 payment-succeeded notices are Stripe's. The split is by who knows the
 consequence, not by who could technically send it.
 
-### 2.11.2 Idempotency
+### 2.11.2 Two different questions, two different keys
 
-The key is written **before** the send (F7.5), which is what makes a retried
-worker unable to send twice. Three key shapes, chosen per email:
+**How many times is there a reason to send?** — `reason_key`, unique, in F7.5's
+three shapes:
 
-- **Per period** — at most once per business per billing period: the digest, the
-  upcoming-charge notice, the cap notice.
-- **Per incident** — at most once per continuous failure, however many calls it
-  affects: the calendar outage. An outage must never produce one email per lost
-  customer (§2.6.4).
-- **Per event** — once per discrete occurrence: a deletion warning.
+- **Per period** — at most one reason per business per billing period: the
+  digest, the upcoming-charge notice, the cap notice.
+- **Per incident** — at most one reason per continuous failure, however many
+  calls it affects: the calendar outage. An outage must never produce one email
+  per lost customer (§2.6.4).
+- **Per event** — one reason per discrete occurrence: a deletion warning.
+
+**How many times is that message delivered?** — **at least once**, and possibly
+twice (§2.4/010). The two are independent, and conflating them is what produced
+the earlier at-most-once design: deduplicating the _reason_ is correct and
+cheap, deduplicating the _delivery_ costs the message when a worker dies at the
+wrong moment.
+
+**The asymmetry is the whole argument.** A duplicate digest is noise. A duplicate
+payment-failure notice is mildly confusing. A deletion warning that never arrives
+breaks I4, and nobody finds out until the data is gone.
 
 ### 2.11.3 Four sending identities
 
@@ -1413,7 +1541,13 @@ _Behaviours owed to the catalogue_
 
 - Each registry email is sent at the moment its requirement says, and not before.
 - Nothing outside the registry is ever sent.
-- A worker retry after a dropped delivery sends once, not twice.
+- A worker retry after a dropped delivery sends the message — a second copy is
+  acceptable, silence is not.
+- A worker dying between sending and recording still leaves the business having
+  received the message.
+- One outage produces one reason to email, however many calls it fails.
+- The deletion email arrives even though the business it describes no longer
+  exists.
 - The provider being down delays mail and loses none; calls keep working.
 - Billing, service, reports and operator mail arrive from four distinct
   addresses.
@@ -1556,9 +1690,11 @@ carrier's responsibility.
   there is nobody to send to.
 - **6 before 7** — releasing the number is the first irreversible step. Emailing
   first means a send that fails outright halts teardown while the business is
-  still whole. **Step 6 enqueues and moves on**: the key is written before the
-  send (F7.5), so the message is durable once queued and teardown never holds a
-  rented number open while the mail provider retries.
+  still whole. **Step 6 enqueues and moves on**: the message is rendered and
+  stored at that point (§2.4/010), so it survives step 8 deleting the very row it
+  describes, and teardown never holds a rented number open while the mail
+  provider retries. A template that resolved the business at send time would fail
+  on the one path where it matters most.
 - **7 before 8** — while the row exists the number cannot be reassigned. Release
   first and a crash leaves a row whose number is gone: visible, recoverable,
   harmless. Release after and there is a window where an unprotected number can
