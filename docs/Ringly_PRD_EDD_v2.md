@@ -1,6 +1,7 @@
 # Ringly — PRD + EDD (v2.0)
 
-> **Superseded by [`Ringly_PRD_EDD_v3.md`](./Ringly_PRD_EDD_v3.md) (2026-07-30).**
+> **Superseded by [`Ringly_PRD_v3.md`](./Ringly_PRD_v3.md) and
+> [`Ringly_EDD_v3.md`](./Ringly_EDD_v3.md) (2026-07-30; split 2026-08-01).**
 > Retained for history. The v2 onboarding requirements live on as F1.1–F1.10 in
 > v3; everything else here is either carried forward or explicitly revised there.
 

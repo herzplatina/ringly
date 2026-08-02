@@ -1,7 +1,7 @@
 /**
  * The §2.21 catalogue, as data.
  *
- * Extracted from `docs/Ringly_PRD_EDD_v3.md` §2.21 — all 269 scenarios across
+ * STALE: extracted from the withdrawn §2.21 catalogue — all 269 scenarios across
  * 18 groups. It exists so that a scenario nobody has written is *visible*
  * rather than implied: `scenarios.spec.ts` turns every entry into a
  * `test.todo`, so the runner prints the real number outstanding instead of
