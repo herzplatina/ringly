@@ -612,34 +612,336 @@ _Behaviours owed to the catalogue_
 
 ## 2.5 Onboarding and activation
 
-F1 in order, with the two failure paths that matter.
+F1 in order. Three things in this section are harder than they look, and each
+gets its own subsection: an unauthenticated endpoint that spends money (N9), a
+single button that must take money exactly once across systems that fail
+separately (F1.12a-i), and a provider write that reports success without taking
+effect (F1.12a-ii).
 
 ### 2.5.1 The flow
+
+Nine steps. **Steps 1–6 are synchronous and the person is waiting; 7 is
+background; 8–9 are a screen they come back to.** The numbering is load-bearing
+— N9.1 cites step 2 and N9.3 cites step 7 — so it is preserved exactly.
 
 1. **Free-form intake** (F1.1) — one text box, no structured fields. **The
    prompt is spoken aloud and the answer is typed** (F1.2); speech-to-text input
    is deferred, so the voice is output only and nothing depends on it.
 2. **Enrichment, one request** (F1.3, F1.6) — Places for name, address, phone,
-   hours, timezone and website; a website crawl and one model call for the
+   hours, IANA timezone and website; a website crawl and one model call for the
    service list (F1.4, ≤15 items). This is the unauthenticated paid endpoint of
-   N9 and is spend-capped.
+   N9 and is spend-capped. Detail in §2.5.1.1–§2.5.1.3.
 3. **The draft is shown, every field editable** (F1.5). Upload and manual entry
    are first-class fallbacks, not error states — a business whose website has no
-   price list is normal.
+   price list is normal. **Timezone is editable here and nowhere else**: F1.5
+   makes it correctable before commit, F3.6 makes it an operator action after,
+   and this step is the seam between the two.
 4. **Google sign-in and calendar consent, in one dialog** (F1.7). The reason for
    every scope is stated **before** the redirect (F1.7c).
-5. **Scopes actually granted are checked, never assumed** (F1.7a). Granular
-   consent means sign-in can succeed while calendar is refused.
-6. **Commit** — the business row is created, keyed to the Google identity, and
-   **the user is told that their Google login is now their Ringly login**
-   (F1.8). There is no password to set and no second account to remember, which
-   is only reassuring if it is said.
+5. **Commit** — the business row is created from the draft, keyed to the Google
+   identity, and **the user is told that their Google login is now their Ringly
+   login** (F1.8). There is no password to set and no second account to
+   remember, which is only reassuring if it is said. The `unactivated_deletion`
+   deadline is written here (§2.10.1).
+6. **Scopes actually granted are checked, never assumed** (F1.7a). Granular
+   consent means sign-in can succeed while calendar is refused; a refusal stops
+   here on the explanation screen with a re-consent button (F1.7b) and the
+   committed draft is what makes "the work already done" survive it.
 7. **Number purchase and agent provisioning, in the background** (F1.9). Nothing
    chargeable to Ringly happens before this point (N9.3): a bot that gets past
    the rate limiter costs one enrichment call, never a phone number.
 8. **The checklist** (F1.12) — three tasks in any order, with test calls
    remaining shown alongside.
 9. **Activate** (F1.12a).
+
+**Steps 5 and 6 are in that order deliberately, and the previous draft had them
+the other way round.** Checking consent before committing means a declined
+calendar leaves the enriched draft in the browser and nowhere else, so a closed
+tab, a cleared store or a resumed session on another device costs the business
+everything it just typed and costs Ringly a second enrichment call. Committing
+first makes F1.7b's promise durable rather than hopeful: the row exists, the
+services exist, the hours exist, and the only thing missing is the credential
+the re-consent button fetches. Nothing is lost by committing early because
+F4.1 already blocks activation without a calendar and F9.1's ten-day clock
+already removes a business that never comes back.
+
+#### 2.5.1.1 Enrichment is a chain, not a fan-out
+
+```
+                                                             cache   ceiling
+1  places:searchText   free text            → candidates[]      —       ✓
+   └─ 0 candidates → manual entry;  >1 → return them, no spend
+2  places/{id}         place_id             → the F1.3 fields   24h     ✓
+   └─ displayName, formattedAddress, nationalPhoneNumber,
+      regularOpeningHours, websiteUri, timeZone.id (IANA)
+3  GET websiteUri + ≤2 likely sub-pages     → text (parallel)   24h     ✓
+4  one small-model call over that text      → ≤15 services      24h     ✓
+```
+
+**Steps 1→2→3→4 are strictly sequential because each needs the previous one's
+output**, and no amount of design makes them concurrent: Details needs a
+`place_id`, the crawl needs a `websiteUri`, the model needs text. **The only
+concurrency available is inside step 3** — the homepage and at most two
+sub-pages whose paths look like a menu (`/menu`, `/services`, `/prices`, and
+their obvious variants) are fetched together under one shared ceiling, because
+price lists are usually not on the homepage and a second sequential fetch would
+double the wait for the same answer.
+
+**Places (New) returns the IANA timezone on the Details response** (`timeZone.id`),
+so there is no second geocoding call and no offset-to-zone inference. This
+matters more than it looks: N5.2 computes every billing and analytics boundary
+in that zone, and an offset is not a zone — it cannot survive a DST transition.
+
+**One model call, not one per page** (F1.4). The pages are concatenated and
+truncated to a fixed character budget before the call, so the spend per
+enrichment is bounded by the budget rather than by how large the business's
+website is.
+
+**F1.6's "single request" is a claim about round-trips to the user, not about
+concurrency.** The candidate-picker is the one exception and it is a
+disambiguation rather than a retry: the second request carries the chosen
+`place_id` and therefore skips step 1 entirely, so an ambiguous business costs
+one Text Search and one Details, not two of each.
+
+**Rejected: returning the Places fields immediately and streaming the services
+in after.** It would let the owner start editing sooner and it is precisely what
+F1.6 forbids. The wait is bounded by §2.5.1.2's ceilings instead.
+
+#### 2.5.1.2 Two guards, and what "degrades" means
+
+N9.1 asks for a per-IP limit and a daily spend ceiling, both configuration. R17
+adds caching as the third leg and sizes all three as a cost guardrail rather
+than an abuse system.
+
+**The per-IP limit is one statement, so there is no read-then-write race:**
+
+```sql
+INSERT INTO enrichment_requests (ip_hash, day, attempts)
+     VALUES ($1, current_date, 1)
+ON CONFLICT (ip_hash, day)
+  DO UPDATE SET attempts = enrichment_requests.attempts + 1
+  RETURNING attempts;
+```
+
+`ip_hash` is an HMAC of the address under a server-side key, so the table holds
+no address in the clear and nothing here becomes a record of who visited. Rows
+older than two days are removed by the lifecycle sweeper on its ordinary pass
+(§2.2.2) — it already runs hourly and this is one bounded delete.
+
+**Decision, not settled by the PRD — `enrichment_requests` is a new table and it
+lands in 005, not in a Phase 3 migration.** N9.1 requires a per-IP counter and
+2.1.6 forbids the managed key-value product that would otherwise hold it, so it
+has to be a row. §2.16 gives Phase 3 no migration of its own, and the cheapest
+way to keep that true is to carry the table in `005` — which has not run
+anywhere, so amending it breaks no forward-only rule. It is not tenant data, it
+is not a money table, and it holds nothing a business can see.
+
+**The daily ceiling needs no new state at all**, because N9.2 already requires
+the spend to be attributable before a business exists and §2.4/009 already
+carries it:
+
+```sql
+SELECT coalesce(sum(amount_cents), 0)
+  FROM cost_records
+ WHERE source = 'enrichment' AND business_id IS NULL AND day = current_date;
+```
+
+This is the one index in the system that deliberately does **not** lead with
+`business_id` (§2.3.3), because the rows it serves have none; it is
+`(source, day)`. And the day is a **UTC** day rather than a business's local day
+(N5.2), because there is no business yet whose timezone could define it — stated
+here so it is a decision rather than an accident.
+
+**The ceiling is checked once, before the first paid call of a request, and the
+cost is recorded after each.** Checking between steps would triple the query to
+protect against an overshoot of at most one request's spend, which is pennies.
+The maximum overshoot is therefore one enrichment, and that is the price of not
+querying between every call.
+
+**Per-SKU amounts are configuration, on the same principle as every other
+number** (F6.15): a Places price change is a config change, not a deploy.
+
+**Degrading is not an error path — it is the same response with one field
+missing.** Over either guard, the endpoint returns `200` with the draft empty
+and a flag saying enrichment did not run, and the UI shows the manual form it
+already has for a business with no website (F1.4). There is no error branch to
+write, because a business that typed its own details is the normal case, not a
+degraded one. This is what "degrades to manual entry rather than continuing to
+spend" means concretely (N9.1, §2.14.4): the guard is checked **before** the
+first paid call, never after.
+
+**Caching is process-local with a 24-hour TTL**, keyed by `place_id` for step 2
+and by URL for steps 3–4, using the same mechanism and the same argument as
+§2.6.6.1 — no shared cache product (2.1.6), each instance warms independently, a
+miss costs money rather than correctness. It exists because the common repeat is
+a user going back to correct their query and resubmitting, which is one person
+being careful and should not read as a second business.
+
+#### 2.5.1.3 What each step does when it fails
+
+**Nothing in this table is an error page.** Every row lands the user on the same
+editable draft with fewer fields filled in.
+
+| Step fails                                 | Ceiling    | Draft carries                     | Owner sees                             |
+| ------------------------------------------ | ---------- | --------------------------------- | -------------------------------------- |
+| Text Search errors or times out            | 3 s        | nothing                           | The manual form                        |
+| Text Search finds nothing                  | —          | nothing                           | "We could not find it" + manual form   |
+| Text Search is ambiguous                   | —          | nothing yet                       | A candidate list; no spend on the pick |
+| Details errors or times out                | 3 s        | nothing                           | The manual form                        |
+| No `websiteUri` on the record              | —          | every F1.3 field, empty catalogue | Draft + empty service list             |
+| Crawl fails, times out, or is not HTML     | 5 s shared | every F1.3 field, empty catalogue | Draft + empty service list             |
+| Model call fails or returns nothing usable | 15 s       | every F1.3 field, empty catalogue | Draft + empty service list             |
+| Whole request exceeds its deadline         | 25 s       | whatever had resolved             | Draft, partially filled                |
+
+**The services branch can be dropped without dropping the draft**, which is why
+its failures are the cheapest ones. It is also why the crawl and the model call
+sit last in the chain rather than first: everything F1.3 promises is already in
+hand by the time the optional part is attempted.
+
+**N7.1 holds throughout** — none of this can affect a business that already
+exists. Enrichment touches no tenant row.
+
+#### 2.5.1.4 Sign-in, and checking the scopes actually granted
+
+**Four scopes, and the calendar one is the only one that can be refused
+separately:**
+
+| Scope                                             | For                             |
+| ------------------------------------------------- | ------------------------------- |
+| `openid`, `email`, `profile`                      | The Ringly session (F1.7, F1.8) |
+| `https://www.googleapis.com/auth/calendar.events` | Everything in §2.7              |
+
+**`calendar.events` and not something broader or narrower.** §2.7's four
+operations are `events.list`, insert, patch and delete on the owner's primary
+calendar; `calendar.readonly` cannot create an event, and the full `calendar`
+scope grants calendar creation and sharing that Ringly never uses. It is also
+the smallest ask that still works, and the consent screen is where a larger ask
+costs conversions. It is a **sensitive** scope requiring verification, which is
+R2 and why §2.16 starts that submission in Phase 3.
+
+The authorisation request is `access_type=offline` with `prompt=consent`,
+because the refresh token is returned only on a fresh consent and §2.7 needs it
+for every server-side read thereafter.
+
+**F1.7a is a check on the token response, not an inference from its absence of
+error.** Granular consent returns `200` with a narrower `scope` string, so:
+
+```
+1. exchange the code                         → { access_token, refresh_token, scope }
+2. granted ← scope.split(' ')
+3. calendar.events ∈ granted ?
+   ├─ yes → INSERT scheduling_credentials (business_id, 'google',
+   │          encrypt(refresh_token), granted, now())
+   └─ no  → no credential row; stop on the F1.7b screen
+```
+
+**`granted_scopes` is persisted** (§2.4/006) rather than recomputed, because a
+scope that was granted and later narrowed is otherwise indistinguishable from
+one that was never granted, and the two need different screens.
+
+**The refresh token is encrypted before it reaches the database** (N6.1),
+AES-256-GCM with a key held only in the environment, stored as
+`iv:tag:ciphertext`. The plaintext exists in one function's local scope and is
+never logged. **The encryption is not the database's** — a key that lives beside
+the ciphertext protects against a stolen backup file and nothing else.
+
+**Re-consent is incremental.** The button on the F1.7b screen re-runs the
+authorisation with `include_granted_scopes=true` and only the calendar scope
+requested, because the identity is already established and asking a business to
+sign in again to fix a checkbox reads as a failure of the first attempt.
+
+#### 2.5.1.5 What crosses the redirect
+
+**The `state` parameter carries a nonce and nothing else** — a random value set
+in an `HttpOnly`, `SameSite=Lax`, ten-minute cookie and compared on return. It
+is CSRF protection, not a transport.
+
+**The draft crosses in the browser**, because the OAuth redirect returns to the
+same browser by construction and because the unauthenticated surface should
+store as little as possible (§2.2.1). It stops being the only copy at step 5,
+which is the whole point of committing before checking scopes (§2.5.1): the
+window in which the draft exists in exactly one fragile place is the width of
+one redirect, and after that it is a row.
+
+#### 2.5.1.6 Provisioning (step 7)
+
+Background, off the response, and **gated on the calendar credential existing.**
+
+```
+1  candidate ← a number held by no business row, bound to no agent   (§2.13.3)
+   └─ none → buy one from the telephony provider
+2  UPDATE businesses SET phone_number = $1 WHERE id = $2
+3  create the agent; set its retention explicitly                    (R10, F9.6)
+4  UPDATE businesses SET telephony_agent_id = $1
+5  bind, and verify by reading back                                  (§2.5.3)
+6  UPDATE businesses SET agent_bound_at = now()
+```
+
+**Decision, not settled by the PRD — provisioning waits for the calendar.** F1.9
+says number purchase runs in the background but does not say from what moment.
+F4.1 says a business without a connected calendar cannot activate and cannot
+take bookings, so buying it a number is spending on an account that cannot
+become a customer. Gating on the credential row is the same argument as N9.3
+one step further along, and it costs the business nothing: the moment consent
+lands, provisioning starts.
+
+**A crash between 1 and 2 leaves a rented number belonging to nobody, and that
+is self-healing** — step 1's candidate query is the reusable-number query of
+§2.13.3, which is built from every business row that holds a number whatever its
+billing status, so the orphan is picked up by the next signup rather than
+leaking. The reverse order is not available: the number does not exist until it
+has been bought.
+
+**Step 6 is written only after step 5's read-back agrees**, because
+`agent_bound_at` is this design's record of _observed_ provider state, not of
+intent (§2.5.3.1). Setting it from a write's return value would make the one
+thing that can detect a silent bind failure believe the write instead.
+
+#### 2.5.1.7 The checklist (step 8)
+
+Three items, no ordering, each answered from a single row read so the screen is
+never stale (F5.18 applies the same rule to the dashboard):
+
+| Item                   | Answered by                              | Cleared by                           |
+| ---------------------- | ---------------------------------------- | ------------------------------------ |
+| Contact email verified | `businesses.contact_email_verified_at`   | Editing the address                  |
+| Test call confirmed    | `businesses.test_call_confirmed_at`      | Nothing; it is the owner's judgement |
+| Card added             | `businesses.payment_method_attached_at`  | Nothing                              |
+| Test calls remaining   | allowance − `businesses.test_calls_used` | —                                    |
+
+**Decision, not settled by the PRD — 005 carries two columns the current listing
+does not name.** F1.12's items 2 and 3 are state, and §2.4/005 has a column for
+item 1 and none for the others. `test_call_confirmed_at` cannot be derived at
+all: F1.12 makes it explicitly the owner's judgement rather than something
+Ringly infers. `payment_method_attached_at` could be read from the payment
+provider, but then every render of the checklist is a third-party call on a
+screen a business refreshes while it decides, and the answer would be
+unavailable whenever that provider is (N7.1). Both are in 005 rather than a
+Phase 3 migration for the reason given in §2.5.1.2. Neither is scaffolding —
+each is required by a requirement that ships in the same phase.
+
+**Editing the contact address clears its verification**, because F1.11 exists to
+stop the 48-hour deletion warning going to an address nobody reads, and a
+verified flag that survives an edit is precisely that failure with a green tick
+on it.
+
+**The verification link is a signed token, not a row** — an HMAC over
+`(business_id, address, issued_at)` with a 24-hour expiry, single-use by virtue
+of the route setting `contact_email_verified_at` and refusing an address that no
+longer matches. Nothing to store, nothing to sweep.
+
+**Decision, not settled by the PRD — an address that is the Google identity's
+own verified address needs no second link.** The user has just proved control of
+it to Google, and Ringly received the `email_verified` claim in the same token
+exchange as the sign-in. Sending a link there adds a click that proves nothing
+and pads a three-item checklist with a no-op. Any address the owner types
+instead — which is the common case, since billing and personal mail are usually
+different — takes the link. The alternative, always sending, is defensible and
+was rejected on that ground alone.
+
+**Adding a card stores it off-session and charges nothing** (F6.2, F6.3). Raw
+card details never reach Ringly (N6.2); the browser talks to the payment
+provider directly and Ringly stores the resulting identifiers.
 
 ### 2.5.2 Activation touches three systems and can fail at each
 
@@ -656,28 +958,294 @@ make each row reachable independently.
 failure the business is asked to act on is the only one they can act on. A card
 that declines is theirs to fix. Everything after the charge is Ringly's.
 
-**The owner presses Activate exactly once.** No failure is ever returned as
-"press it again" (F1.12a-i) — the button shows progress until the sequence
-resolves, because the one moment a business must not be asked to press a payment
-button twice is the moment it cannot tell whether the first press took.
+It is also the only order in which a partial failure is not a lie. Record-then-charge
+would put a `billing_periods` row and a $100 line in the business's history for
+a payment that never cleared, and §2.6 would begin metering against it — a
+period that exists for an unpaid activation is worse than a charge with no
+period, because the first is visible to the business and the second is visible
+only to Ringly (2.1.3).
+
+#### 2.5.2.1 One press, and what makes it exactly one
+
+**The idempotency key is derived, not generated**, so a double-click, a retried
+`POST`, a proxy replay and a resumed background run all produce the same key
+without needing to have agreed on one:
+
+```
+idem = 'activate:v1:' || business_id || ':' || payment_method_id
+```
+
+**The payment method is in the key deliberately.** Without it, a business whose
+card declines and who then adds a different card would re-press Activate and
+receive a replay of the first decline — the payment provider returns the
+original response for a repeated key, and the original response was "no". With
+it, changing the card changes the key, which is correct because a new card is a
+new act; pressing again with the _same_ card replays, which is also correct
+because that press is the one F1.12a-i says must never take money twice.
+
+**Two presses in flight at once do not race.** The second reaches the provider
+with the key already in use and receives that provider's in-use error, which the
+handler maps to "in progress" — the same thing the poll says. Nothing local
+needs a lock.
+
+**Decision, not settled by the PRD — Activate is submit-and-poll, not
+request-response.** F1.12a-i's "no failure is ever handed back as press it
+again" cannot be satisfied by a design where the screen's state is the `POST`'s
+response, because a response can be lost to a closed laptop lid, a proxy
+timeout, or a deploy. So the button's state is read from `GET /api/activation`,
+which is a pure function of durable state, and the `POST` is merely what starts
+the work. A lost response is then not a lost activation, and the client never
+needs to know whether its request arrived.
+
+**The poll answers from durable state alone**, which is what makes it honest:
+
+| Poll says     | True when                                                                |
+| ------------- | ------------------------------------------------------------------------ |
+| `ready`       | Three checklist items green, no attempt row                              |
+| `in_progress` | An attempt row exists with neither a charge nor a failure row against it |
+| `declined`    | The latest attempt has a failure row and no charge row                   |
+| `connecting`  | `billing_status = 'active'` and `agent_bound_at IS NULL`                 |
+| `live`        | `billing_status = 'active'` and `agent_bound_at IS NOT NULL`             |
+
+#### 2.5.2.2 The sequence, and the one transaction in it
+
+```
+1  (sync, local)   INSERT INTO billing_events                              ← the intent
+                     (business_id, kind, amount_cents, provider_ref, occurred_at)
+                   VALUES ($1, 'activation_charge_attempted',
+                           $policy.fixed_fee_cents, $idem, now())
+                   ON CONFLICT (provider_ref) DO NOTHING
+2  (sync, remote)  PaymentIntent: off_session, confirm, Idempotency-Key: $idem,
+                   metadata { business_id, purpose: 'activation' }
+   ├─ declined        → INSERT billing_events 'activation_charge_failed'  → respond
+   ├─ key in use      → respond 'in_progress'
+   └─ succeeded       ↓
+3  (sync, local)   ── ONE TRANSACTION ────────────────────────────────────
+                   INSERT INTO billing_periods (business_id, policy_id,
+                       starts_on, ends_on, fixed_fee_state, fixed_fee_invoice_ref, …)
+                     ON CONFLICT (business_id, starts_on) DO NOTHING
+                   INSERT INTO billing_events (kind 'activation_charge',
+                       provider_ref = payment_intent.id, period_id, amount_cents)
+                     ON CONFLICT (provider_ref) DO NOTHING
+                   UPDATE businesses SET billing_status = 'active',
+                       activated_at = $starts_on
+                     WHERE id = $1 AND billing_status = 'unbilled'
+                   DELETE FROM lifecycle_deadlines
+                     WHERE business_id = $1 AND kind = 'unactivated_deletion'
+                   ── COMMIT ────────────────────────────────────────────
+4  (sync, remote)  ensure bound, verified by read-back                     (§2.5.3)
+5  (async)         enqueue the "you're live" email                         (§2.11)
+```
+
+**Step 3 is one transaction because every write in it is local to one Postgres,
+and it is the only step that can be.** Steps 2 and 4 are HTTP calls to other
+companies; the same argument as §2.6.3's steps 5 and 6, and the same conclusion
+— pick an order in which the unwind is in the safe direction rather than
+pretending a distributed transaction exists.
+
+**What is durable after each step:**
+
+| After | At Stripe                 | In Ringly's database                                     |
+| ----- | ------------------------- | -------------------------------------------------------- |
+| 1     | nothing                   | the attempt row, carrying the idempotency key            |
+| 2     | a succeeded PaymentIntent | the attempt row, unchanged                               |
+| 3     | as above                  | `active`, period 1, the ledger row, no deletion deadline |
+| 4     | as above                  | `agent_bound_at`                                         |
+| 5     | as above                  | a queued email row                                       |
+
+**Step 1 exists to make step 2's window recoverable locally.** The attempt row
+carries the exact key step 2 used, so any repair path can re-issue byte-identical
+create call and receive the original PaymentIntent back rather than charging a
+second time. Without it, the repair would have to search the payment provider by
+metadata to discover a charge Ringly does not know it made — possible, but a
+scan of somebody else's system standing in for a row of our own. The cost is one
+extra ledger row per activation, and `billing_events` is append-only anyway
+(N10.4, F6.14), so the row is a permanent and accurate statement that a press
+happened.
+
+**The uniqueness that makes step 3 safe to run repeatedly is in the database,
+not in the application** — the same choice as §2.6.4's partial index:
+
+```sql
+CREATE UNIQUE INDEX billing_events_provider_ref_unique
+    ON billing_events (provider_ref) WHERE provider_ref IS NOT NULL;
+
+ALTER TABLE billing_periods ADD CONSTRAINT one_period_per_start
+    UNIQUE (business_id, starts_on);
+```
+
+**`starts_on` is the charge's date rendered in the business's timezone (N5.2),
+not today's date.** This is the detail that makes the second constraint work as
+a guard rather than as a coincidence: a repair running a day after the charge
+must compute the same `starts_on`, or it inserts a second period, gives the
+business a free day, and moves every subsequent boundary for the life of the
+account. Deriving the date from the payment provider's `created` timestamp makes
+the period's identity a function of the charge — which is what F6.1 says it is —
+and makes the constraint idempotent forever rather than for a day.
+
+**The in-request retry ladder for step 3 is immediate, then 250 ms, 1 s, 4 s** —
+four attempts, about five seconds — after which the handler returns and the poll
+keeps saying `in_progress`. It is short because the failures it covers are
+transient local ones; anything longer is a fault that needs the repair paths
+below, not a fifth attempt.
+
+#### 2.5.2.3 What a crash between any two steps leaves behind
+
+| Crash                              | Left behind                             | Repaired by                                                                                        |
+| ---------------------------------- | --------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| Before 1                           | Nothing. The press did not happen       | Nothing to repair; the button is still available                                                   |
+| Between 1 and 2                    | An attempt row, no money moved          | The sweep replays 2 with the recorded key; the provider either has the intent or charges once      |
+| Between 2 and 3                    | **Money taken, nothing local**          | The `payment_intent.succeeded` webhook, or the sweep, replays 2 (same object returned) then runs 3 |
+| Inside 3                           | Nothing partial — it is one transaction | Rolled back; the sweep re-runs it                                                                  |
+| Between 3 and 4                    | Activated, charged, possibly unbound    | §2.5.3.1's reconciliation: intent says answer, provider says no agent                              |
+| Inside 4, after the bind, before 5 | Activated and bound, no email           | The dispatcher; `reason_key` makes it one message however many times it is enqueued (§2.11.2)      |
+
+**Row three is the one the design exists for**, and it is the only window in
+which money exists and Ringly does not know it. It is closed by two independent
+mechanisms because F1.12a-i's row two must never reach the screen: the payment
+provider's own webhook, which is push and usually arrives in seconds, and the
+**hourly settlement worker** (§2.2.2), which scans attempt rows older than a few
+minutes with neither a charge nor a failure row against them. Both call the same
+function. Both are safe to run concurrently, because step 3's constraints
+arbitrate rather than the caller's care.
+
+**The sweep's cost is bounded by the number of activations in flight**, which in
+steady state is zero — the same property §2.2.2 requires of every worker, and
+the reason this does not become a scan that grows with tenants (N4.1).
+
+#### 2.5.2.4 The three rows, made independently reachable
+
+**Row one — the card.** The decline is a _known_ outcome, which is what makes it
+the one case where re-pressing is correct rather than dangerous: F1.12a-i's
+prohibition is on handing back an outcome the business cannot interpret. A
+`billing_events` row of kind `activation_charge_failed` is written (F6.14
+records failures, not only charges), `billing_status` is untouched, the deletion
+deadline still stands, and the checklist still reads three green. Nothing about
+the account changed.
+
+**Row two — the record.** Never surfaced. The handler retries in-process, then
+the webhook, then the sweep; the poll says `in_progress` throughout and the
+button shows progress. **There is no user-visible state between "charging" and
+"activated"**, which is exactly F1.12a-i's requirement that a charge and no
+explanation is impossible.
+
+**Row three — the bind.** The one that will be seen, because it depends on a
+third party. Activation stands; the poll says `connecting`; the "you're live"
+email is sent from step 4 rather than step 3, because F7's registry has it state
+that the number is now taking customer calls, and sending it while the number
+answers nowhere would make Ringly's own confirmation the thing that misleads.
+The operator alert is raised at the same moment, not on a later pass (F1.12a-ii
+requires a failed verification to be retried _and_ raised).
 
 ### 2.5.3 Bind and unbind are verified by reading provider state back
 
 F1.12a-ii, and it is the one piece of vendor interaction the design does not
 trust. A write that reports success and does not take effect is invisible until
-a customer finds it.
+a customer finds it — R25.
 
-- **After every bind and every unbind, read the provider's own record** and
-  confirm it matches. Fail the operation if it does not.
-- **A failed bind** raises the activation-stuck alert. A business is paying for
-  a number that rings nowhere.
-- **A failed unbind** raises its own alert (F7.13a) — it is the only symptom
-  there is. The number is answering calls Ringly has stopped metering, and every
-  other component believes service has stopped.
-- **It is a read of provider state, never a placed call.** A synthetic call
-  costs minutes on every bind, lands in `calls` where it corrupts both the
-  test-call count and the analytics, and still proves only that something
-  answered.
+#### 2.5.3.1 Intended bind state is derived, never stored
+
+**Every bind and unbind in the system is the same operation: make what the
+provider holds agree with what the business's own row already implies.**
+
+```sql
+-- what Ringly intends, computed, never written down
+should_answer(b) :=
+     b.billing_status IN ('active', 'grace', 'cancelling')
+  OR (b.billing_status = 'unbilled' AND b.test_calls_used < allowance)
+
+-- what Ringly last observed
+is_bound(b) := b.agent_bound_at IS NOT NULL
+```
+
+`grace` and `cancelling` are in the first set because service continues
+unchanged through both (§2.10.4, §2.10.7); `suspended` and `dormant` are not.
+That predicate is the whole of §2.13.2's three unbind moments and §2.5's two
+bind moments in one expression.
+
+**This is what makes a failed unbind retryable at all.** The alternative — a
+column recording "we meant to unbind" — has to be written before the provider
+call and cleared after it, so a crash between the two leaves a stored intent
+that disagrees with reality in the direction nothing checks. Deriving the intent
+from state that was already durable removes the window entirely: after a failed
+unbind, `should_answer` is false and `agent_bound_at` is non-null, and that
+disagreement is the repair queue.
+
+**The lifecycle sweeper owns the reconciliation** — every business where
+`should_answer <> is_bound` — because it already owns every unbind and rebind in
+the system (§2.13.2) and giving activation its own worker would mean two
+components issuing binds for one number. This is a decision the PRD does not
+make; F1.12a-ii says a failed verification is retried, and this says by whom.
+The cadence is the sweeper's hourly one, which is slow for a business waiting to
+go live; it is accepted because a bind that has already failed its own retry
+ladder has an operator alert against it, and F9.1c's rebind is the fast path.
+
+**One predicate covers three separate faults** and that is the point: a
+provisioning bind that never landed (F1.9), an activation bind that never landed
+(F1.12a-i row three), and an unbind that never landed (F7.13a) are all one
+disagreement between intent and observation, repaired by one query.
+
+**What the design deliberately does not add** is a periodic diff of every
+number Ringly holds against the provider's list. It would catch a number bound
+by something outside this system, it costs a provider call per business on every
+pass, and it grows with tenants against N4.1. F7.13a places the burden on the
+alert instead, and this section keeps it there.
+
+#### 2.5.3.2 The read-back, and its backoff
+
+Two calls, always, in both directions:
+
+```
+bind:    set the number's inbound agents to [ { agent_id, weight: 1 } ]
+         read the number back
+         assert agent_id ∈ inbound_agents
+
+unbind:  set the number's inbound agents to [ ]
+         read the number back
+         assert inbound_agents is empty
+```
+
+**The assertion is on list membership, not on a scalar field.** The telephony
+provider replaced a single inbound-agent field with a weighted list, so a
+read-back written against the old shape would find `undefined`, compare it to
+`undefined`, and pass on a number bound to somebody else's agent. This is the
+specific way a read-back can be present and useless, so it is named here.
+
+**In-request ladder: one write, then reads at 1 s, 2 s and 4 s.** Provider state
+is not guaranteed to be read-your-writes, so a single immediate read would
+produce false failures and false alerts, which is worse than no check because a
+team learns to ignore it. Three reads over seven seconds is enough for the
+common case to report `live` before the owner has finished reading the screen.
+
+**Past that ladder the request returns.** It does not hold the connection for
+another minute: the poll already reports `connecting`, the sweeper owns the
+retry (§2.5.3.1), and the alert has already been raised. A handler that blocked
+for two minutes would be a handler that a proxy kills at ninety seconds, turning
+a bounded failure into an unbounded one.
+
+**The sweeper runs the same ladder on each pass**, so a provider outage that
+resolves in twenty minutes resolves itself without a human.
+
+#### 2.5.3.3 When it will not take
+
+| Direction  | Alert                                     | Also appears as              |
+| ---------- | ----------------------------------------- | ---------------------------- |
+| **Bind**   | Activation stuck (F1.12a-ii, F8.6)        | F8.12, "Activation stuck"    |
+| **Unbind** | Its own alert (F7.13a) — no other symptom | F8.12, "Number not released" |
+
+**A failed unbind gets its own alert because it has no other symptom.** Every
+other component believes service has stopped: no period is metering, no
+dashboard shows a live number, no rollup counts the calls. The number answers,
+Ringly pays for the minutes, and nothing in the system disagrees with itself
+except the reconciliation above. The alert names the business, the number still
+answering, and why Ringly tried to release it, so the operator can release it by
+hand (F8.12).
+
+**It is a read of provider state, never a placed call** (F1.12a-ii). A synthetic
+call costs minutes on every bind, lands in `calls` where it corrupts both the
+test-call count (§2.5.4) and the analytics (§2.9), and still proves only that
+something answered. Whether the agent _sounds_ right is a human judgement and
+F1.12's checklist item 2 exists for exactly that.
 
 ### 2.5.4 The test-call allowance
 
@@ -687,17 +1255,140 @@ calling. At the fifth, the agent is unbound and the sixth call is **not answered
 at all** (F1.13a): a recorded refusal would still be a connected call and would
 still cost the minutes the limit exists to bound.
 
-The allowance is a policy value (F1.13), not a constant.
+#### 2.5.4.1 The counter is a column, and that is not an optimisation
+
+`businesses.test_calls_used` (§2.4/005) against
+`pricing_policy.test_call_allowance` (§2.4/007), the second being configuration
+rather than a constant (F1.13, F6.15).
+
+**A count over `calls WHERE is_test_call` would be derivable and is still
+wrong**, because F9.1c lets the operator reset the allowance. A reset against a
+derived count means deleting or restamping call rows — which is precisely the
+reclassification of history F1.13c forbids, arriving through the back door. A
+column can be set to zero without touching a single call's record of what it
+was.
+
+**It is also the one number two screens read on every render** — the checklist
+(F1.12) and the dashboard's service state (F5.18) — and both are required to be
+current rather than rolled up, so a single-row read is the cheap answer and a
+scan of `calls` is not (N4.3).
+
+**Phase ordering note.** §2.16 puts onboarding in Phase 3 and billing, which
+owns `pricing_policy`, in Phase 4. The allowance is read through one accessor
+from the start; in Phase 3 it resolves from configuration and in Phase 4 it
+resolves from the policy row, with no call-site change. F1.13's "configuration,
+not a constant" is satisfied by both.
+
+#### 2.5.4.2 The crossing, and the race at the boundary
+
+**Incremented at call end, in the same transaction that writes the call row**
+(§2.6.2.3), which is what makes the counter and `is_test_call` agree by
+construction rather than by care — both are decided from one read of the
+business's status inside one transaction, so there is no interval in which a
+call is classified one way and counted the other.
+
+```sql
+-- inside the call-end transaction, only if the call row actually inserted
+UPDATE businesses
+   SET test_calls_used = test_calls_used + 1
+ WHERE id = $1 AND billing_status = 'unbilled'
+RETURNING test_calls_used;
+```
+
+**The increment is conditional on the call row having been inserted.**
+§2.6.2.3's `ON CONFLICT (provider_call_id) DO NOTHING` makes a redelivered
+webhook a no-op for the call; the increment must be a no-op for the same
+redelivery, or a provider retry silently spends one of the five.
+
+**The crossing is decided from the returned integer, and exactly one call can
+own it.** Postgres serialises the two `UPDATE`s on the row lock, so two calls
+ending at the same instant with `test_calls_used = 4` receive 5 and 6, in some
+order, and never both receive 5. The crosser is the one whose returned value `n`
+satisfies `n - 1 < allowance <= n` — expressed against the allowance rather than
+as `n = allowance` so that a platform default lowered while a business is mid-way
+still produces exactly one crossing rather than none.
+
+The crosser, and only the crosser:
+
+1. enqueues the "test calls exhausted" email (F7's registry) with
+   `reason_key = 'test_calls_exhausted:' || call_id`. Keying it to the call
+   rather than to the business is what lets a business emailed once, reset by
+   the operator (F9.1c) and exhausted again be emailed a second time — a
+   business-keyed reason would suppress the message on the one occasion it is
+   most needed;
+2. **after the transaction commits**, unbinds and verifies (§2.5.3), then clears
+   `agent_bound_at`. The provider call is outside the transaction because it is
+   HTTP, and after the commit because a rolled-back transaction must not leave a
+   number unbound;
+3. raises the operator alert **only if `test_call_confirmed_at IS NULL`**
+   (F1.13a, F8.12). A business with three green boxes that simply has not pressed
+   the button is deciding, not stuck, and raising it would make the queue
+   meaningless.
+
+**The business is charged nothing at any point in this** (F1.13, F1.13d). There
+is no code path from the counter to `billing_events`, which is 2.1.4 restated:
+the number of calls placed has no bearing on billing status whatsoever.
+
+**One boundary this design has to pick, and F1.13c picks it.** A call that
+connects while the business is `unbilled` and ends after Activate has been
+pressed is a test call — "the business had not yet pressed Activate when it
+arrived" is the requirement's own wording, and it is a rule about arrival. The
+status must therefore be read from the per-call snapshot frozen at call start
+(§2.6.6.2), not from the live row at call end. §2.6.2.3 currently describes it
+as the status "at this moment"; the two disagree only in this one window, and
+F1.13c is what settles it. **Flagged as a correction owed to §2.6.2.3, not a new
+requirement.**
+
+#### 2.5.4.3 The two ways out
+
+F1.13b, and which one applies is a query, not a judgement.
+
+| Condition                                     | Route                                                                                         |
+| --------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| `test_call_confirmed_at` set, other two green | Activate still works. The charge runs, and step 4 of §2.5.2.2 is a rebind rather than a no-op |
+| `test_call_confirmed_at` null                 | Cannot activate. Operator investigates, pauses the clock (F9.1b), resets and rebinds (F9.1c)  |
+
+**Activating with a spent allowance takes the identical path as activating with
+allowance to spare**, and this falls out of §2.5.3.1 rather than being coded
+twice: `should_answer` becomes true the instant `billing_status` becomes
+`active`, so the same "make the provider agree" step that is a verified no-op
+for one business is a verified rebind for the other. **Running out of test calls
+is not a bar to activating** (F1.13b), and the reason it cannot accidentally
+become one is that no branch in the activation path asks about the allowance.
+
+**The ten-day clock keeps running through all of it unless an operator pauses
+it** (F9.1, §2.13.1). The two limits are independent and bite in either order.
+
+### 2.5.5 Decisions this section makes, and one correction
+
+Collected so they are reviewable as decisions rather than discovered as
+implementation:
+
+| #   | Decision                                                                                      | Because                                                                                                                             |
+| --- | --------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | Commit the business row **before** checking granted scopes (steps 5 and 6 swapped)            | F1.7b's "the draft is kept" is only durable if it is a row                                                                          |
+| 2   | `enrichment_requests`, `test_call_confirmed_at`, `payment_method_attached_at` land in **005** | N9.1 and F1.12 need them; 005 has not run, and §2.16 gives Phase 3 no migration                                                     |
+| 3   | Provisioning waits for the calendar credential                                                | F4.1 makes a calendar-less business unable to become a customer; N9.3's argument, one step on                                       |
+| 4   | The idempotency key includes the payment method id                                            | Otherwise a second card replays the first decline                                                                                   |
+| 5   | Activate is submit-and-poll                                                                   | F1.12a-i's "never press it again" cannot survive the state living in a response                                                     |
+| 6   | An `activation_charge_attempted` ledger row precedes the charge                               | Makes the charge-without-record window repairable from Ringly's own data                                                            |
+| 7   | `starts_on` comes from the charge's timestamp, not from the clock at repair time              | A late repair must compute the same period boundary or it moves every one after it                                                  |
+| 8   | Intended bind state is derived from `billing_status` and never stored                         | A stored intent has a crash window; a derived one has none, and it is what makes a failed unbind retryable                          |
+| 9   | The lifecycle sweeper owns bind reconciliation                                                | It already owns every other bind and unbind (§2.13.2); two components issuing binds for one number is worse than an hour of latency |
+| 10  | The Google identity's own verified address needs no second verification link                  | The proof already happened in the token exchange; the alternative is defensible and was rejected on that ground                     |
 
 **Testing this section**
 
 _Observable_ — what the draft contains after enrichment; which fields can be
-edited; what the checklist shows; whether the Activate button is available;
-whether the number answers; what the business is charged; what arrives in its
-inbox; what the operator queue holds.
+edited; whether enrichment ran at all; what the checklist shows; whether the
+Activate button is available; whether pressing it twice charges twice; whether
+the number answers; what the business is charged; what arrives in its inbox;
+what the operator queue holds.
 
-_Internal_ — the provisioning sequence, the OAuth flow's shape, the retry
-mechanism, the agent identifier, `billing_status` values.
+_Internal_ — the provisioning sequence, the OAuth flow's shape, the idempotency
+key's construction, the attempt row, the retry ladders and their intervals, the
+read-back's two calls, the sweeper's predicate, the agent identifier,
+`billing_status` values, every table and column named above.
 
 _Behaviours owed to the catalogue_
 
@@ -706,25 +1397,49 @@ _Behaviours owed to the catalogue_
 - Every enriched field can be corrected before commit, and the correction is what
   is committed.
 - An unreachable website falls back to manual entry rather than failing.
+- Enrichment past its daily ceiling, or past the limit for one origin, returns
+  the manual form and spends nothing.
+- A repeated enrichment of the same business within the day spends nothing the
+  second time.
+- A business whose enrichment did not run reaches activation by the same route as
+  one whose did.
 - Sign-in succeeding while calendar consent is declined keeps the account and the
   draft, blocks activation, and explains why.
+- A business that declined calendar consent has no number bought for it, and
+  gets one when it re-consents.
+- Granting the calendar scope later completes onboarding without a second
+  sign-in.
 - The checklist can be completed in any order; none of the three items activates
   anything on its own.
+- Changing the contact email after verifying it makes the item un-green again.
 - Adding a card stores it and charges nothing.
 - Pressing Activate charges $100 once, opens period 1, and makes the number live.
-- A declined card at activation charges nothing and changes nothing.
+- Pressing Activate twice in quick succession charges $100 once.
+- A declined card at activation charges nothing and changes nothing, and a
+  different card then succeeds.
+- A charge that succeeds while the local write fails still leaves the business
+  activated, charged once, and never asked to press again.
+- A period opened by a repair that runs the next day starts on the day of the
+  charge, not the day of the repair.
 - A bind that silently does not take effect is detected, retried, and raised.
 - An unbind that silently does not take effect is detected and raised under its
   own alert.
+- A number left bound after service should have stopped is picked up without
+  anyone looking for it.
 - The fifth test call unbinds the number; the sixth is not answered; the business
   is emailed and never charged.
+- Two test calls ending at the same instant on the boundary unbind once and email
+  once.
+- A redelivered call-end webhook does not spend a test call.
+- A call that starts before Activate and ends after it is a test call and is not
+  billed.
 - A business that never confirmed a working test call cannot activate and is
   raised as stuck.
 - A business with all three items green that has not pressed Activate is not
   raised as stuck.
 - Activating after the allowance is spent rebinds the number immediately.
-
----
+- An operator reset after an exhausted allowance emails the business again the
+  next time it is exhausted.
 
 ## 2.6 The call path
 
@@ -839,9 +1554,15 @@ when caller ID does not supply one, and the tool refuses without it.
 5. return 204
 ```
 
-`is_test_call` is written here from the business's billing status **at this
-moment** (F1.13c), and `outcome` is left null for §2.9.1. The `ON CONFLICT` makes
-a redelivered webhook a no-op rather than a double-metered call.
+**`is_test_call` comes from the snapshot, not from the business row.** F1.13c
+defines a test call by whether the business had pressed Activate **when the call
+arrived** — so the value is `session.snapshot.was_unbilled`, captured at call
+start (§2.6.6.2) and never re-read here. The window where this matters is narrow
+but real: a caller who dials at 14:59:58 and hangs up at 15:02, with Activate
+pressed at 15:00, is a test call by F1.13c and would be billed by any
+implementation that asked the business row at call end. `outcome` is left null
+for §2.9.1, and the `ON CONFLICT` makes a redelivered webhook a no-op rather than
+a double-metered call.
 
 ### 2.6.3 Booking, in order
 
@@ -1019,10 +1740,10 @@ N4.2 forbids re-reading slow-changing configuration from the database on every
 call. A **process-local, in-memory cache** with a **60-second TTL** holds two
 maps:
 
-| Map            | Key           | Value                                                                               | Invalidated by |
-| -------------- | ------------- | ----------------------------------------------------------------------------------- | -------------- |
-| `number_index` | `to_number`   | `business_id`                                                                       | TTL            |
-| `config_cache` | `business_id` | timezone, horizon, greeting, active services with price and duration, opening hours | TTL            |
+| Map            | Key           | Value                                                                                                        | Invalidated by |
+| -------------- | ------------- | ------------------------------------------------------------------------------------------------------------ | -------------- |
+| `number_index` | `to_number`   | `business_id`                                                                                                | TTL            |
+| `config_cache` | `business_id` | timezone, horizon, greeting, active services with price and duration, opening hours, `was_unbilled` (F1.13c) | TTL            |
 
 **The 60 seconds is the requirement, not a tuning choice.** F3.2 gives a
 catalogue or hours change ≤60s to reach the next caller, so the TTL _is_ the
@@ -1131,48 +1852,596 @@ _Behaviours owed to the catalogue_
 
 ## 2.7 Scheduling providers
 
-F4.3 requires a second provider to arrive without touching booking logic. That
-is an interface requirement, and it is small.
+F4.3 requires a second provider to arrive **without changes to booking logic**.
+That is an interface requirement, and the interface is small — four operations.
+Everything difficult about this section is on the other side of it: credentials
+that expire, consent that is withdrawn, a vendor that is slow, and a caller on
+the phone while all three are being resolved.
 
+The section is organised the way an implementer meets it: the shape (§2.7.1),
+the failure vocabulary (§2.7.2), the credential lifecycle (§2.7.3), the Google
+mapping (§2.7.4), the budget (§2.7.5), and what the next provider costs
+(§2.7.6).
+
+### 2.7.1 The interface, in full
+
+**Four operations, and everything else stays out.** The interface exposes no
+provider concepts — no calendar ids, no attendee lists, no recurrence rules
+(there is no recurrence to express, §1.4). §2.6.3 steps 4 and 6 call only these,
+so adding Microsoft 365 or CalDAV is a new implementation and a row in
+`scheduling_credentials.provider` (§2.4/006), not a change to the code that
+decides whether a slot is free.
+
+```ts
+// ── Vocabulary. All instants are UTC (N5.1); the timezone travels separately
+//    because the provider needs it to write an event a human will read.
+
+type ProviderName = "google"; // 006's `provider`; one value at v3 (F4.2)
+
+type Interval = { readonly startsAt: Date; readonly endsAt: Date };
+
+type ProviderEventId = string & { readonly __brand: "ProviderEventId" };
+
+type Connection = {
+  readonly businessId: string;
+  readonly provider: ProviderName;
+  readonly refreshToken: string; // decrypted; in memory only, never logged
+  readonly grantedScopes: readonly string[];
+  readonly timezone: string; // IANA, from businesses.timezone (N5.2)
+};
+
+type CallContext = {
+  readonly connection: Connection;
+  readonly signal: AbortSignal; // the caller's remaining budget (§2.6.1)
+};
+
+type NewEvent = {
+  readonly appointmentId: string; // appointments.id — the idempotency key
+  readonly startsAt: Date;
+  readonly endsAt: Date; // startsAt + duration_minutes (§2.4/005)
+  readonly serviceName: string;
+  readonly customerName: string;
+  readonly customerPhone: string;
+};
+
+// ── The interface itself.
+
+type SchedulingProvider = {
+  availability(ctx: CallContext, window: Interval): Promise<Interval[]>;
+  create(ctx: CallContext, event: NewEvent): Promise<ProviderEventId>;
+  move(ctx: CallContext, id: ProviderEventId, to: Interval): Promise<void>;
+  cancel(ctx: CallContext, id: ProviderEventId): Promise<void>;
+};
 ```
-availability(business, window)        -> busy intervals
-create(business, appointment)         -> provider event id
-move(business, event id, to)          -> void
-cancel(business, event id)            -> void
-```
 
-**Four operations, and everything else stays out.** The interface does not
-expose provider concepts — no calendar ids, no attendee lists, no recurrence
-rules (there is no recurrence to express). Booking logic in §2.6 calls only
-these, so adding Microsoft 365 or CalDAV is a new implementation and a row in a
-table, not a change to the code that decides whether a slot is free.
+**Every method throws `CalendarUnavailable` and nothing else.** Not a
+`GaxiosError`, not a `TypeError` from a null field, not an `AbortError`. The
+adapter catches everything, including its own bugs, and re-throws one type
+(§2.7.2). A call site that has to know which library it is talking to is a call
+site that has not been decoupled from it.
 
-**Credentials are the provider's business too.** Refresh, revocation and scope
-checking live behind the same boundary; §2.6 sees "the calendar could not be
-read" and nothing more specific, which is exactly what F2.7a requires — provider
+**Three decisions in that block are load-bearing.**
+
+**`availability` returns busy intervals, not free ones.** Free is a function of
+opening hours (F2.8), the booking horizon (F2.9) and Ringly's own appointments
+(F2.3), none of which the provider knows. Returning "free" would put three
+Ringly rules inside the adapter and make F4.3's "without changes to booking
+logic" false the moment a business edited its Saturday. The intervals come back
+sorted by start and **unmerged** — §2.6.3 tests one candidate time for overlap,
+which is a scan, and merging would be work performed for no reader.
+
+**`create` returns the event id and `move`/`cancel` take one.** The id is stored
+on `appointments.provider_event_id` (§2.4/005) and handed back on the next call,
+so the adapter is stateless between operations. It holds no map from appointment
+to event and therefore has nothing that can drift out of step with the row that
+is authoritative.
+
+**`signal` is a parameter, not something the adapter constructs.** §2.6.1
+establishes one deadline per handler invocation and derives each step's signal
+from what remains of it. An adapter that made its own timeout would be able to
+overrun the handler's, which is exactly the failure the per-invocation deadline
+exists to prevent (§2.7.5).
+
+**`NewEvent` carries `appointmentId`, and that is not a convenience.** It is the
+idempotency key from which the Google event id is derived (§2.7.4), which is what
+makes the unwind in §2.6.3 step 6 completable rather than best-guess.
+
+### 2.7.2 One error at the boundary, eight classifications inside
+
+**F2.7a is a requirement about the call site, not about the adapter.** Provider
 outage, timeout, revoked consent and expired credentials must be
-indistinguishable at the call site because they have identical consequences.
+_indistinguishable to §2.6_, because they have identical consequences: no
+appointment is written, the caller is apologised to, an incident opens (§2.6.4).
+A `switch` on the cause in the booking path could only ever produce a second way
+to reach the same outcome, and R1 is what happens when that second way is subtly
+different from the first.
 
-**`events.list` rather than `freebusy`**, because reschedule and cancel need the
-event id and `freebusy` does not expose it.
+**They are emphatically not indistinguishable to the adapter**, which must
+refresh for one, mark a credential dead for another, and do nothing at all for a
+third. So: one thrown type, carrying a classification that is **diagnostic, never
+control flow**.
+
+```ts
+type CalendarFailure =
+  | "unreachable" // socket error, DNS, TLS, or 5xx from the provider
+  | "timed_out" // our AbortSignal fired first — slow is failed (N3.1)
+  | "rate_limited" // 403 rateLimitExceeded / userRateLimitExceeded, or 429
+  | "auth_expired" // 401 despite a token we believed current
+  | "revoked" // refresh rejected: the grant is gone and will not return
+  | "scope_missing" // the grant no longer covers calendar.events (F1.7a)
+  | "event_gone" // the event we were asked to move is not there (R13)
+  | "malformed"; // 400 — a Ringly bug, never the business's
+
+class CalendarUnavailable extends Error {
+  constructor(
+    readonly failure: CalendarFailure,
+    readonly businessId: string,
+    readonly provider: ProviderName,
+    readonly providerStatus: number | null, // HTTP status, when there was one
+    options?: { cause?: unknown },
+  ) {
+    super(`calendar unavailable: ${failure}`, options);
+  }
+}
+```
+
+**What each classification costs, and who pays it:**
+
+| Observed                                                                          | Classification  | What the adapter does about it                                                                                         | What §2.6 sees |
+| --------------------------------------------------------------------------------- | --------------- | ---------------------------------------------------------------------------------------------------------------------- | -------------- |
+| Socket error, DNS failure, 5xx                                                    | `unreachable`   | Nothing. The provider is having a bad minute                                                                           | Refusal        |
+| `ctx.signal` aborted                                                              | `timed_out`     | Nothing. Abandons the in-flight request                                                                                | Refusal        |
+| 403 `rateLimitExceeded` / `userRateLimitExceeded`, 429                            | `rate_limited`  | Nothing on the call path; logged loudly, because it is an operational fact about Ringly, not about the business (N7.3) | Refusal        |
+| 401 with a token we thought valid                                                 | `auth_expired`  | Evicts the cached access token so the next call refreshes                                                              | Refusal        |
+| Token endpoint returns `invalid_grant`                                            | `revoked`       | Stamps `revoked_at` (§2.7.3) — the only durable write                                                                  | Refusal        |
+| `grantedScopes` lacks `calendar.events`, or 403 with an insufficient-scope reason | `scope_missing` | Stamps `revoked_at`, identically                                                                                       | Refusal        |
+| 404 / 410 on `move`                                                               | `event_gone`    | Nothing. The owner deleted it in their own calendar (R13)                                                              | Refusal        |
+| 404 / 410 on `cancel`                                                             | —               | **Treated as success.** Gone is what cancel wanted                                                                     | Success        |
+| 400                                                                               | `malformed`     | Operator alert. The request was wrong before it was sent                                                               | Refusal        |
+
+**The right-hand column has one value for eight rows, and that is the point.**
+F2.7a is satisfiable only if it is structurally true rather than maintained by
+discipline, so `CalendarUnavailable` carries no method for asking "was this
+retryable" and §2.6 has no branch that could consume one.
+
+**`cancel` returning success on 404 is the one asymmetry, and it is deliberate.**
+`move` on a missing event fails because the caller asked for a new time and did
+not get one; `cancel` on a missing event succeeds because the caller asked for
+the slot to be free and it is. Modelling both as failure would refuse a caller
+whose appointment the owner had already deleted by hand — which is R13's
+scenario, and turning it into an apology serves nobody.
+
+**Where the classification does become durable is `calendar_incidents.last_error`
+(§2.4/006).** The string written there is the classification plus the provider
+status — `revoked` and `timed_out` want different operator responses, and the
+incident row is the only place that distinction is worth money. It is written
+after the handler has answered (N3.2), with the incident transition, so nothing
+here is on the caller's clock.
+
+### 2.7.3 Credentials and the token lifecycle
+
+**One row per business, and it holds exactly one secret.**
+`scheduling_credentials(business_id pk, provider, encrypted_refresh_token,
+granted_scopes, connected_at, revoked_at, last_ok_at)` (§2.4/006). The refresh
+token is encrypted at rest with AES-256-GCM under a key held in the environment
+(N6.1, §2.14.2) and is decrypted into `Connection.refreshToken` for the duration
+of one operation.
+
+**The access token is never persisted, and that is a decision.** _(The PRD does
+not settle it; N6.1 speaks only of refresh tokens.)_ It lives in a process-local
+map, `business_id → { accessToken, expiresAt }`, on exactly the reasoning of
+§2.6.6.1: the application runs many instances, each warms independently, a cold
+instance costs one token round trip, and a miss produces a slower answer rather
+than a wrong one. Persisting it would put a second encrypted secret at rest, add
+a column to 006, and buy a saving on a value that expires in an hour.
+
+**Refresh is proactive, never a reaction to a 401.** The vendor's own client owns
+it — `google.auth.OAuth2` from `googleapis`, per the project rule against
+hand-rolling auth flows. The adapter sets `refresh_token` plus the cached
+`expiry_date` on the client and the library refreshes ahead of the request when
+the token is inside its eager-refresh threshold (`eagerRefreshThresholdMillis`,
+which defaults to five minutes). The newly issued token is captured from the
+client's `tokens` event and written back to the process map. **The `tokens` event
+also carries a rotated refresh token when Google issues one**, and when it does,
+the adapter re-encrypts and stores it — dropping a rotated refresh token is a
+credential that dies silently a week later, which is R2's failure mode arriving
+by a second route.
+
+**A 401 that arrives anyway is not retried.** `forceRefreshOnFailure` is left at
+its default of `false`, so the library will not refresh-and-replay. This is not
+a tuning choice: §2.6.1 says nothing retries inside the handler, and a 401 that
+survives a proactive refresh means the grant is gone, which a second attempt with
+the same grant cannot fix. The cached token is evicted, `auth_expired` is thrown,
+and the caller hears the standard apology.
+
+**A refresh race between two concurrent calls is left to race.** Two tool calls
+for one business — two turns of the same conversation, two callers at once, or
+the same business on two instances — can both find the access token stale and
+both refresh. **Nothing arbitrates this, deliberately.** Google issues a fresh
+access token per request without invalidating the previous one, so both requests
+proceed with valid credentials and the later writer to the process map wins; the
+cost of the race is one redundant token request. The alternative — a Postgres
+advisory lock keyed on `business_id` — would put a database round trip and a
+serialisation point **inside the 5000ms provider budget on the call path**, to
+prevent an outcome that is already correct. Paying latency on every booking to
+avoid an occasional duplicate HTTP request is the wrong trade at 2.1.1's stakes.
+_(Decision; the PRD does not address concurrency in the credential path.)_
+
+**Permanent failure has exactly one signature: `invalid_grant`.** Google's token
+endpoint answers `400 { "error": "invalid_grant" }` when the refresh token has
+been revoked by the user, has expired unused, or was invalidated by the app
+sitting in _Testing_ for more than seven days — which is R2, and is why R2 is a
+launch blocker rather than a chore. It is terminal: there is no endpoint that
+revives a revoked grant, and the only remedy is a fresh consent.
+
+```
+refresh fails with invalid_grant, or the grant no longer covers calendar.events
+  └─ UPDATE scheduling_credentials
+        SET revoked_at = now()
+      WHERE business_id = $1 AND revoked_at IS NULL     -- idempotent; async (N3.2)
+  └─ throw CalendarUnavailable("revoked" | "scope_missing", ...)
+        └─ §2.6.4 opens the incident and emails, on its own terms
+```
+
+**`revoked_at` and the incident are two different facts and both are needed.**
+The open incident says _customers are being turned away right now_ — it drives
+the banner, the one email per incident (F2.7) and the operator's "bookings
+failing" row (F8.12). `revoked_at` says _what the owner has to do about it_,
+which is the difference between a banner that reports weather and a banner that
+is actionable. F5.18 renders service state from current state and never from the
+rollup, and a non-null `revoked_at` is what turns that block into "your calendar
+is disconnected — reconnect it", with the reconnect control F5.15 owes and F1.7b
+names.
+
+**Reconnect is the same flow as first connect, minus the account.** It re-runs
+§2.5.1 steps 4–5: consent with every scope's reason stated before the redirect
+(F1.7c), then a check of the scopes _actually_ granted rather than assumed
+(F1.7a), because granular consent means a user can complete the dialog and still
+withhold the calendar. On success the row takes a new
+`encrypted_refresh_token` and `granted_scopes`, `connected_at` is re-stamped, and
+`revoked_at` is cleared. **Clearing `revoked_at` does not close the incident** —
+§2.6.4 owns that, and it closes on a successful _read_, which the calendar health
+probe will perform within five minutes (§2.2.2). Two mechanisms, one each for the
+two facts, and neither reaching into the other's state.
+
+**The revoked business needs no special case anywhere.** Every subsequent
+operation fails at the refresh, classifies as `revoked`, and attaches to the
+already-open incident silently. The probe fails the same way and does not close
+the incident, which is correct: nothing has been fixed.
+
+**`last_ok_at` is written coarsely, and this is a decision the schema implies but
+does not state.** §2.6.4 is explicit that no call writes on the happy path, so
+stamping it on every successful read would contradict that directly. It is
+therefore written after the response (N3.2) and only when it is already stale:
+
+```sql
+UPDATE scheduling_credentials SET last_ok_at = now()
+ WHERE business_id = $1 AND last_ok_at < now() - interval '15 minutes';
+```
+
+At most four writes an hour per business rather than one per call. The column
+exists so an operator can answer "when did this credential last work" for a
+business with no open incident and no recent calls; that question has never
+needed minute precision, and buying it would cost a write per booking.
+
+### 2.7.4 Google Calendar, concretely
+
+**The target is always the authenticated identity's `primary` calendar.**
+_(Decision: the PRD does not mention calendar selection.)_ F1.7 grants calendar
+access in the same dialog as sign-in, so the Google identity _is_ the business,
+and its primary calendar is the one the owner already looks at. A calendar picker
+would be a screen in onboarding (F1 has none), a column in 006, and a support
+question — for a choice a single-location business does not have. It is also what
+lets `Connection` stay free of provider concepts (§2.7.1). The cost, recorded
+honestly: a business that keeps bookings on a secondary calendar cannot be
+served, and adding that later means a nullable column and a settings control,
+not a redesign.
+
+**Verified 2026-07-30 (§2.17):** `calendar.events` is a **sensitive** scope
+requiring verification; refresh tokens are revoked after seven days while the app
+is in _Testing_ (R2); granular consent permits calendar to be declined
+independently of sign-in (F1.7a).
+
+| Operation      | Google API call | Failure that is not a failure |
+| -------------- | --------------- | ----------------------------- |
+| `availability` | `events.list`   | —                             |
+| `create`       | `events.insert` | 409 on our derived id → adopt |
+| `move`         | `events.patch`  | —                             |
+| `cancel`       | `events.delete` | 404 / 410 → success           |
+
+**`events.list`, not `freebusy`**, for three reasons that compound:
+
+1. **`freebusy` returns opaque blocks with no event metadata** — no
+   `transparency`, no `status`, no id. It cannot be asked to leave out an event
+   the owner deliberately marked as free, so it would report a business busy
+   during time it has told its own calendar it is available.
+2. **`freebusy` merges overlapping intervals**, so the boundaries between two
+   adjacent commitments are lost. Nothing in §2.6 needs them today; a design that
+   throws them away before they are asked for cannot get them back.
+3. **Event ids.** `move` and `cancel` need one, and the stored
+   `appointments.provider_event_id` is the primary source — but when it has
+   drifted (R13: the owner recreated the event by hand), `events.list` is the
+   only surface that could recover it. `freebusy` closes that door permanently.
+
+**`availability` — the query:**
+
+```ts
+calendar.events.list(
+  {
+    calendarId: "primary",
+    timeMin: window.startsAt.toISOString(), // lower bound on event END
+    timeMax: window.endsAt.toISOString(), // upper bound on event START
+    singleEvents: true, // expand recurrences into instances
+    orderBy: "startTime", // requires singleEvents
+    showDeleted: false, // a cancelled event does not occupy a slot
+    maxResults: 2500, // the documented per-page maximum
+    timeZone: ctx.connection.timezone,
+  },
+  { signal: ctx.signal, retryConfig: { retry: 0 } },
+);
+```
+
+**`timeMin` and `timeMax` read backwards from their names and it matters.**
+`timeMin` bounds an event's _end_ and `timeMax` bounds its _start_, which is
+precisely the definition of "overlaps the window" — an event that began before
+the window and runs into it is returned, and that event is the one most likely to
+be missed by a naive filter and most likely to cause a double booking.
+
+**`singleEvents: true` is not optional.** Without it the API returns the
+recurring event's definition rather than its occurrences, and a business with a
+weekly team meeting would have that hour reported busy exactly once, in the week
+the series was created. Ringly does not create recurring events (§1.4) but its
+customers' owners certainly do.
+
+**Busy intervals are derived by dropping two kinds of event and expanding a
+third:**
+
+| Event                                 | Treatment                                                                 |
+| ------------------------------------- | ------------------------------------------------------------------------- |
+| `transparency === "transparent"`      | **Dropped.** Google defines transparent as "does not block time"          |
+| `status === "cancelled"`              | Dropped. Filtered server-side by `showDeleted: false`; re-checked in case |
+| All-day (`start.date`, no `dateTime`) | Expanded to `[startOfDay(date, tz), startOfDay(date + 1, tz))` (N5.2)     |
+| Everything else                       | `[start.dateTime, end.dateTime)`                                          |
+
+**`transparency` is the whole filter, and no `eventTypes` filter is applied.**
+Working-location events are _required_ by Google to carry
+`transparency: "transparent"`, so they fall out for free; focus-time and
+out-of-office events are `opaque` and correctly block, which is what their owner
+intended. Filtering by `eventTypes` instead would be an allow-list, and an
+allow-list that omits a type Google adds next year silently starts double-booking
+— the failure runs in the unsafe direction, so the design does not use one.
+
+**All-day events are expanded in the business's timezone, not the server's**
+(N5.2). A public holiday on the owner's calendar is a `date`, and rendering it as
+UTC midnight would leave the first hours of the business's day bookable in
+UTC+0 territories and block the last hours of the previous day in UTC−8 ones.
+
+**Pagination is followed, and a partial result is never returned.** If
+`nextPageToken` comes back the adapter follows it under the same
+`ctx.signal`, so a calendar dense enough to need a second page spends the same
+budget and, if it exhausts it, times out into the ordinary refusal. **A truncated
+busy set is the one result this method must never produce**, because a missing
+interval is not a slower answer, it is a double booking — 2.1.1 with extra steps.
+In practice the window is the caller's `{ from, to }` from `check_availability`
+(§2.6.2.2), bounded above by `booking_horizon_days` (F2.9), and 2500 events
+inside it is not a business Ringly serves.
+
+**`create` — the insert:**
+
+```ts
+calendar.events.insert(
+  {
+    calendarId: "primary",
+    requestBody: {
+      id: derivedEventId(event.appointmentId), // see below
+      summary: `${event.serviceName} — ${event.customerName}`,
+      description: `Phone: ${event.customerPhone}\nBooked by Ringly`,
+      start: { dateTime: iso(event.startsAt), timeZone: tz },
+      end: { dateTime: iso(event.endsAt), timeZone: tz },
+      transparency: "opaque", // explicit: a Ringly booking blocks the slot
+    },
+  },
+  { signal: ctx.signal, retryConfig: { retry: 0 } },
+);
+```
+
+**The event id is supplied by Ringly, derived from `appointments.id`.** Google
+accepts a caller-chosen id in base32hex — lowercase `a`–`v` and `0`–`9`, 5 to
+1024 characters — so the appointment's UUID re-encoded into that alphabet is a
+legal id and a deterministic one. It buys the thing §2.6.3's unwind actually
+needs: **after a `timed_out` insert, Ringly can address the event it may or may
+not have created without having been told its id.** §2.6.3 step 6 deletes the
+local appointment and refuses; the compensating `events.delete` on the derived id
+is issued after the response (N3.2) and is a no-op if the insert never landed,
+because 404 on cancel is success. A 409 on the insert means a previous attempt
+did land, and the adapter adopts that event rather than creating a second one.
+
+That is a genuine improvement on the alternative and it does not close the hole
+entirely, which is worth stating plainly: **if the compensating delete also
+fails, the business keeps a calendar event for an appointment that does not
+exist.** That is the safe direction of wrong — a phantom hold refuses a slot
+rather than double-booking it, and the owner can see and delete it in their own
+calendar — but it is a residual, and it belongs next to R13 rather than being
+counted as solved.
+
+**Derived from the appointment id, never from the slot.** Google does not
+immediately free the id of a deleted event, so an id derived from
+`(business, time)` would collide permanently after the first cancellation of that
+slot. The appointment UUID is fresh per booking and has no such problem.
+
+**No attendees, ever.** Adding the caller would require an email address Ringly
+does not hold (`customers` is name and phone, §2.4/005) and would open a channel
+to the calling customer that 2.1.2 forbids the design to grow. It also means no
+invitation mail is sent, so `sendUpdates` is moot.
+
+**`move` uses `events.patch` and sends only `start` and `end`.** `events.update`
+is a full replacement and would silently discard anything the owner had added to
+the event — a note, a location, a colour, a second attendee they invited
+themselves. **`events.move` is a different operation entirely** (it moves an
+event between calendars) and is named here only so nobody reaches for it by
+autocomplete. 404 or 410 classifies `event_gone` (R13).
+
+**`cancel` uses `events.delete`**, not a patch to `status: "cancelled"`. A
+deleted event leaves the owner's view; a cancelled one remains as a struck-through
+entry they then have to tidy up. 404 and 410 are success (§2.7.2).
+
+**F5.12 is upheld by omission, not by a filter.** Events the owner created
+directly are read for conflicts and are never written to `appointments`, so
+nothing in the rollups (§2.9.2) can see them. There is no code that excludes
+them from Ringly's figures, because there is no path by which they could enter.
+
+### 2.7.5 Timeouts, cancellation, and the absence of retry
+
+**The 5000ms provider ceiling from §2.6.1 is enforced by the caller and honoured
+by the adapter.** §2.6 constructs
+`AbortSignal.timeout(Math.min(5000, deadline - Date.now()))` and passes it in as
+`ctx.signal`; the adapter threads that one signal through **every** HTTP request
+the operation makes.
+
+**Including the token refresh, which is the part that is easy to get wrong.** An
+operation that needs a refresh makes two requests, and if each got its own
+5000ms the provider step could take ten seconds and blow the 6000ms handler
+ceiling that F2.6's filler speech is sized against (N3). One signal for the whole
+operation means a refresh spends budget that the calendar call then does not
+have, which is the correct accounting: the caller is waiting for the operation,
+not for its steps.
+
+```
+tool webhook arrives            deadline = Date.now() + 6000        (§2.6.1)
+  ├─ local checks 1–3                                               ~ms
+  ├─ signal = AbortSignal.timeout(min(5000, deadline - now()))
+  ├─ availability(ctx, window)
+  │    ├─ refresh token if inside the eager threshold   ← same signal
+  │    └─ events.list (+ any pages)                     ← same signal
+  └─ abort → CalendarUnavailable("timed_out") → refuse (N3.1)
+```
+
+**`AbortSignal` reaches the wire through the vendor's own option, not through a
+race with a timer.** `googleapis` method options extend gaxios's, so
+`{ signal }` on the second argument aborts the underlying request rather than
+merely abandoning a promise that keeps running. A `Promise.race` against a
+`setTimeout` would leave the request in flight, holding a socket and eventually
+resolving into nothing — which at N2.1's volumes is how a slow provider turns
+into an exhausted connection pool.
+
+**Client-library retry is switched off explicitly** — `retryConfig: { retry: 0 }`
+on every request. gaxios retries 429 and 5xx when retries are enabled, and
+whether they are enabled by default in the pinned version is a five-minute check
+that the code makes irrelevant by setting it either way. A retry the caller did
+not ask for is still a retry inside the caller's budget, and §2.6.1 forbids it:
+inside six seconds a second attempt either does not fit or doubles the tail, and
+the caller is waiting through both.
+
+**Nothing retries, not even on 429, and this is a deliberate departure from the
+vendor's guidance.** Google's error documentation recommends exponential backoff
+for 403 rate-limit, 429 and 5xx. Ringly does not follow it here, because backoff
+is advice for a batch job and the caller is on the phone. **The retry that exists
+is the caller ringing back** (F2.7) and **the calendar health probe** (§2.2.2),
+which re-reads every five minutes off the call path and closes the incident when
+the provider recovers — so an outage that ends at 8pm clears the banner at 8pm
+rather than waiting for the next customer.
+
+**A sustained `rate_limited` is an operational fact about Ringly, not about the
+business**, and N7.3 requires it to be alerted rather than absorbed. It means the
+project's quota is undersized for the traffic, and no amount of backoff on the
+call path fixes that.
+
+### 2.7.6 What a second provider costs, and where this interface breaks
 
 **The interface is shaped by what comes next, in priority order** (F4.4):
 Microsoft 365 / Outlook, then CalDAV for Apple and Fastmail, then vertical
-booking systems such as Square Appointments, Acuity and Calendly. The first two
-fit the four operations as they stand. The third group may not — a vertical
-booking system owns the appointment rather than storing an event — and that is
-the point at which this interface is expected to need a second shape rather than
-a third implementation. Recording it now means the eventual redesign is a known
-cost, not a surprise.
+booking systems such as Square Appointments, Acuity and Calendly.
+
+**The first two fit the four operations as they stand.** _The mappings below are
+sketched from each vendor's documented surface and have **not** been verified to
+§2.17's standard — only Google was, on 2026-07-30. They are a sizing estimate,
+not a specification._
+
+| Operation      | Google          | Microsoft 365 (Graph)                                                             | CalDAV                                                        |
+| -------------- | --------------- | --------------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| `availability` | `events.list`   | `GET /me/calendarView` with `startDateTime` / `endDateTime` (expands recurrences) | `REPORT` `calendar-query` with a `VEVENT` `time-range` filter |
+| `create`       | `events.insert` | `POST /me/events`                                                                 | `PUT` an `.ics` at a client-chosen href                       |
+| `move`         | `events.patch`  | `PATCH /me/events/{id}`                                                           | `PUT` the revised `.ics` with `If-Match: <etag>`              |
+| `cancel`       | `events.delete` | `DELETE /me/events/{id}`                                                          | `DELETE` the href                                             |
+
+**Three things a new provider must supply beyond the four methods**, and only the
+first is free:
+
+1. **A classification function from its own error surface onto `CalendarFailure`
+   (§2.7.2).** This is the work, and it cannot be shared. Graph reports a revoked
+   grant differently from Google, and CalDAV reports it as a 401 that looks
+   exactly like every other 401 — so `revoked` versus `auth_expired` becomes a
+   judgement the adapter has to make from repetition rather than from a distinct
+   error code. Getting it wrong in one direction leaves the reconnect control
+   hidden while a business is refusing every caller; wrong in the other, a
+   transient blip marks a healthy credential dead.
+2. **A credential lifecycle that maps onto 006's three states** — valid,
+   refreshable, terminally revoked. Graph does this with OAuth refresh tokens and
+   fits directly. **CalDAV has no refresh token at all**: it authenticates with a
+   username and an app-specific password, so `encrypted_refresh_token` holds a
+   long-lived secret and the column name lies. That is a rename, not a redesign,
+   and the honest time to note it is before the column has been read by twelve
+   call sites.
+3. **An event identifier that survives the owner editing the event.** Google's
+   id does. Graph offers immutable ids behind a request header
+   (`Prefer: IdType="ImmutableId"`), which a Graph adapter should opt into rather
+   than storing the default id. **CalDAV's identity is the href plus the `UID`,
+   and its `ETag` changes on every edit** — so `provider_event_id` must hold the
+   href, and the etag must be fetched at write time for `If-Match` rather than
+   stored. A CalDAV adapter that stored an etag as its event id would break the
+   first time the owner moved the appointment by five minutes.
+
+**The third group is where this interface is expected to need a second shape.**
+A vertical booking system owns the appointment rather than storing an event, and
+that changes four things at once:
+
+- **`create` stops returning an identifier for a record Ringly owns** and starts
+  returning _their_ booking. Two systems then hold an appointment and both
+  believe they are authoritative, and the question "what is this appointment"
+  has two answers. §2.4/005's `provider_event_id` — a pointer from Ringly's row
+  to a subordinate calendar entry — no longer describes the relationship.
+- **Service becomes a foreign key, not a string.** `NewEvent.serviceName` works
+  because a calendar event's title is free text. Square and Acuity have their own
+  service catalogue with their own ids, durations and prices, so F3.1's Ringly
+  catalogue turns into a mapping problem and F3.4's pricing has a second source.
+- **They enforce availability rules Ringly cannot see** — staff rosters,
+  inter-appointment buffers, resource limits, per-service lead times. This is the
+  actual break: **a busy/free interface cannot express "this slot is bookable, but
+  only by Sam, and only once the previous customer's fifteen-minute buffer
+  clears".** The right question inverts from _what time is occupied_ to _what can
+  I book_.
+- **They may confirm to the customer themselves**, by SMS or email. §1.4 and
+  2.1.2 say Ringly has no channel to the caller and F2.11 makes the agent reading
+  it back the entire confirmation. A vertical system would hand Ringly that
+  channel whether it wanted it or not, and deciding what to do about it is a
+  product change, not an adapter.
+
+**The eventual second shape is `slots(window) → bookable slots` plus
+`book(slot) → booking`**, with slot derivation moved from §2.6 into the provider.
+Google, Graph and CalDAV can all implement it — by deriving slots from busy
+intervals, opening hours and duration, which is what §2.6.3 does today — so the
+migration is a rewrite of the boundary between §2.6 and §2.7, not a third
+implementation behind the current one.
+
+**It is deliberately not built now.** F4.2 makes Google the only provider at
+launch, R9 puts switching provider out of scope, and building the general shape
+against one implementation would be guessing at the constraints of a vendor
+nobody has integrated. **R5 — provider capability mismatch — is the risk that
+carries this**, and it is declared rather than assumed. Recording the break here
+means the eventual redesign is a known cost with a known trigger, not a surprise
+in the middle of a sales conversation.
 
 **Testing this section**
 
-_Observable_ — that a booking appears in the connected calendar; that an event
-created directly by the owner is respected for conflicts but never appears in
-Ringly's figures (F5.12); that all four failure modes refuse identically.
+_Observable_ — that a booking appears in the connected calendar with the right
+time and duration; that an event created directly by the owner is respected for
+conflicts but never appears in Ringly's figures (F5.12); that all failure modes
+refuse identically; what the dashboard's status block says and which control it
+offers; whether an event survives a reschedule as one event.
 
-_Internal_ — the interface's method names, the vendor, the API surface, token
-storage and refresh.
+_Internal_ — the interface's method names and type definitions, the vendor, the
+API surface and its query parameters, the error class and its classifications,
+token storage, the refresh threshold, the derived event id, the timeout values.
 
 _Behaviours owed to the catalogue_
 
@@ -1183,6 +2452,32 @@ _Behaviours owed to the catalogue_
 - Rescheduling moves the provider's event rather than creating a second one.
 - Cancelling removes it.
 - Revoked consent surfaces a reconnect control on the dashboard.
+- An event the owner marked "free" in their own calendar does not block a caller
+  from booking that time.
+- An all-day event on the owner's calendar blocks the whole of that day in the
+  business's own timezone, not in UTC.
+- A recurring event on the owner's calendar blocks every one of its occurrences,
+  not only the first.
+- An event that starts before the requested window and runs into it still blocks
+  the slot.
+- Cancelling an appointment the owner had already deleted by hand succeeds and
+  tells the caller so.
+- Rescheduling onto an appointment the owner deleted by hand is refused like any
+  other calendar failure.
+- A reschedule preserves a note the owner added to the event themselves.
+- A provider that never answers refuses the booking at the ceiling and writes no
+  appointment, and the caller is not left waiting past it.
+- A provider that answers slowly but inside the ceiling still books.
+- An expired access token is refreshed without the caller noticing.
+- Revoked consent refuses the booking, is recorded once, and shows the owner what
+  to do about it — not merely that something is wrong.
+- Reconnecting a revoked calendar makes the next caller's booking succeed and
+  clears the banner without anyone pressing anything else.
+- A calendar that is unreachable, slow, revoked, out of scope or rate-limited
+  produces the same refusal and the same apology.
+- A booking that times out after the calendar event was created leaves no
+  appointment, and does not leave the caller booked.
+- Nothing the provider does causes a second attempt within one call.
 
 ---
 
@@ -1608,6 +2903,19 @@ The most intricate part of the product, and the part where an error is a wrong
 charge on a real card. F6 is long because the failure paths are; this section
 follows the same order.
 
+**How to read it.** §2.10.1–§2.10.7 are the rules and the code that implements
+them; §2.10.8 is the split with Stripe; §2.10.9–§2.10.13 are the mechanics those
+earlier sections stand on — the Stripe object lifecycle, the webhook endpoint,
+the transaction boundaries, the arithmetic, and what §2.4 has to gain before any
+of it can be written. An implementer reading top to bottom will meet forward
+references to those five; they are deliberate, because the rules are what the
+mechanics are answerable to and not the other way round.
+
+**Two citations in the PRD point at the pre-renumber EDD.** F6.10b and
+F6.10b-i say "EDD §2.9.5" and F6.11b-ii says "§2.9.3"; their current homes are
+**§2.10.6** and **§2.10.8**. F6.19's "EDD §2.9.4" is now **§2.13.4**. Noted once
+here rather than repeated.
+
 ### 2.10.1 States
 
 A transition table rather than a diagram, because the side effects are the part
@@ -1629,17 +2937,48 @@ an implementation gets wrong:
 | `dormant`    | Business returns           | `active`     | Rebind, open a new period, charge $100 that day (F6.12e)                       |
 | `dormant`    | 60 days elapse             | _deleted_    | Teardown                                                                       |
 
+**Exactly four callers may write `businesses.billing_status`**, and naming them
+is what keeps the table above a specification rather than a diagram someone
+drew afterwards:
+
+| Caller                         | Transitions it may cause                                   |
+| ------------------------------ | ---------------------------------------------------------- |
+| The **activation route**       | `unbilled → active` — the only one, by 2.1.4               |
+| `settleAndAdvance()` (§2.10.3) | `active → grace` on a decline                              |
+| `reevaluate()` (§2.10.6)       | `grace → active`, `suspended → active`                     |
+| The **lifecycle sweeper**      | `grace → suspended`, `cancelling → dormant`, and deletions |
+
+Operator controls (§2.12) create and clear `lifecycle_deadlines` rows; the
+sweeper is what turns those rows into transitions. **The operator never writes a
+status directly**, because a control that both records an intention and effects
+it is a control whose two halves can disagree.
+
+**Every one of those writes is guarded on the state it expects**, so a repeated
+worker tick or a redelivered webhook is a no-op rather than a second effect
+(N2.3, §2.2.2):
+
+```sql
+UPDATE businesses SET billing_status = 'grace'
+ WHERE id = $1 AND billing_status = 'active'
+RETURNING id;                 -- no row → somebody got here first; do nothing more
+```
+
+The `RETURNING` is load-bearing: the deadline rows, the email and the operator
+alert are all conditional on a row coming back, exactly as §2.6.4 makes the
+incident email conditional on the insert.
+
 **`cancelling → active` is the transition most likely to be got wrong**, and it
 is not the same as never having cancelled. Revoking makes the free usage served
 during the window retroactively billable (F6.12a), so the transition rewrites
 `usage_records.period_id` for the window's rows rather than merely clearing a
-flag. A `cancelling → active` implemented as "unset cancelled" silently gives the
-business a free week it was only ever lent.
+flag (§2.10.7). A `cancelling → active` implemented as "unset cancelled" silently
+gives the business a free week it was only ever lent.
 
 **`grace` is not a state a business can be in twice for one debt.** The two
 deadlines are created together at the first decline (§2.4/008) and cleared
 together when nothing is owed; a second decline while already in `grace` starts
-no second clock (F6.11c).
+no second clock (F6.11c). The `WHERE billing_status = 'active'` guard above is
+what enforces it — the second decline's update matches nothing.
 
 **`unbilled` is not a trial.** It is the state before any commercial relationship
 exists. No path leads from it to `active` except the button (2.1.4).
@@ -1654,23 +2993,119 @@ inbox — and that is what the Testing block below permits.
 (F6.11b). `starts_on` and `ends_on` are written when the period opens and never
 move.
 
-**The two charges never share a date.** The $100 is taken on the first day; that
-period's usage settles on the last. Period 2 opens the day after period 1 ends,
-with its own $100. A card that has gone bad therefore fails one charge at a time,
-and there is only ever **one grace clock**, started by whichever failed first
-(F6.11).
+**They are `date` columns, not timestamps, and that is the DST answer** (N5.2,
+§2.14.1). A period that opens on 3 March ends on 1 April in the business's own
+timezone whether or not the clocks moved in between; a `timestamptz` boundary
+would drift by an hour twice a year and R14's "timezone changes re-interpret
+every period boundary" would become true of ordinary daylight saving as well.
+The instant a period ends is derived at read time:
+
+```sql
+(p.ends_on + 1)::timestamp AT TIME ZONE b.timezone   -- local midnight, ending ends_on
+```
+
+**Thirty days inclusive**: `ends_on = starts_on + 29`. Period 1 of a business
+activating on the 3rd runs the 3rd to the 1st; period 2 opens on the 2nd.
+
+**At most one period is open, and periods never overlap — both enforced by the
+database, not by the worker** (F6.11f, I2). This is §2.6.4's argument applied to
+money: forty concurrent calls could not be trusted to produce one incident row,
+and two overlapping worker ticks cannot be trusted to produce one period.
+
+```sql
+CREATE UNIQUE INDEX one_open_period_per_business
+    ON billing_periods (business_id) WHERE usage_settled_at IS NULL;
+
+ALTER TABLE billing_periods ADD CONSTRAINT periods_never_overlap
+  EXCLUDE USING gist (business_id WITH =,
+                      daterange(starts_on, ends_on, '[]') WITH &&);
+```
+
+**"Open" is `usage_settled_at IS NULL` and nothing else.** There is deliberately
+no boolean beside it: a settled period is finished (F6.16) and a second column
+saying so is a second thing that can be wrong. `billing_periods.status` earns its
+place by recording **which** of F6.9a's three moments closed the period —
+`settled`, `settled_early`, `settled_at_deletion` — which is not derivable and
+which the closing statement and the departure record both need.
+
+**Opening a period is one statement and it is idempotent:**
+
+```sql
+INSERT INTO billing_periods
+       (business_id, policy_id, starts_on, ends_on, fixed_fee_state,
+        billable_seconds, usage_charge_cents, total_cents, was_suspended_during)
+SELECT $1, $2, $3::date, $3::date + 29, 'pending', 0, 0, 0, false
+ WHERE NOT EXISTS (SELECT 1 FROM billing_periods
+                    WHERE business_id = $1 AND usage_settled_at IS NULL)
+   AND NOT EXISTS (SELECT 1 FROM lifecycle_deadlines
+                    WHERE business_id = $1 AND kind = 'cancellation_window_close')
+ON CONFLICT DO NOTHING
+RETURNING id;
+```
+
+Three requirements are in that one statement. The first `NOT EXISTS` is F6.11f.
+The second is F6.10 — **a business that has asked to cancel is never charged
+again**, and the cancellation is durable as a deadline row (§2.10.7), so the
+check is a join rather than a flag. The `ON CONFLICT DO NOTHING` against the
+partial index is what survives two ticks racing; the `WHERE NOT EXISTS` is what
+makes the common case cheap.
+
+**`policy_id` is pinned at open and never re-read** (F6.16). The rate, the cap,
+the fee and the billable-outcome set that settle this period are the ones in
+force on the day it opened, so a policy change lands on the next period and
+rewrites nothing (§2.4/007).
 
 **Usage accrues on productive calls only** (F6.6) — a booking, a reschedule that
 produced a booking, or a cancellation of a real appointment. Enquiries, wrong
 numbers, dropped calls and pre-activation test calls are not billable. **Who is
 calling is irrelevant**: the owner, a customer and Ringly's own developer are
-billed identically, because the outcome is the only test (F6.7).
+billed identically, because the outcome is the only test (F6.7). **The whole call
+is billable, not the minutes up to the booking** (F6.7).
 
-**The whole call is billable, not the minutes up to the booking** (F6.7).
+**A `usage_records` row is written for every non-test call at call end; whether
+it is billable is `period_id`, not the row's existence.** §2.6.2.3's step 3 reads
+"if the period is open" and this is the precise form of it:
 
-**Seconds are summed across the whole period and rounded up to a minute once, at
-close** (F6.7a) — not per call. A business making many short calls is not
-charged a full minute for each.
+```sql
+INSERT INTO usage_records (business_id, period_id, call_id, connected_seconds, created_at)
+SELECT b.id,
+       CASE WHEN b.billing_status = 'cancelling' THEN NULL
+            ELSE (SELECT p.id FROM billing_periods p
+                   WHERE p.business_id = b.id AND p.usage_settled_at IS NULL) END,
+       $2, $3, now()
+  FROM businesses b
+ WHERE b.id = $1
+ON CONFLICT (call_id) DO NOTHING;
+```
+
+- **`period_id` is stamped at call end and never derived afterwards**, for the
+  same reason `is_test_call` is (§2.4/005): billing state changes and a call's
+  history must not. Deriving it later would move usage between periods every time
+  a business's status moved.
+- **Null when no period is open** is F6.11c-ii's case (b) grace — recorded,
+  never charged (§2.4/007).
+- **Null when the business is `cancelling`** is F6.12's free window.
+- **`ON CONFLICT (call_id)`** makes a redelivered call-end webhook a no-op rather
+  than a double-metered call, matching the `calls` insert beside it.
+
+**The outcome is not known yet at this moment and that is fine** — classification
+is hourly and asynchronous (§2.9.1), and the settlement query is what applies the
+outcome filter. Nothing here waits on a model call.
+
+**"The two charges never fall on the same day" is delivered by ordering, not by
+the calendar — and this is a deliberate reading of F6 that needs ratifying.**
+A period's usage cannot be summed until the period is over, and the instant it is
+over is the instant its successor begins; so the settlement of _N_ and the fee
+for _N+1_ are inherently adjacent, and F6b's "day 30 … day 31" is not achievable
+without either losing the last hours of _N_'s usage or extending _N_, both of
+which F6 forbids elsewhere (F6.7a, F6.11b/I1). What F6 says the separation exists
+to produce is preserved exactly: _"a card that has gone bad therefore fails one
+charge at a time, and there is only ever one grace clock."_ The design produces
+that by making the second charge **conditional on the first having cleared** —
+§2.10.3's ordered worker settles _N_, and opens and charges _N+1_ only if nothing
+is then outstanding (F6.11c). Two charges minutes apart with the second
+conditional on the first can still only start one clock, which is stronger than
+calendar separation and does not depend on a worker's cadence.
 
 ### 2.10.3 Settlement and the clamp
 
@@ -1682,12 +3117,123 @@ applied at each:
 3. **Final deletion for non-payment** (F9.3), where the clamped figure is what
    the business is recorded as owing (F9.9) even though it is never collected.
 
+**All three call the same function, and only the third does not raise an
+invoice.** `settle(period, mode)` computes and writes; whether Stripe is asked
+for money is a parameter. Three separate implementations of the clamp is three
+places for it to be wrong on the one path — deletion — where nobody would notice,
+because nothing is collected there and the only consumer is a departure record
+read years later.
+
+**What the worker selects.** Hourly (§2.2.2), bounded by due rows rather than by
+platform size (N2.3):
+
+```sql
+SELECT p.id, p.business_id, p.policy_id
+  FROM billing_periods p
+  JOIN businesses    b ON b.id = p.business_id
+ WHERE p.usage_settled_at      IS NULL
+   AND p.settlement_claimed_at IS NULL
+   AND now() >= ((p.ends_on + 1)::timestamp AT TIME ZONE b.timezone)
+ ORDER BY p.ends_on
+   FOR UPDATE OF p SKIP LOCKED
+ LIMIT 200;
+```
+
+`FOR UPDATE ... SKIP LOCKED` is what stops two overlapping ticks selecting the
+same period; `settlement_claimed_at` is what stops a tick that started after the
+first one committed. **Both are needed and they answer different questions** —
+the lock covers concurrent runs, the column covers sequential ones, and a design
+with only the lock double-charges the moment a deploy overlaps a run.
+
+**The sum, once, in integer seconds** (F6.7a):
+
+```sql
+SELECT COALESCE(SUM(u.connected_seconds), 0)::bigint AS billable_seconds
+  FROM usage_records u
+  JOIN calls        c ON c.id = u.call_id
+ WHERE u.period_id  = $1
+   AND c.is_test_call = false
+   AND c.outcome = ANY($2::text[]);   -- policy.billable_outcomes, from the pinned policy
+```
+
+**An unclassified call has `outcome IS NULL` and is excluded by `= ANY`**, which
+is R24's mitigation arriving for free: the business is under-billed rather than
+guessed at (§2.9.1.4). Classification is hourly and settlement is hourly, so a
+call in the last minutes of a period may not be labelled when its period settles;
+**it is then not billed, permanently**, because N10.4 forbids reopening a settled
+period. That is a known, bounded leak in the business's favour and it is the
+right direction to be wrong in.
+
+**The clamp, in integers, applied before Stripe sees anything** (F6.9, F6.12d):
+
+```
+minutes     = (billable_seconds + 59) / 60              -- integer division: one rounding, at close
+raw_cents   = minutes * policy.per_minute_rate_cents
+usage_cents = max(0, min(raw_cents, policy.cap_cents - policy.fixed_fee_cents))
+total_cents = policy.fixed_fee_cents + usage_cents
+```
+
+- **`cap_cents - fixed_fee_cents` and not "cap minus what was collected".** The
+  fee is part of the period's total whether or not it cleared, which is why F6c's
+  case (a) reaches $500 and case (b) reaches $400 — the difference is what was
+  collected, not what was clamped.
+- **Stripe is only ever told `usage_cents`.** The unclamped `raw_cents` never
+  leaves Ringly; `billable_seconds` and `usage_charge_cents` are both stored, so
+  the absorbed difference is a subtraction the operator can run per business (F8,
+  R8) and is not lost.
+- **Tax is added by Stripe on top of the clamped figure** (F6.18, F6c): the cap
+  clamps Ringly's own charges, and the departure record holds the figure
+  exclusive of tax (F9.9).
+
+**Then, in order, in one worker pass over one business:**
+
+```
+1  claim the period                                    T1, local
+2  compute billable_seconds, minutes, usage_cents      local, no I/O
+3  raise and pay the usage invoice (§2.10.9)           external      ← skipped in mode=deletion
+4  record: usage_settled_at, figures, billing_events   T2, local
+5  if nothing is now outstanding (§2.10.6):
+     open the successor period                         local
+     raise and pay its fixed fee (§2.10.9)             external
+6  else: this decline is a failure — §2.10.4
+```
+
+**Step 5's condition is F6.11c in one line**, and it is the same predicate the
+restore path uses. A settlement that declines therefore cannot be followed by a
+successor in the same pass, which is case (b) falling out of the code rather than
+being special-cased in it.
+
 **Usage keeps accruing past the cap and is recorded in full** (F6.9), because
 Ringly needs the true number for cost and margin (F8). The cap is applied at
-settlement, not during the period. On first crossing it Ringly **continues to
-serve, absorbs the excess, alerts the operator, and emails the business** to say
-the rest of the period is on Ringly (F6.9b). Hitting the cap is good news for
-the business and reads that way.
+settlement, not during the period.
+
+**The cap notice is detected by the same worker, on open periods, and is made
+once-only by the email registry rather than by a new column** (F6.9b):
+
+```sql
+-- open periods whose accrued, unclamped usage has reached the clamp ceiling
+SELECT p.id, p.business_id
+  FROM billing_periods p
+  JOIN pricing_policy  pol ON pol.id = p.policy_id
+ WHERE p.usage_settled_at IS NULL
+   AND accrued_cents(p.id) >= pol.cap_cents - pol.fixed_fee_cents;
+```
+
+A `reason_key` of `cap_reached:{period_id}` is unique in `email_sends`
+(§2.4/010), and F7.5 makes that key "at most one reason per business per billing
+period" — so the second hourly tick that sees the same period raises no second
+email and no second operator alert. **A `cap_notified_at` column would be a
+second copy of a fact the email table already holds**, and §2.6.4's removed
+incident flag is the precedent for not adding it. On crossing, Ringly continues
+to serve, absorbs the excess, alerts the operator with cost-to-serve and margin
+(F7.13), and emails the business to say the rest of the period is on Ringly.
+Hitting the cap is good news for the business and reads that way.
+
+**The dashboard's live accrued figure uses the identical query** (F5.10, F6.13),
+outcome filter included, so the number a business watches during the period is
+the number it is charged at the end of it. A dashboard that counted unclassified
+calls and an invoice that did not would differ by a few pounds every month with
+nothing on the page to explain it.
 
 ### 2.10.4 When a charge fails
 
@@ -1700,45 +3246,80 @@ the business and reads that way.
 | ~58  | 48-hour final warning                                                                            |
 | 60   | Number released, data deleted, the period settled for what was served, debt recorded permanently |
 
+**Not every error is a failed charge, and treating them alike would suspend a
+business for Ringly's outage.** F6.11 says "a failed charge"; the design reads
+that as _the customer's money did not move_, never _Ringly could not reach
+Stripe_. The taxonomy is explicit because the wrong branch here is a
+customer-visible catastrophe with no other symptom:
+
+| Class                                                     | Ringly's response                                                                                                | Clocks  |
+| --------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- | ------- |
+| `card_error` — declined, expired, insufficient funds      | The invoice stays `open` and enters Smart Retries. `active → grace`, both deadlines, payment-failed email        | **Yes** |
+| `invoice.payment_action_required` (SCA)                   | Same as a decline — an off-session charge that needs the cardholder is a charge that did not happen              | **Yes** |
+| `charge.dispute.created` (chargeback, F6.17)              | Treated exactly as non-payment. The disputed amount becomes outstanding (§2.10.6)                                | **Yes** |
+| `api_connection_error`, `rate_limit_error`, Stripe 5xx    | **Nothing changes.** The claim is released and the next hourly tick retries. No email, no clock, no state change | No      |
+| `idempotency_error`, `invalid_request_error`              | A Ringly defect. Operator alert, claim left in place so it cannot loop, no state change                          | No      |
+| "Invoice is already paid" / `invoice_no_payment_required` | **Success.** Stripe's own automatic attempt won the race (§2.10.9); record and continue                          | No      |
+
+**A transient error must never be allowed to look like a decline**, because the
+two differ in who has to act and F1.12a-i is built entirely on that distinction:
+a declined card is the business's to fix and everything else is Ringly's.
+
 Three rules do the work, and they are the ones easiest to get wrong:
 
 **No new period ever opens while the business owes anything** (F6.11c). Not
-during grace, not during suspension. This is the single rule that stops a
+during grace, not during suspension. It lives in exactly one place — step 5 of
+§2.10.3's ordering, shared with §2.10.6 — because a rule written twice is a rule
+that will be true in one of the two places. This is the single rule that stops a
 failing account accumulating $100 fees for periods it never asked for and mostly
 did not receive. A business in trouble is only ever dealing with one period and
 one debt, and **the debt never grows while it is unpaid** — a business deciding
 on day 55 whether to come back owes exactly what it owed on day 8.
 
 **The period clock never stops, and a suspended business loses service days it
-has already paid for** (F6.11b). That is the intended outcome. Extending the
-period would leave a business that pays late no worse off than one that pays on
-time.
+has already paid for** (F6.11b). That is the intended outcome. `starts_on` and
+`ends_on` are never updated after insert — there is no code path that writes
+them, which is what makes I1 structural rather than a discipline. On the
+`grace → suspended` transition the open period, if any, is stamped
+`was_suspended_during = true` in the same transaction, because F5.9 requires the
+billing history row to say so or a period with low usage and a full $100 looks
+like a mistake.
 
 **What pauses is the meter, not the collection** (F6.11b-i). The outstanding
-invoice stays open and due, the payment provider keeps retrying the card, and
-Ringly keeps sending follow-ups — a suspended business is chased as hard as any
-other debtor. What it must never receive is a _new_ charge for a service it is
-not getting.
+invoice stays open and due, Stripe keeps retrying the card, and Ringly keeps
+sending follow-ups — a suspended business is chased as hard as any other debtor.
+What it must never receive is a _new_ charge for a service it is not getting.
+**The mechanism that makes both true at once is §2.10.8**, and it is R21.
 
 ### 2.10.5 Two failure cases that are not symmetric
 
-F6.11d works both through in full. The design must produce both.
+F6.11d works both through in full. The design must produce both — and, worth
+saying plainly, **it produces them without a branch**. Nothing in §2.10.3 or
+§2.10.6 asks which charge failed; the asymmetry comes entirely from whether a
+period happens to be open at the moment of failure, which is the state the
+`WHERE usage_settled_at IS NULL` predicate is already reading.
 
 **(a) The fixed fee fails**, on day 1 of period _N_. Period _N_ runs to its own
-end; usage in days 1–8 accrues to it and is billable; if the business is still
-suspended on day 30, _N_ settles on time for what was served and **no _N+1_
-opens**. Paying inside _N_ resumes it with nothing new charged; paying after _N_
+end; usage in days 1–8 accrues to it and is billable, because the call-end insert
+found an open period and stamped `period_id`. If the business is still suspended
+on day 30, _N_ settles on time for what was served and **no _N+1_ opens** — step
+5's predicate is false. Paying inside _N_ resumes it with nothing new charged,
+because the open-period insert's first `NOT EXISTS` is false. Paying after _N_
 has ended opens a fresh period that day with its own $100.
 
 **(b) The usage settlement fails**, on the last day of _N_. _N_ closes that same
-day and **no successor ever opens**. The grace week that follows runs with no
-period open, so **that usage is not billed** (F6.11c-ii) — there is nothing to
-bill it to, and inventing a period to hold it would manufacture exactly the $100
-charge F6.11c refuses. **The cost is still recorded**, because what Ringly
-absorbs, Ringly measures.
+day — `usage_settled_at` is stamped in T2 whether or not the invoice was paid,
+because a settlement is a computation Ringly performed and F6.16 says it never
+reopens. **No successor ever opens.** The grace week that follows runs with no
+period open, so the call-end insert stamps `period_id = NULL` and **that usage is
+not billed** (F6.11c-ii) — there is nothing to bill it to, and inventing a period
+to hold it would manufacture exactly the $100 charge F6.11c refuses. **The cost is
+still recorded** in `cost_records`, which do not belong to a period (§2.4/009),
+because what Ringly absorbs, Ringly measures.
 
 **Ceilings differ because the fee was collected in one case and not the other**:
-case (a) tops out at $500, case (b) at $400.
+case (a) tops out at $500, case (b) at $400 (F6c). Both fall out of
+`usage_cents = min(raw, cap − fee)` with nothing case-specific in it.
 
 ### 2.10.6 Coming back
 
@@ -1748,24 +3329,84 @@ being charged, continuously, by retries that never stopped. **The moment nothing
 is outstanding, service resumes that day**: the agent is rebound (and verified,
 §2.5.3) and the business is emailed.
 
-- **"Nothing outstanding" is the test, not "a payment arrived."** Clearing one
-  of two debts leaves it suspended, and the email says what remains.
+**"Outstanding" is a question about Stripe, answered against the invoices Ringly
+raised.** Ringly is the authority on what was asked for; Stripe is the authority
+on whether money moved (N10.7). The predicate is one function, and everything in
+this section calls it:
+
+```
+outstanding(business) =
+    Σ invoice.amount_remaining
+      for invoices in stripe.invoices.list({ customer, status: 'open' })
+      whose metadata.ringly_business_id matches
+  + Σ dispute.amount
+      for billing_events of kind 'dispute_opened' with no matching 'dispute_closed(won)'
+```
+
+- **A part payment cannot clear it**, because a Stripe invoice stays `open` with
+  `amount_remaining > 0` until it is paid in full. That behaviour is structural
+  rather than a check Ringly performs, which is why it cannot be forgotten.
+- **Chargebacks have to be added by hand**, because a dispute withdraws funds
+  without reopening the invoice — an implementation that asked Stripe only about
+  invoices would silently restore a business that had just charged back (F6.17,
+  R15).
+- **Clearing one of two debts leaves it suspended**, and the follow-up email says
+  what remains (F6.10b).
 - **It does not matter how it cleared** — an automatic retry, a new card, or the
-  business paying the invoice by hand.
-- **Where it lands** depends only on whether the period it was suspended in is
-  still running (F6.11b-iii): still running, it resumes inside it with nothing
-  new charged; already ended, a new period opens that day with its own $100.
-- **The debt clears first, the new period's fee is charged after.** A business
-  paying its way out on a day a new period opens is charged twice that day, and
-  both appear separately in its billing history.
-- **A decline on that new period is a fresh failure with a fresh clock**
-  (F6.11b-iv), not a continuation of the one just closed.
+  business paying the invoice by hand all produce the same `invoice.paid` event
+  and the same answer here.
+
+**`reevaluate(business)` is the whole of restoration, and it is the only thing
+that performs it.** The webhook handler calls it and the daily reconciliation
+worker calls it; **the webhook is not a different path, only a faster one**:
+
+```
+reevaluate(business):
+  0  if outstanding(business) > 0 → return                            read-only, no writes
+  1  T1: UPDATE businesses SET billing_status = 'active'
+           WHERE id = $1 AND billing_status IN ('grace','suspended')
+         RETURNING billing_status AS previous
+         DELETE FROM lifecycle_deadlines
+           WHERE business_id = $1 AND kind IN ('grace_expiry','nonpayment_deletion')
+      └─ no row returned → already active → return. This is the idempotency.
+  2  if previous = 'suspended': rebind the agent, read provider state back   external (§2.5.3)
+      └─ failure → alert (F7.13a); the business is active and unanswered — retried next tick
+  3  open a period, only if none is running and no cancellation stands  local (§2.10.2)
+      └─ no row returned → the original period is still running → nothing more is charged
+  4  raise and pay that period's fixed fee                             external (§2.10.9)
+      └─ a decline here is a fresh failure with a fresh clock (F6.11b-iv)
+  5  enqueue the service-restored email, naming the new period end date
+```
+
+**Steps 1 and 3–4 are F6.11b-iii's ordering as code: the debt clears, then the
+new period's fee is charged.** The order is not cosmetic — step 0 is the gate, so
+the new period cannot exist until the old debt is settled, and a business paying
+its way out on a day a new period opens is charged twice that day, both movements
+appearing separately in its billing history (F5.9).
+
+**Step 2 comes before step 4 deliberately.** Service resumes the same day
+(F6.10b) and the new fee is a consequence of resuming, not a condition of it; if
+that fee then declines, F6.11b-iv gives the business a full fresh grace during
+which it must be _served_. Charging first and rebinding second would leave a
+business unanswered inside a grace period it is entitled to.
+
+**Step 4's failure re-enters §2.10.4 from the top** — new deadlines, new
+7-day clock, new 60-day clock — because the previous ones were deleted in step 1.
+A business is never carried straight from suspension back into suspension without
+the full grace it is owed.
 
 **A business that has paid and is still not answered is the worst state in the
 system** (F6.10b-i), so recovery does not depend on a single message arriving.
-The daily reconciliation worker finds any suspended business that owes nothing
-and restores it. A lost webhook may cost such a business hours; it must never
-cost it days, and it must never cost it the account.
+**The daily reconciliation worker runs `reevaluate()` over every business in
+`grace` or `suspended`** — the same function, the same writes, the same
+idempotency. A lost webhook may cost such a business hours; it must never cost it
+days, and it must never cost it the account.
+
+**It also reconciles in the other direction**, which is the half a dropped
+webhook makes necessary and which no requirement would notice missing: for every
+business, any Stripe invoice carrying `metadata.ringly_business_id` that has no
+corresponding `billing_events` row is logged and raised, because that is what a
+crash between §2.10.11's T1 and T2 leaves behind and it is otherwise invisible.
 
 ### 2.10.7 Cancellation
 
@@ -1773,24 +3414,70 @@ cost it days, and it must never cost it the account.
 from the request until whichever comes first: 7 days later, or the end of the
 current period.
 
+**The cancellation is durable as a `lifecycle_deadlines` row of kind
+`cancellation_window_close`, and that row is the fact** — `requested_at` when the
+business sent the email, `due_at` at `min(requested_at + 7d, period end)`. Two
+requirements need the request instant and neither can use the row's absence:
+F9.2 judges a revocation **by when the business sent it, not when Ringly read
+it**, so `requested_at` is operator-supplied and may be earlier than the row's
+creation; and F6.12a needs it to identify which usage records the window covers.
+
 - **Service continues unchanged** through it. A business that changes its mind
   finds everything as it was.
 - **Usage stops being billed** from the request onward, though the service is
-  still given. Ringly absorbs it.
+  still given. Ringly absorbs it. The mechanism is `period_id = NULL` at call
+  end (§2.10.2), not a filter at settlement — so the free window is visible in
+  the data as it accrues rather than inferred at the end.
 - **Revoking erases the window retroactively** (F6.12a) and the usage served
-  during it **becomes billable after all**. The free window is a concession for
-  leaving, not a way to take a week of free service and stay. The business asks
-  by emailing the same address it cancelled through, and the operator marks it
-  revoked (§2.12). **A revocation is judged by when it was sent, not when it was
-  read** (F9.2): the window is short and the inbox is asynchronous, so the design
-  must accept one actioned after the window closed and unwind the settlement.
-- **When it closes**, the period settles early for usage up to the request,
-  clamped. **The $100 is not refunded, in whole or in part** (F6.12b).
+  during it **becomes billable after all**. This is the one write-back in the
+  money tables and it is bounded to an unsettled period, which is what keeps it
+  inside N10.4:
+
+  ```sql
+  UPDATE usage_records u
+     SET period_id = p.id
+    FROM billing_periods p
+   WHERE p.business_id = $1 AND p.usage_settled_at IS NULL
+     AND u.business_id = $1
+     AND u.period_id IS NULL
+     AND u.created_at >= $2;              -- the deadline row's requested_at
+  ```
+
+  **`period_id IS NULL` makes it idempotent** — a second run matches nothing —
+  and the `usage_settled_at IS NULL` join is what makes it legal: no settled
+  figure moves, so F6.16 holds. The guard is safe because a business behind on
+  payment never reaches `cancelling` at all (F6.11a), so the only null-period
+  rows a `cancelling` business has are the window's.
+
+- **A revocation actioned after the window closed must unwind the settlement**
+  (F9.2). The early settlement is not deleted — N10.4 forbids that — so the
+  unwind is: refund or void the settlement invoice by hand in Stripe, write the
+  reversing `billing_events` rows, reopen nothing, and let the period run to its
+  original `ends_on` under a fresh settlement claim. **It is deliberately the one
+  operator-assisted path in billing**, because it is rare, it is the only case
+  where a settled figure must change, and a code path for it would be the least
+  exercised and most dangerous in the system.
+- **When it closes**, the sweeper calls `settle(period, 'settled_early')` for
+  usage up to the request, clamped. **The $100 is not refunded, in whole or in
+  part** (F6.12b, F6.11e, I6). There is no proration arithmetic anywhere in the
+  design; Stripe's proration is left off (§2.17) so that none can arrive by
+  accident.
+- **If that settlement charge fails, it is recorded and let go** (F6.12f). No
+  grace clock, no suspension, no retry loop of Ringly's own — the amount is
+  written to the departure record as owed (F9.9). Service has already stopped and
+  there is nothing left to withhold. **This is the one decline that does not
+  enter §2.10.4**, and the branch is on the business's state (`dormant`), not on
+  which charge it was.
 - **Then 60 days dormant**, fully recoverable, number and every record retained
   (F6.12e). A business returning inside it resumes on its own number with its own
   history, on a new period charged that day.
 - **A business already behind on payment cannot cancel into free service**
-  (F6.11a). It is treated as non-paying and the suspension clock keeps running.
+  (F6.11a). The status guard `WHERE billing_status = 'active'` is what enforces
+  it: the operator's action still records the cancellation deadline row, so
+  F6.10's "never charged again" holds, but the row is written with
+  `due_at = requested_at` — a zero-length window — and the grace and deletion
+  clocks are untouched. It is treated as non-paying, and the suspension clock
+  keeps running.
 
 ### 2.10.8 The division with the payment provider
 
@@ -1809,6 +3496,22 @@ every message except the three Stripe already sends well** (F6.20).
 | Billing thresholds                          | Neither — deliberately not configured      |
 | Self-service portal                         | **Disabled** (§1.9)                        |
 
+**The account-level settings that make that table true**, all of which are
+configuration rather than code and all of which must be asserted by the
+integration's own start-up check, because a dashboard toggle nobody owns is a
+toggle that drifts:
+
+| Setting                                 | Value              | Because                                                      |
+| --------------------------------------- | ------------------ | ------------------------------------------------------------ |
+| Smart Retries                           | **On, 2 months**   | The longest window Stripe offers, matching F9.3's 60 days    |
+| End-of-dunning action                   | **Leave past due** | Teardown is Ringly's (F6.19); nothing Stripe does may end it |
+| "Email customers about failed payments" | **Off**            | F6.21, F6.11b-ii — Ringly writes every failure-path message  |
+| Receipts and finalised-invoice emails   | **On**             | F7.3a — the three things Stripe sends well                   |
+| Customer portal                         | **Off**            | §1.9 — cancellation is not self-serve (F9.2)                 |
+| Automatic tax                           | **On**             | F6.18                                                        |
+| Billing thresholds                      | **Not configured** | F6.20                                                        |
+| Proration                               | **Off**            | F6.11e, I6 — no path may produce a prorated figure           |
+
 **Stripe's dunning is switched off throughout, including during suspension**
 (F6.21, F6.11b-ii). Stripe's email can say a card was declined; it cannot say
 that service continues for seven days, that nothing has been deleted yet, or
@@ -1816,22 +3519,401 @@ what is destroyed in 48 hours. Those are Ringly's timelines and Ringly's data,
 and two differently-worded messages from what looks like one company is the
 failure this prevents.
 
-**The subscription's collection is not fully paused during suspension**, because
-that would stop the retries — and the retries are the entire recovery path
-(F6.11b-i).
+#### R21, and the decision that dissolves it
+
+**R21 is that suspension must stop new invoices while preserving retries on the
+open one, and that these are usually configured together.** The verified
+behaviour of the control they are usually configured through:
+
+| `pause_collection.behavior` | New invoices                       | The already-open invoice         |
+| --------------------------- | ---------------------------------- | -------------------------------- |
+| `void`                      | Voided                             | **Also voided — kills the debt** |
+| `mark_uncollectible`        | Marked uncollectible               | Continues to be retried          |
+| `keep_as_draft`             | Stay `draft`, `auto_advance=false` | **Continues to be retried**      |
+
+So `keep_as_draft` is the correct setting and `void` is the trap — but
+`keep_as_draft` leaves draft invoices **accumulating** for every cycle spent
+suspended, and resuming collection requires setting `auto_advance = true` on the
+drafts you want. **A restore that forgot to void them would raise exactly the
+charge F6.11b forbids**, silently, for a phone nobody answered.
+
+**Decision D1 — Ringly uses no Stripe `Subscription` object. Every charge is a
+standalone invoice raised by the settlement worker (§2.10.9).** Flagged clearly
+because it needs ratifying: F6.19's teardown step "cancel the subscription", the
+parenthetical in F6.11b-ii, and §2.13.4's step 2 all presume one exists.
+
+The reasoning is three-fold and the first is decisive:
+
+- **A Stripe subscription bills the recurring fee in advance and metered usage in
+  arrears on one invoice, at one moment.** F6 requires them separated. Getting
+  them apart needs a second subscription with an offset anchor, or a subscription
+  for the fee and manual invoices for the usage — which is the manual path plus a
+  subscription, not instead of one.
+- **It removes R21 rather than mitigating it.** With no recurring-invoice
+  generator there is nothing to pause: "no new invoice during suspension" becomes
+  "the worker's step 5 predicate is false", which is F6.11c, which is already
+  tested. The retries on the open invoice are untouched because nothing touches
+  them. **Both of R21's failure modes are silent; the best mitigation is a design
+  in which neither is reachable.**
+- **`billing_periods` is then the only clock.** With a subscription there are two
+  — Stripe's cycle anchor and Ringly's period — and F6.11b-iii's "a new period
+  opens on the day service is restored" becomes a `billing_cycle_anchor` reset
+  with `proration_behavior: 'none'`, on a system where the two clocks silently
+  disagreeing is a wrong charge.
+
+**What it costs:** Ringly must raise every invoice on time itself. That is work
+the hourly settlement worker already does for usage, driven by rows that have
+come due exactly as §2.2.2 describes, and a period that opens late is visible as
+a due row rather than as a missing charge.
+
+**Consequential edits if D1 is ratified:** §2.13.4's step 2 becomes an assertion
+that no subscription exists for the customer rather than a cancellation — kept as
+a step, because a subscription created by hand during support would otherwise
+survive teardown and bill a deleted business. F6.19's wording would want the same
+change. R21's mitigation text changes from "confirm the mechanism against the
+live API" to "assert that no subscription object is ever created"; **its
+acceptance test is unchanged and remains the criterion** — suspend, cross a
+would-be period boundary, restore, then assert that no new invoice was raised and
+that the original was retried throughout.
+
+**If D1 is not ratified**, the configuration is: one subscription per business at
+a 30-day interval carrying only the fixed fee; usage settled by standalone
+invoices exactly as designed; `pause_collection.behavior = 'keep_as_draft'` on
+suspension, **never `void` and never `mark_uncollectible`**; and every draft
+invoice created during the pause voided by the restore path before collection
+resumes. The behaviour is reachable; it is the third of those clauses that is
+easy to omit and impossible to notice.
 
 **A chargeback is treated exactly as non-payment** (F6.17): same grace, same
 suspension, same 60 days. No dispute workflow, no pausing of the deletion clock,
 contested or conceded by hand.
 
+### 2.10.9 The Stripe object lifecycle, end to end
+
+**Four objects and no others**: `Customer`, `SetupIntent`, `Invoice`,
+`InvoiceItem`. Every one Ringly creates carries
+`metadata.ringly_business_id`, and every invoice also carries
+`metadata.ringly_period_id` and `metadata.ringly_kind` — because reconciliation
+(§2.10.6) has to be able to ask Stripe "what have you got for this business" and
+get an answer that does not depend on Ringly's own rows being intact.
+
+**At card-add — a `SetupIntent`, and no charge** (F6.2, F6.3):
+
+```
+1  create-or-get Customer { email, name, address, metadata }        idempotency key: customer:{business_id}
+     └─ address is required, because Stripe Tax needs a US 5-digit postal code (F6.18)
+2  SetupIntent { customer, usage: 'off_session', payment_method_types: ['card'] }
+3  return client_secret to the browser; Stripe Elements confirms it
+4  on confirmation — from the browser's return AND from setup_intent.succeeded, whichever first —
+     Customer.invoice_settings.default_payment_method = si.payment_method
+5  store the customer id locally (§2.10.13). Nothing else about the card is stored.
+```
+
+**Card details never reach Ringly's servers or logs** (F6.3, a hard
+requirement): the confirmation happens browser-to-Stripe and Ringly sees a
+`SetupIntent` id and a `PaymentMethod` id. **The brand and last four digits are
+deliberately not stored either** — the dashboard reads them from Stripe when it
+renders, because a copy of them is a copy that goes stale when the card is
+replaced and there is no requirement that survives the network being down.
+
+**Step 4 is written to be reached twice** — the browser's return and the webhook
+race, and out-of-order delivery means either can win (§2.10.10). Setting a
+default payment method is idempotent, so the design does not choose between them.
+
+**At every charge — one invoice, built in a fixed order:**
+
+```
+1  invoice = stripe.invoices.create({
+       customer, collection_method: 'charge_automatically', auto_advance: true,
+       automatic_tax: { enabled: true },
+       pending_invoice_items_behavior: 'exclude',        ← the important one
+       description, metadata: { ringly_business_id, ringly_period_id, ringly_kind } },
+     { idempotencyKey: `${kind}:${period_id}:v1` })
+2  stripe.invoiceItems.create({ customer, invoice: invoice.id, currency: 'usd',
+       amount: <clamped integer cents>, description }, { idempotencyKey: ... })
+3  stripe.invoices.finalizeInvoice(invoice.id)
+4  stripe.invoices.pay(invoice.id, { off_session: true })
+```
+
+- **The invoice is created before the item, with `pending_invoice_items_behavior:
+'exclude'`.** Creating the item first and letting the invoice sweep up pending
+  items means any stray item on that customer lands on this invoice — and on a
+  product with a $500 clamp computed in advance, an invoice whose total is not
+  the number Ringly computed is the exact failure the clamp exists to prevent.
+  `exclude` is the API default; it is passed explicitly because a default is not a
+  decision anybody can see.
+- **Steps 3 and 4 are explicit because `auto_advance` alone is not prompt
+  enough.** Stripe finalises and attempts payment about **an hour** after the
+  invoice is created, and the Activate button must resolve now (F1.12a-i). So
+  Ringly finalises and pays synchronously.
+- **`auto_advance: true` is still set**, so that a decline in step 4 leaves the
+  invoice `open` and inside Smart Retries — which is the entire recovery path
+  (F6.11b-i) and the reason Ringly builds no retry loop of its own. Stripe's own
+  automatic attempt, an hour later, finds a paid invoice and does nothing; if it
+  should ever win the race, step 4 errors with "already paid", which §2.10.4
+  classifies as success.
+- **The idempotency key is derived from the period id, not generated.** Two
+  worker ticks racing produce the same key and Stripe returns the first result.
+  **This protects a same-run retry only** — Stripe prunes v1 keys after about 24
+  hours — so it is the cheap outer guard and not the real one. The real one is
+  §2.10.11's claim-then-record, plus:
+
+  ```sql
+  CREATE UNIQUE INDEX one_fee_invoice_per_period
+      ON billing_events (period_id) WHERE kind = 'fixed_fee_invoiced';
+  CREATE UNIQUE INDEX one_usage_invoice_per_period
+      ON billing_events (period_id) WHERE kind = 'usage_invoiced';
+  ```
+
+  **At most one invoice of each kind can ever be recorded against a period**, and
+  the constraint is in the database rather than in the worker for the same reason
+  §2.6.4's is: the worker is not the only thing that will ever run.
+
+**At activation** the sequence above runs inside §2.5.2's charge → record → bind
+order, which is what makes F1.12a-i's three rows independently reachable. The
+charge is attempted first precisely so that "the card was declined" is a clean
+state with nothing to unwind.
+
+**At teardown** (§2.13.4, F6.19): capture lifetime totals from balance
+transactions **before** anything is deleted, then void open invoices, detach the
+payment method, delete the Customer. Deleting the Customer destroys the balance
+transactions the totals come from, which is why step 1 is step 1.
+
+**The API version is pinned in code**, not inherited from the account's default.
+Stripe's recent versions have moved invoice fields (`invoice.subscription`,
+`invoice.payment_intent`) and a version that changes underneath a running
+integration changes what a webhook payload contains. The pin is asserted at
+start-up alongside the settings table in §2.10.8.
+
+### 2.10.10 The webhook endpoint
+
+`POST /api/webhooks/stripe`. It is on the webhook surface (§2.2.1): no session, a
+signature, and the service role — so every query names `business_id` explicitly
+(N1.2, §2.3.1).
+
+```
+1  raw = await req.text()                                   ← the raw body, never the parsed one
+2  event = stripe.webhooks.constructEvent(raw, sig, endpointSecret)
+     └─ throws → 400, no side effect, nothing logged from the body
+3  INSERT INTO provider_events (id, provider, type, created_at, received_at)
+     VALUES (event.id, 'stripe', event.type, to_timestamp(event.created), now())
+     ON CONFLICT (id) DO NOTHING RETURNING id
+     └─ no row → already handled → 200 immediately
+4  business_id ← event's object metadata.ringly_business_id
+                 (fall back to a lookup on the customer id; miss → 200 and alert)
+5  reevaluate(business_id)  — plus the per-type work in the table below
+6  return 200
+```
+
+**`stripe.webhooks.constructEvent` is the only signature check** (CLAUDE.md):
+never a hand-rolled HMAC comparison, and never on a body that has already been
+JSON-parsed and re-serialised, because the signature covers the exact bytes.
+Next.js will hand back a parsed body if asked for one, so the route reads
+`req.text()` and parses nothing itself. This is a different helper from Retell's
+(`Retell.verify`, §2.6.2) and the two are not interchangeable.
+
+**Step 3 is the idempotency, and it is a unique constraint rather than a check.**
+Stripe delivers at least once, and a redelivery after a timeout is the common
+case rather than an exotic one.
+
+**Step 5 is why out-of-order delivery is not a problem this design has.** Stripe
+does not guarantee ordering. **A webhook is a trigger to re-evaluate, never a
+fact to apply**: the handler does not read "paid" out of the event and mark
+something paid — it asks `outstanding()` what is true right now (§2.10.6) and
+acts on the answer. An `invoice.paid` overtaking an `invoice.payment_failed`
+therefore cannot re-suspend a business, because the later-processed failure event
+still leads to a live reading in which nothing is outstanding.
+
+**It is also why the reconciliation backstop is credible** (F6.10b-i): the daily
+worker and the webhook handler run the same function over the same state. The
+backstop is not a second implementation that might disagree with the first — it
+is the first one, on a timer.
+
+**Events subscribed, and what each adds beyond `reevaluate()`:**
+
+| Event                             | Additional work                                                        |
+| --------------------------------- | ---------------------------------------------------------------------- |
+| `invoice.paid`                    | `billing_events` row; stamp `fixed_fee_state`/`usage_*` observed state |
+| `invoice.payment_failed`          | `billing_events` row; enter §2.10.4 if the cause is a card error       |
+| `invoice.payment_action_required` | Treated as a decline (§2.10.4)                                         |
+| `invoice.finalized`               | Record `provider_ref` if T2 never landed (§2.10.11)                    |
+| `invoice.voided`                  | `billing_events` row — teardown and hand-corrections both produce it   |
+| `invoice.marked_uncollectible`    | `billing_events` row; should not occur, so it also alerts              |
+| `charge.refunded`                 | `billing_events` row. Goodwill only; no rule produces one (F5.9)       |
+| `charge.dispute.created`          | `billing_events` row; enters §2.10.4 exactly as a decline (F6.17)      |
+| `charge.dispute.closed`           | `billing_events` row; a win clears the synthesised debt (§2.10.6)      |
+| `setup_intent.succeeded`          | Set the customer's default payment method (§2.10.9, step 4)            |
+| `payment_method.detached`         | Alert: a business with no card on file cannot be charged next period   |
+
+**Nothing outside that list is subscribed to.** An endpoint receiving events it
+does not handle is an endpoint whose logs cannot be read for what went wrong.
+
+**Every state the handler writes, it writes as an observation.** `fixed_fee_state`
+and the settled figures on `billing_periods` are the last thing Stripe said, kept
+locally because N10 requires the money record to survive Stripe being
+unreachable — but **`outstanding()` is never answered from them**. A cached
+answer to "does this business owe anything" is the single most dangerous stale
+value in the product: too high and a paying business stays suspended, too low and
+a debtor is served for free.
+
+### 2.10.11 Transaction boundaries, and what a crash leaves
+
+**The rule is §2.13.4's rule, applied to charging: a database transaction may
+never contain an external call.** Every charge is therefore three parts, and the
+design's job is to make the middle one recoverable rather than to pretend it is
+atomic.
+
+| Part            | Contents                                                                     | Kind        |
+| --------------- | ---------------------------------------------------------------------------- | ----------- |
+| **T1 — claim**  | `settlement_claimed_at`, the computed figures, the deterministic key         | Transaction |
+| **X — charge**  | Invoice create + item + finalise + pay (§2.10.9)                             | External    |
+| **T2 — record** | `usage_settled_at`, `*_invoice_ref`, `billing_events`, status, deadline rows | Transaction |
+
+**T1 commits before X begins.** The alternative — hold the transaction open
+across the Stripe call — takes a row lock and a connection for the duration of
+somebody else's HTTP request, and a Stripe timeout then rolls back a charge that
+did happen.
+
+**What a crash leaves, per boundary:**
+
+| Crash point            | State left behind                                           | Who fixes it                                                          |
+| ---------------------- | ----------------------------------------------------------- | --------------------------------------------------------------------- |
+| Before T1              | Nothing                                                     | Next tick selects the period again                                    |
+| T1 committed, before X | A claimed, unsettled period; no invoice                     | Next tick: claim is stale past a threshold → re-drive X               |
+| During X               | Possibly an invoice at Stripe with no local row             | The idempotency key within 24h; **`metadata.ringly_period_id` after** |
+| X done, before T2      | Money may have moved with no local record — **the bad one** | Reconciliation (§2.10.6) searches Stripe by metadata and writes T2    |
+| After T2               | Correct                                                     | —                                                                     |
+
+**The row that matters is the fourth**, because it is the only one where the
+business's money and Ringly's record disagree, and 2.1.3 says the record is the
+strictest thing in the system. Three things make it recoverable and they are
+listed in the order they are reached:
+
+1. **The idempotency key is deterministic**, so a retry inside 24 hours returns
+   the same invoice rather than raising a second.
+2. **The metadata is deterministic**, so past 24 hours the invoice can still be
+   found: `stripe.invoices.search({ query: "metadata['ringly_period_id']:'…'" })`.
+   This is why every object created in §2.10.9 carries it — not for reporting,
+   for this.
+3. **The partial unique indexes in §2.10.9** make a second `billing_events` row
+   for the same period and kind impossible, so a recovery that runs twice cannot
+   double-record what it could not double-charge.
+
+**T2 is one transaction and it must be**, for the same reason §2.13.4's step 8
+is: the period's settled figures, the ledger row and the state change describe
+one event, and a business that is settled but has no ledger row is a business
+whose billing history disagrees with its invoice.
+
+**Nothing in the money tables is deleted or updated in place once settled**
+(N10.4, 2.1.3). Corrections are new `billing_events` rows. The two writes to
+already-existing money rows in the whole design are `usage_settled_at` and the
+figures beside it (writing a row that was open), and §2.10.7's revoke back-fill
+(bounded to an unsettled period). Both are stated here so that a third one is
+visible as a change of rule rather than as a patch.
+
+### 2.10.12 Money is integer cents
+
+**Every amount in the design is an integer number of cents, in a column named
+`*_cents`, and no float touches any of it.** Not as a style preference: a
+binary float cannot represent a hundredth exactly, and the one place the error
+shows is the place a clamp compares two amounts and picks the wrong one.
+
+- **Columns are `bigint`.** `integer` would hold every figure this product can
+  produce — the cap is 50,000 cents — but lifetime revenue on the departure
+  record accumulates, and a money column that has to be widened later is a
+  migration on the one table N10.6 forbids rewriting.
+- **`numeric` is not used either.** It is exact, but it admits fractional cents,
+  and a fractional cent that reaches Stripe is a rounding decision made by
+  whichever layer truncates first.
+- **There is exactly one division in the whole of billing**, and it is integer:
+  `minutes = (billable_seconds + 59) / 60`. That is F6.7a's "rounded up to a
+  whole minute **once**, at period close" written so that it cannot be done
+  twice — there is no per-call rounding anywhere to sum up.
+- **Comparisons are integer comparisons.** `min`/`max` in the clamp,
+  `amount_remaining > 0` in `outstanding()`, `>= cap_cents − fixed_fee_cents` in
+  the cap notice.
+- **Stripe agrees**, which removes the last conversion: its amounts are integer
+  minor units, so `usage_charge_cents` is passed through unchanged and no
+  `× 100` or `÷ 100` exists on any path that decides anything.
+- **Division by 100 happens once, in the renderer**, for display, and never
+  upstream of a comparison or a stored value.
+
+### 2.10.13 What §2.4 must gain
+
+Collected here rather than scattered, so the migration is reviewable as one
+thing. **007 is Phase 4's migration** (§2.16) and none of this has run.
+
+**Two tables 007 does not currently declare:**
+
+```
+billing_customers(business_id pk fk, provider, provider_customer_id unique,
+                  default_payment_method_ref null, created_at)
+
+provider_events(id pk, provider, type, created_at, received_at)
+```
+
+- **`billing_customers` is the missing home for the Stripe customer id.**
+  §2.4/007 stores invoice refs on `billing_periods` but nothing holds the
+  customer, and without it a business cannot be charged twice. It is a separate
+  table rather than columns on `businesses` because 005 is the foundations
+  migration and billing is 007 — one concern per file — and because `provider`
+  earns its column here for the same reason it does on
+  `scheduling_credentials` (§2.4/006).
+- **`provider_events` is a delivery log and is deliberately _not_ a money
+  table.** N10.1 names the money tables and this is not one: it holds no amount,
+  and losing it costs at most one redelivered webhook being processed twice,
+  which `reevaluate()` is already safe against. Saying so explicitly keeps
+  N10.1's list definite rather than growing by association.
+
+**One column 008 needs:** `lifecycle_deadlines.requested_at timestamptz null` —
+operator-supplied, for `cancellation_window_close` only. F9.2 judges a
+revocation by when the business sent it and F6.12a needs the instant to identify
+the window's usage records; the row's own creation time is when Ringly read the
+email, which is the wrong instant and would cost a business its account to
+Ringly's inbox latency.
+
+**Columns 007 needs on `billing_periods`:** `settlement_claimed_at timestamptz
+null` (§2.10.3), and value domains for two columns it already declares —
+`fixed_fee_state ∈ ('pending','invoiced','paid','failed','void')` and
+`status ∈ ('open','settled','settled_early','settled_at_deletion')`, the latter
+recording which of F6.9a's three moments closed the period.
+
+**`billing_events.kind` is a closed set**, so that the append-only ledger can be
+summed without a `LIKE`: `fixed_fee_invoiced`, `fixed_fee_paid`,
+`fixed_fee_failed`, `usage_invoiced`, `usage_paid`, `usage_failed`,
+`invoice_voided`, `refunded`, `dispute_opened`, `dispute_closed`.
+
+**Constraints and indexes, gathered:**
+
+```sql
+CREATE UNIQUE INDEX one_open_period_per_business
+    ON billing_periods (business_id) WHERE usage_settled_at IS NULL;
+
+ALTER TABLE billing_periods ADD CONSTRAINT periods_never_overlap
+  EXCLUDE USING gist (business_id WITH =, daterange(starts_on, ends_on, '[]') WITH &&);
+
+CREATE UNIQUE INDEX one_fee_invoice_per_period
+    ON billing_events (period_id) WHERE kind = 'fixed_fee_invoiced';
+CREATE UNIQUE INDEX one_usage_invoice_per_period
+    ON billing_events (period_id) WHERE kind = 'usage_invoiced';
+
+CREATE UNIQUE INDEX one_usage_record_per_call ON usage_records (call_id);
+```
+
+`usage_records (business_id, period_id)` is already in §2.3.3 and is what makes
+the settlement sum and the dashboard's live accrued figure bounded by the
+tenant's own size (N2.2).
+
 **Testing this section**
 
 _Observable_ — what a business is charged and when; what it owes; the billing
 history rows and their status; whether the number answers; what arrives in the
-inbox; what the operator queue shows; the departure record.
+inbox; what the operator queue shows; the departure record; what exists in the
+payment provider's own records for that business.
 
 _Internal_ — `billing_status` and every other state name, the settlement
-worker, Stripe object ids, subscription configuration, invoice mechanics.
+worker, Stripe object ids, invoice mechanics, idempotency and metadata keys,
+webhook routes and event names, table and column names, the constraints above.
 
 _Behaviours owed to the catalogue_
 
@@ -1844,6 +3926,7 @@ _Behaviours owed to the catalogue_
 - A period is exactly 30 days and is never extended, by anything.
 - $470 of usage in a period produces a $500 charge and $70 absorbed.
 - Crossing the cap keeps the business served, emails it, and alerts the operator.
+- Crossing the cap twice in one period emails once.
 - A failed charge starts one 7-day grace, and a second decline does not start a
   second clock.
 - Grace usage is billable when a period is open, and free when the failed charge
@@ -1858,129 +3941,670 @@ _Behaviours owed to the catalogue_
 - A dropped payment webhook is caught by reconciliation and the business is
   restored.
 - The same webhook delivered twice restores once.
+- A payment-succeeded notification arriving before the failure it followed does
+  not suspend the business.
 - A part payment does not clear the debt or restore service.
+- Two settlement runs over the same due period produce one invoice and one
+  ledger row.
+- A settlement interrupted after the charge and before the record is completed by
+  reconciliation, and the business is not charged twice.
+- The payment provider being unreachable delays a charge and starts no grace
+  clock; a declined card starts one.
+- An unclassified call at the end of a period is not billed, and is never billed
+  later.
+- The amount the dashboard shows accruing is the amount the period is charged.
 - Cancelling continues service, stops billing usage, and settles early when the
   window closes.
 - Revoking inside the window makes the free usage billable again.
+- Revoking twice makes it billable once.
 - A revocation sent inside the window but actioned after it closed is honoured,
   and the early settlement is unwound.
+- A departing business whose settlement charge fails is recorded as owing it and
+  is neither suspended nor chased.
 - The $100 is never refunded or prorated on any path.
-- A business behind on payment cannot cancel into free service.
-- A chargeback follows the non-payment path exactly.
+- A business behind on payment cannot cancel into free service, and its clocks
+  keep running.
+- A cancelled business that later clears its debt is not charged for a new
+  period.
+- A chargeback follows the non-payment path exactly, and a chargeback won clears
+  the debt.
+- A period during which service was suspended says so in its billing-history row.
 - Policy is data: changing the fee, the cap, the rate or the billable outcome set
   affects the next period and no settled one.
-
----
+- No unsigned or wrongly-signed payment webhook has any effect.
 
 ## 2.11 Email
 
 The only outbound channel in the product, and it goes to businesses and to the
-operator — never to a caller (2.1.2).
+operator — never to a caller (2.1.2). Nothing here is on a caller's clock: every
+send is queued by something else and drained by the minutely dispatcher (§2.2.2).
 
-### 2.11.1 One registry, and nothing outside it is sent
+**The section is short on prose about tone and long about two mechanisms**,
+because those are the parts an implementation gets wrong: a registry that is a
+_type_ rather than a document, and a claim/send/record loop whose only failure is
+a duplicate.
 
-`src/emails/registry.ts` declares every email Ringly can send (F7.2). **If a
-message is not in that table, it is not sent.** The table fixes, per email:
-audience, sending identity, subject, transactional status, and how its
-idempotency key is built.
+### 2.11.1 The registry is a type, not a list of documentation
 
-**Templates are React Email components versioned in the repository** (F7.3),
+`src/emails/registry.ts` declares every email Ringly can send (F7.2). It is a
+value the compiler checks against a mapped type over the closed set of kinds, so
+"the registry is complete" and "the registry is the only thing that can be sent"
+are both compile-time facts rather than review discipline.
+
+```ts
+// src/emails/kinds.ts — the closed set (F7.2)
+export type BusinessEmailKind =
+  | "email_verification"
+  | "welcome_now_live"
+  | "upcoming_charge"
+  | "payment_failed"
+  | "payment_follow_up"
+  | "suspension_notice"
+  | "service_restored"
+  | "deletion_warning"
+  | "cap_reached"
+  | "cancellation_confirmed"
+  | "cancellation_countdown"
+  | "closing_statement"
+  | "calendar_access_failing"
+  | "test_calls_exhausted"
+  | "account_deleted"
+  | "stats_digest";
+
+export type OperatorEmailKind =
+  | "operator_cap_reached"
+  | "operator_payment_failed"
+  | "operator_calendar_unreachable"
+  | "operator_activation_stuck"
+  | "operator_unactivated_expiring"
+  | "operator_number_release_failed"
+  | "operator_business_deleted";
+
+export type EmailKind = BusinessEmailKind | OperatorEmailKind;
+export type SendingIdentity = "billing" | "service" | "reports" | "operator";
+```
+
+Sixteen business kinds are exactly the rows of F7's business-facing table, and
+seven operator kinds are exactly F7.13's set — **no more, and the sets are closed
+on purpose**: F8.6 says the operator alerts are "the set in F7.13 and no other",
+so adding an eighth is a requirement change, not an implementation choice.
+`recurring_change` is absent because recurrence left the product (§2.15.7).
+
+**Each kind declares what its template is given, and nothing wider.** A template
+that receives a `Business` row would silently start depending on the tenant
+existing at render time, which §2.13.4 forbids.
+
+```ts
+// src/emails/props.ts
+export type EmailProps = {
+  calendar_access_failing: {
+    businessId: BusinessId;
+    incidentId: IncidentId;
+    openedAt: Instant;
+    callsRefused: number;
+  };
+  stats_digest: {
+    businessId: BusinessId;
+    periodId: PeriodId;
+    periodEndsOn: Day;
+    calls: number;
+    appointmentsBooked: number;
+  };
+  deletion_warning: {
+    businessId: BusinessId;
+    deadlineId: DeadlineId;
+    dueAt: Instant;
+    deletesOn: Day;
+    itemised: readonly string[];
+  };
+  // …one member per EmailKind, and the mapped type below requires all of them
+};
+```
+
+**The entry type is a discriminated union on audience**, so the combinations that
+must not exist cannot be written:
+
+```ts
+// src/emails/registry.ts
+type Suppression =
+  | { readonly transactional: true }
+  | {
+      readonly transactional: false;
+      readonly suppressedWhen: (p: {
+        businessId: BusinessId;
+      }) => Promise<boolean>;
+    };
+
+type Common<K extends EmailKind, P> = {
+  readonly kind: K;
+  readonly subject: (p: P) => string; // ≤ 60 chars (F7.10)
+  readonly template: (p: P) => ReactElement; // src/emails/templates/<kind>.tsx (F7.3)
+  readonly reason: (p: P) => ReasonKey; // §2.11.4
+};
+
+type BusinessEntry<K extends BusinessEmailKind, P> = Common<K, P> &
+  Suppression & {
+    readonly audience: "business";
+    readonly identity: Exclude<SendingIdentity, "operator">;
+    readonly recipient: (p: P) => BusinessId; // → businesses.contact_email (F7.1)
+  };
+
+type OperatorEntry<K extends OperatorEmailKind, P> = Common<K, P> & {
+  readonly audience: "operator";
+  readonly identity: "operator"; // never one of the other three
+  readonly transactional: true; // F7.4 gives the operator no opt-out
+};
+
+type Entry<K extends EmailKind> = K extends BusinessEmailKind
+  ? BusinessEntry<K, EmailProps[K]>
+  : K extends OperatorEmailKind
+    ? OperatorEntry<K, EmailProps[K]>
+    : never;
+
+export const REGISTRY: { readonly [K in EmailKind]: Entry<K> } = {
+  /* … */
+} as const;
+```
+
+**Three impossible states fall out of that shape, and each is a bug someone would
+otherwise have written**: a business email sent from the operator identity; an
+operator alert a business could opt out of; and a non-transactional email with no
+predicate saying who opted out — `transactional: false` cannot compile without
+`suppressedWhen`, so "unsubscribable" and "we check the unsubscribe" are one
+decision instead of two (F7.4).
+
+**Two real entries**, one of each shape:
+
+```ts
+calendar_access_failing: {
+  kind: "calendar_access_failing",
+  audience: "business",
+  identity: "service",
+  transactional: true,                                    // F7.4
+  recipient: (p) => p.businessId,
+  subject: () => "Ringly can't reach your calendar",      // 34 chars (F7.10)
+  template: CalendarAccessFailing,
+  reason: (p) => perIncident("calendar_access_failing", p.incidentId),   // F2.7
+},
+
+stats_digest: {
+  kind: "stats_digest",
+  audience: "business",
+  identity: "reports",
+  transactional: false,                                   // the only one (F7.4)
+  suppressedWhen: ({ businessId }) => digestOptedOut(businessId),
+  recipient: (p) => p.businessId,
+  subject: (p) => `Your Ringly summary to ${formatDay(p.periodEndsOn)}`,
+  template: StatsDigest,
+  reason: (p) => perPeriod("stats_digest", p.periodId),
+},
+```
+
+**Templates are React Email components versioned in this repository** (F7.3),
 reviewed in pull requests like any other code. No hosted template editor and no
 copy living in a vendor UI, because a change to what a customer reads deserves
 the same scrutiny as a change to what the code does.
 
 **Ringly does not send the success path** (F7.3a). Receipts, invoices and
-payment-succeeded notices are Stripe's. The split is by who knows the
-consequence, not by who could technically send it.
+payment-succeeded notices are Stripe's, and their absence from `EmailKind` is how
+that is enforced rather than remembered — there is no `receipt` kind to call.
 
-### 2.11.2 Two different questions, two different keys
+### 2.11.2 Enforcing "if it is not in the registry it is not sent"
 
-**How many times is there a reason to send?** — `reason_key`, unique, in F7.5's
-three shapes:
+**Three layers, because each closes a different hole, and the interesting one is
+the third.**
 
-- **Per period** — at most one reason per business per billing period: the
-  digest, the upcoming-charge notice, the cap notice.
-- **Per incident** — at most one reason per continuous failure, however many
-  calls it affects: the calendar outage. An outage must never produce one email
-  per lost customer (§2.6.4).
-- **Per event** — one reason per discrete occurrence: a deletion warning.
+| Layer                                                                | Catches                                                   | Why the others do not                                                            |
+| -------------------------------------------------------------------- | --------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| **Type** — `enqueue<K extends EmailKind>(kind: K, p: EmailProps[K])` | An unknown kind, or a known kind with the wrong props     | Compile-time only; says nothing about code that skips `enqueue`                  |
+| **Runtime** — `CHECK (kind IN (…))` on `email_sends` (010)           | A row inserted by a script, a migration, or `/ops`        | The type is erased at runtime and the database is reachable by more than the app |
+| **Lint** — the vendor SDK is importable from one file only           | Somebody calling the provider directly and never queueing | Neither of the above sees a send that never becomes a row                        |
 
-**How many times is that message delivered?** — **at least once**, and possibly
-twice (§2.4/010). The two are independent, and conflating them is what produced
-the earlier at-most-once design: deduplicating the _reason_ is correct and
-cheap, deduplicating the _delivery_ costs the message when a worker dies at the
-wrong moment.
+**The type-level constraint is the front door.** The sending module exports
+exactly one function, and it takes a kind and that kind's props — never a subject
+and never a body:
 
-**The asymmetry is the whole argument.** A duplicate digest is noise. A duplicate
-payment-failure notice is mildly confusing. A deletion warning that never arrives
-breaks I4, and nobody finds out until the data is gone.
+```ts
+export async function enqueue<K extends EmailKind>(
+  kind: K,
+  props: EmailProps[K],
+): Promise<void>;
+```
 
-### 2.11.3 Four sending identities
+There is no overload accepting free-form content, so composing an unregistered
+message is not something the API can express.
+
+**The runtime guard is the database, not an `if`.** `email_sends.kind` carries a
+`CHECK` against the literal list, added by migration 010 alongside the table
+(§2.4/010). An application-level check would be a fourth copy of the same list
+that could drift; a constraint is one the database enforces against every writer,
+including a hand-run `INSERT` during an incident.
+
+**The lint rule is the one that actually closes it.** Neither of the first two
+stops an engineer importing the delivery SDK into a route handler and calling
+`send()` on it. So `no-restricted-imports` forbids the vendor package everywhere
+except `src/emails/dispatcher.ts`, and that file is the only place a message
+reaches the network. **A type system constrains what goes through the door; the
+lint rule is what stops somebody building a second door.**
+
+### 2.11.3 Four sending identities, and how a template is bound to one
 
 Billing, service, reports and operator alerts each send from their own address
 (F7.11), so a digest nobody opens can never harm the reputation of the address
 that tells someone their payment failed.
 
-### 2.11.4 Format
+**Separation has to be at the subdomain, not just the local part.** Four `From`
+addresses on one sending domain share one reputation and one DKIM key, which
+would make F7.11 decorative — so the four identities are four sending
+subdomains, each with its own DKIM key and its own warm-up. _(Decision — F7.11
+requires separate identities and does not say at what level; §2.11.10.)_
+
+| Identity   | Carries                                                              | What its reputation must survive                      |
+| ---------- | -------------------------------------------------------------------- | ----------------------------------------------------- |
+| `billing`  | Upcoming charge, payment failure and follow-ups, suspension, closing | Nothing — this is the stream that must reach an inbox |
+| `service`  | Verification, welcome, calendar failure, deletion warning, deletion  | Nothing — I4 depends on it                            |
+| `reports`  | The stats digest, and only the digest                                | Being ignored, marked as spam, and unsubscribed from  |
+| `operator` | The seven alerts in F7.13, to Ringly's own address (F7.1)            | Volume, and being filtered by one recipient           |
+
+**Binding is by data, in one place.** The registry entry names an identity;
+`src/emails/identities.ts` maps each identity to `{ from, replyTo, domain }` read
+from configuration; the dispatcher takes no from-address argument at all. So the
+envelope address for a stream is written once, and a template cannot choose its
+own.
+
+**Which identity and which reason shape each kind uses**, in full — this is the
+table an implementer copies:
+
+| Kind                             | Identity   | Shape      | Anchor the key is built from                                        |
+| -------------------------------- | ---------- | ---------- | ------------------------------------------------------------------- |
+| `email_verification`             | `service`  | per event  | `business_id` + digest of the normalised address                    |
+| `welcome_now_live`               | `service`  | per event  | `business_id` — `activated_at` is set once (F1.12a)                 |
+| `upcoming_charge`                | `billing`  | per period | `billing_periods.id`                                                |
+| `payment_failed`                 | `billing`  | per event  | the `grace_expiry` deadline id — created only at the first decline  |
+| `payment_follow_up`              | `billing`  | per event  | the `nonpayment_deletion` deadline id + the schedule offset in days |
+| `suspension_notice`              | `billing`  | per event  | the `grace_expiry` deadline id                                      |
+| `service_restored`               | `billing`  | per event  | the `billing_events.id` of the payment that cleared the debt        |
+| `deletion_warning`               | `service`  | per event  | the deadline id **+ its `due_at`**                                  |
+| `cap_reached`                    | `billing`  | per period | `billing_periods.id`                                                |
+| `cancellation_confirmed`         | `service`  | per event  | the `cancellation_window_close` deadline id                         |
+| `cancellation_countdown`         | `service`  | per event  | the same deadline id + the schedule offset in days                  |
+| `closing_statement`              | `billing`  | per event  | the `cancellation_window_close` deadline id                         |
+| `calendar_access_failing`        | `service`  | incident   | `calendar_incidents.id`                                             |
+| `test_calls_exhausted`           | `service`  | per event  | the `calls.id` of the fifth call                                    |
+| `account_deleted`                | `billing`  | per event  | `business_id`                                                       |
+| `stats_digest`                   | `reports`  | per period | `billing_periods.id`                                                |
+| `operator_cap_reached`           | `operator` | per period | `billing_periods.id`                                                |
+| `operator_payment_failed`        | `operator` | per event  | the `grace_expiry` deadline id                                      |
+| `operator_calendar_unreachable`  | `operator` | incident   | `calendar_incidents.id`                                             |
+| `operator_activation_stuck`      | `operator` | per event  | the `calls.id` of the fifth call                                    |
+| `operator_unactivated_expiring`  | `operator` | per event  | the `unactivated_deletion` deadline id + its `due_at`               |
+| `operator_number_release_failed` | `operator` | per event  | `business_id` + the reason the unbind was attempted                 |
+| `operator_business_deleted`      | `operator` | per event  | `business_id`                                                       |
+
+**The business notice and the operator alert for the same fact share an anchor
+and differ in kind**, which is exactly why the kind is a component of every key
+(§2.11.4): one calendar outage produces one email to the business and one to the
+operator, and the unique index does not collapse them.
+
+### 2.11.4 Reason keys, constructed so two workers agree
+
+`reason_key` is unique (§2.4/010) and answers **"is there a reason to send this at
+all"** — a different question from how many times a send is attempted, and
+conflating them is what produced the earlier at-most-once design. Deduplicating
+the _reason_ is correct and cheap; deduplicating the _delivery_ costs the message
+when a worker dies at the wrong moment.
+
+```ts
+// src/emails/reason.ts
+export type ReasonKey = string & { readonly __reasonKey: unique symbol };
+
+const key = (...parts: readonly string[]) => parts.join(":") as ReasonKey;
+
+export const perPeriod = (k: EmailKind, period: PeriodId) =>
+  key(k, "period", period);
+export const perIncident = (k: EmailKind, incident: IncidentId) =>
+  key(k, "incident", incident);
+export const perEvent = (k: EmailKind, ...anchor: readonly string[]) =>
+  key(k, "event", ...anchor);
+```
+
+**The one rule that makes independent computation agree: every component is a
+primary key or an immutable stored column — never a clock, never a formatted
+date, never `now()`.** Two dispatchers, two sweeper runs or a retried timer all
+read the same `billing_periods.id`, so they compute the same string without
+coordinating. A key containing a rounded timestamp would have two workers either
+side of a minute boundary disagree, and the business would receive the digest
+twice for one reason.
+
+**Per period** — the digest, the upcoming-charge notice and the cap notice, keyed
+on `billing_periods.id`. The period id rather than a month, because a suspended
+business's periods do not line up with calendar months (F6.11b) and a month
+string would merge two of them.
+
+**Per incident** — the calendar outage, keyed on `calendar_incidents.id`. The id
+comes from the `RETURNING id` of §2.6.4's `ON CONFLICT DO NOTHING` insert, so only
+the call that _opened_ the incident has one to key on. **The partial unique index
+does the arbitration and the reason key is the second belt**: forty simultaneous
+failures produce one incident row, hence one email, and if a retry of that same
+handler ran twice the reason key would still collapse it (F2.7).
+
+**Per event** — one reason per discrete occurrence, and the anchor is whichever
+row already records that occurrence (§2.11.3's table). Three of these are worth
+spelling out because the obvious anchor is wrong:
+
+- **`deletion_warning` includes the deadline's `due_at`, not just its id.**
+  §2.4/008 requires that a paused clock cannot warn and an extended clock re-warns
+  at the right time. Keying on the deadline id alone would suppress the second
+  warning after a pause and resume — a business would be deleted having been
+  warned about a date that moved. `due_at` is a stored column both workers read,
+  so the key changes exactly when the thing being warned about changes.
+- **`test_calls_exhausted` is keyed on the fifth `calls.id`**, not on the
+  business. The operator can reset the allowance (F9.1c) and the business can
+  exhaust it again; keyed on `business_id` the second exhaustion would be silent
+  and the number would stop answering with nobody told (F1.13a).
+- **`operator_number_release_failed` is keyed on the business plus the reason for
+  the unbind.** The same business can fail to release at the test-call limit and
+  again at suspension, and those are two different alerts. Repeated failures of
+  the _same_ attempt are one reason to alert; the persistent surface is the
+  "Number not released" row in the operator's queue (F8.12), not a second email.
+
+**The enqueue is the same shape as §2.6.4's incident insert, and deliberately
+so** — one statement, no read-then-write, no application lock:
+
+```sql
+INSERT INTO email_sends (reason_key, business_id, kind, to_address, identity,
+                         subject, body, provider_idempotency_key, queued_at, attempts)
+VALUES ($1, $2, $3, $4, $5, $6, $7, gen_random_uuid(), now(), 0)
+ON CONFLICT (reason_key) DO NOTHING
+RETURNING id;
+```
+
+Nothing returned means another worker already had this reason, and the caller
+does nothing — no error, no log line worth reading. **Where the enqueue follows a
+database write, it is in that write's transaction**: the sweeper stamps
+`warned_at` on the deadline and inserts the email row together, so a crash between
+them is impossible and re-running the sweeper is a no-op twice over. The one
+exception is the call path, where the enqueue happens after the handler has
+answered the agent (N3.2, §2.6.4).
+
+**`provider_idempotency_key` is a fresh UUID, not the reason key.** It is sent
+with the message so the provider collapses a redelivery before it reaches an
+inbox (F7.5), and it is random because the reason key contains internal row ids
+that have no business appearing in a header at a third party.
+
+### 2.11.5 Rendering happens at enqueue, not at send
+
+`subject` and `body` are rendered when the row is written (§2.4/010). **Teardown
+is the reason, and it is not a corner case**: §2.13.4 enqueues the deletion email
+at step 6 and deletes the business's rows at step 8, so a template that resolved
+the tenant at send time would fail on the one path where the message matters most.
+`to_address` is stored for the same reason — the contact address lives on the
+tenant row and `departed_businesses` deliberately keeps none (F9.9).
+
+Two consequences worth stating because they are properties, not accidents:
+
+- **A template change never rewrites a queued message.** What a business receives
+  is what was true when the event happened, not what the deploy at 3am says.
+- **The dispatcher needs no tenant read at all.** It selects a row and posts it;
+  it never touches `businesses`, never resolves a service or a price, and
+  therefore cannot be broken by tenant state changing under it. That is also what
+  keeps it cheap enough to run minutely at N2.1's scale.
+
+The cost is that a figure baked into a body can go stale between enqueue and
+delivery. Acceptable, because F7.9 requires absolute dates and stated amounts
+precisely so a delayed message still reads correctly.
+
+### 2.11.6 The dispatcher: claim, send, record
+
+The email dispatcher (§2.2.2) is an idempotent HTTP endpoint invoked minutely by
+an external timer (N8.3). It may be invoked twice concurrently, and a deploy may
+overlap a run, so **the claim has to be safe against a second worker rather than
+assume there is not one**.
+
+```sql
+WITH due AS (
+  SELECT id
+    FROM email_sends
+   WHERE sent_at IS NULL
+     AND attempts < 8
+     AND (claimed_at IS NULL
+          OR claimed_at < now() - interval '1 minute'
+                                  * least(power(3, attempts)::int, 240))
+   ORDER BY queued_at
+   LIMIT 50
+   FOR UPDATE SKIP LOCKED
+)
+UPDATE email_sends e
+   SET claimed_at = now(),
+       attempts   = e.attempts + 1
+  FROM due
+ WHERE e.id = due.id
+RETURNING e.id, e.kind, e.to_address, e.identity, e.subject, e.body,
+          e.provider_idempotency_key;
+```
+
+**`FOR UPDATE SKIP LOCKED` is what makes two workers safe**: the second worker's
+`SELECT` steps over the rows the first has locked and claims the next fifty
+instead, so both make progress and neither waits. Without `SKIP LOCKED` the second
+worker blocks on the first's transaction for as long as the batch takes, which at
+a minutely cadence means the runs pile up behind each other.
+
+**`attempts` is incremented at claim, not at outcome, and that is the load-bearing
+choice.** A worker that dies mid-send has already spent its attempt, so a message
+whose content reliably kills the process is retried seven more times and stops —
+not for ever. Incrementing on the recorded outcome would mean a crash advances
+nothing and the row is claimed again immediately, in a loop, at one attempt per
+minute until somebody notices.
+
+**`claimed_at` doubles as "when the last attempt started"**, which is why no
+`next_attempt_at` column is needed: the backoff is a function of `attempts`
+computed in the predicate, and §2.4/010's columns are sufficient as declared.
+
+The run, with what is synchronous marked:
+
+```
+1. claim a batch                        one statement, committed         ≤ 50 rows
+2. for each claimed row, ≤ 8 at a time:
+     3. POST to the delivery provider   network, AbortSignal.timeout(10_000)   ← the only await
+     4. record the outcome              one statement, committed
+5. return 200 with { claimed, sent, deferred, dead }
+```
+
+Recording, in the three cases:
+
+```sql
+-- sent
+UPDATE email_sends SET sent_at = now(), last_error = NULL WHERE id = $1;
+-- transient failure: attempts was already advanced at claim, so this only annotates
+UPDATE email_sends SET last_error = $2 WHERE id = $1;
+-- permanent failure: jump to the ceiling so the claim predicate excludes it
+UPDATE email_sends SET attempts = 8, last_error = $2 WHERE id = $1;
+```
+
+**The duplicate that at-least-once accepts is produced between step 3 and step 4,
+and nowhere else.** The provider has taken the message; the process dies before
+`sent_at` is written; `claimed_at` ages past the backoff; a later run claims the
+row and sends it again. **That is chosen, not tolerated** (F7.5): recording the
+intent before the send would lose the message on the same crash, and the messages
+here are the ones a business cannot afford to miss — I4 makes the 48-hour deletion
+warning unconditional, and an at-most-once deletion warning is an invariant that
+silently is not one.
+
+**Three things keep the duplicate cheap**, and all three are already in the
+design: the provider idempotency key usually collapses it before delivery
+(§2.11.4); every footer says to ignore the message if it has already arrived
+(F7.7); and the reason key means a duplicate is only ever a redelivery of one
+reason, never a second reason invented by a retry.
+
+**A provider outage delays delivery and loses nothing** (N7.1, §2.14.3). Rows
+accumulate with `sent_at` null, calls continue to be answered throughout, and the
+queue drains when the provider returns.
+
+### 2.11.7 Retry, backoff, and what happens to a message that will never send
+
+**Eight attempts, exponential base three from one minute, capped at four hours**:
+1, 3, 9, 27, 81, 240, 240, 240 minutes — roughly **14¾ hours** from first attempt
+to dead letter. _(Decision — the PRD sets no retry budget; §2.11.10.)_ The number
+is chosen by the tightest deadline any email has: the deletion warning must arrive
+inside the 48-hour window I4 makes unconditional (F9.3a), so the whole retry
+budget has to fit inside it with room for the sweeper's own lateness. A longer
+budget would let a message still be retrying when the thing it warned about has
+already happened.
+
+**The taxonomy is what decides retry, and getting it wrong is expensive in both
+directions** — retrying a permanent failure burns the budget on something that
+cannot succeed, and dead-lettering a transient one drops a message the design
+promised to deliver.
+
+| Class         | Signals                                                                                                                                          | Treatment                                        |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------ |
+| **Transient** | Connection reset, DNS failure, request timeout, HTTP 429, any HTTP 5xx                                                                           | Retry on the schedule                            |
+| **Permanent** | HTTP 422 malformed or invalid recipient, 401/403 credential or unverified domain, recipient on the provider's suppression list, payload rejected | Dead-letter immediately; do not spend attempts   |
+| **Ambiguous** | Timeout _after_ the request was accepted; 502/504 from something in front of the provider                                                        | **Treated as transient** — this is the duplicate |
+
+**Ambiguous resolves to transient deliberately.** The failure it risks is a second
+copy; the failure the other choice risks is silence, and §2.4/010 has already
+decided which of those Ringly prefers.
+
+**A 401 or 403 is permanent for the row and systemic for everything else.** A bad
+API key or an unverified sending domain fails every message in the queue, so the
+dispatcher treats the class as permanent per row but the endpoint returns a
+non-2xx overall, which is what the timer's own failure alerting sees. Otherwise a
+credential rotation gone wrong dead-letters the entire queue in one quiet run.
+
+**A dead letter is `sent_at IS NULL AND attempts >= 8`** — one definition, not
+two, which is why a permanent failure jumps `attempts` to the ceiling rather than
+setting a separate flag. `last_error` says which class it was.
+
+**Who finds out.** Nobody is emailed about it, and that is a constraint rather
+than an oversight: F7.13's alert set is closed and F8.12's condition list is
+named, so both a new alert kind and a new "needs attention" row would be
+requirement changes. **Dead letters are therefore surfaced inside `/ops` (§2.12)
+as a plain count and list — the queue's own health, not a per-business
+condition — and the dispatcher's response body carries `dead` so the timer's
+monitoring sees a non-zero value without reading the database.**
+_(Decision, and the one most worth pushing back into the PRD; §2.11.10.)_
+
+**A dead-lettered deletion warning does not stop the deletion.** The teardown gate
+is `warned_at` stamped at least 48 hours earlier (§2.4/008), not a delivery
+confirmation — because under at-least-once no delivery confirmation exists, and
+gating on one would make a business with a permanently invalid contact address
+undeletable for ever, holding a rented number nobody is paying for. The dead
+letter is how a human finds out that a particular warning went nowhere.
+_(Decision; §2.11.10.)_
+
+### 2.11.8 Format, and the single unsubscribable email
 
 Plain and utilitarian (F7.6) — no images, no web fonts, no columns, no marketing
 voice. These are messages about money and service interruptions and should read
 like a utility bill, surviving Gmail clipping and Outlook. Fixed structure
 (F7.7), at most one call to action. **Every email states what happened, what it
-means for the reader, and what happens next if they do nothing** (F7.8).
-Absolute dates, never relative, because delivery may be delayed (F7.9).
-**Subject lines stay under about 60 characters, state the situation rather than
-tease it, and never carry urgency the body does not justify** (F7.10) — these are
-messages a business must be able to triage from a notification preview.
+means for the reader, and what happens next if they do nothing** (F7.8). Amounts
+carry currency and dates are absolute, never relative (F7.9), because delivery may
+be delayed by up to the whole retry budget above. **Subject lines stay under about
+60 characters, state the situation rather than tease it, and never carry urgency
+the body does not justify** (F7.10).
 
-### 2.11.5 Transactional mail cannot be unsubscribed
+Two of those are checkable rather than reviewable, so they are checked: the
+60-character bound is asserted against every registry entry's `subject` over
+representative props, and the footer line is in the shared layout component rather
+than in each template, so **F7.7's "on every email, without exception" is
+structural** — there is no template that could omit it.
 
-A business cannot opt out of being told its payment failed or its data is about
-to be deleted (F7.4). **Only the stats digest is optional.**
+**Transactional mail cannot be unsubscribed from** (F7.4). A business cannot opt
+out of being told its payment failed or its data is about to be deleted. Only the
+stats digest is optional, and three things follow:
 
-### 2.11.6 The dispatcher
+- **The opt-out is a nullable `digest_opted_out_at` on `businesses`, added by
+  migration 010** — F7's migration, not 005's, because it is F7's concern and 005
+  ships a phase earlier (§2.16). _(Decision — the PRD gives the business the
+  control (F7.4) and neither §2.4 revision records where it lives; §2.11.10.)_
+- **`suppressedWhen` is evaluated at enqueue, not at send**, consistent with
+  rendering (§2.11.5). A business that opts out after the digest is queued
+  receives that one and no more — acceptable for the only optional email, and the
+  alternative would make the queue's contents stop being a promise.
+- **`List-Unsubscribe` is set on the digest and on nothing else.** A one-click
+  unsubscribe header on a dunning email is an invitation to suppress exactly the
+  messages F7.4 says cannot be suppressed, and once a provider records a
+  suppression the deletion warning stops being deliverable.
 
-Queued rows are sent by the email worker with retry. A provider outage delays
-delivery and loses nothing (N7.1); calls continue throughout. **Teardown enqueues
-and does not wait** (F9.3d) — see §2.13.4.
+### 2.11.9 Operator alerts are a different product on the same machinery
 
-### 2.11.7 Operator alerts are a different product
+Read on a phone, at an inconvenient moment (F7.12). Each **leads with the business
+name and the money at stake**, and says what happens if it is ignored. No
+reassurance, no marketing voice.
 
-Read on a phone, at an inconvenient moment (F7.12). Each **leads with the
-business name and the money at stake**, and says what happens if it is ignored.
-No reassurance, no marketing voice.
+**They share the table, the reason keys, the claim loop and the retry schedule,
+and differ in four places** — because the alternative is a second at-least-once
+machine with its own way of losing messages:
 
-**The set is fixed** (F7.13): a business hit its cap, carrying cost-to-serve and
-margin so an unprofitable tenant is visible immediately; a payment failed; a
-calendar is unreachable; an activation is stuck; **an unactivated business is
-about to expire** (F8.6a); **a number would not release** (F7.13a); and a
-business was deleted — the last carrying lifetime net revenue and the amount left
-owing, since deletion is the only moment those totals are final.
+| Where they differ         | Business email                    | Operator alert                                    |
+| ------------------------- | --------------------------------- | ------------------------------------------------- |
+| Recipient resolution      | `businesses.contact_email` (F7.1) | Ringly's alert address, from configuration (F7.1) |
+| `email_sends.business_id` | Who it is going to                | Who it is **about** — never the recipient         |
+| Suppression               | The digest may be suppressed      | Never; the type makes it unwritable (§2.11.1)     |
+| Subject construction      | States the situation              | Business name **and** figure, in that order       |
+
+**The subject is the alert.** An operator triaging from a notification preview
+gets the name and the number or gets nothing useful, so the builder truncates the
+business name and never the money:
+
+```ts
+subject: (p) =>
+  `${clip(p.businessName, 28)} — cap reached, ${money(p.absorbedCents)} absorbed`,
+```
 
 **The failed-unbind alert is the one with no other symptom** (F7.13a, §2.5.3).
 Every other component believes service has stopped, so the alert is the only
 thing standing between an unmetered answering number and someone happening to
 look. It carries the same urgency as a cap breach, because it is money leaving.
+It is also why its enqueue sits in the unbind's read-back path rather than in a
+sweeper: nothing else will ever revisit that business to notice.
 
 **An unactivated business is raised before its 10-day clock runs out** (F8.6a),
-whether or not it is stuck, and timed to leave room to act rather than fired at
-the deadline. Stuck means it _cannot_ activate and Ringly is the blocker;
-expiring means it _has not_, for any reason, and is about to be deleted with its
-number released. After that the number is gone to the carrier and the account is
-a stranger — an outcome worth one email to avoid, given a signup already cost
-enrichment, a number, and up to five calls.
+**72 hours ahead** _(decision — F8.6a requires room to act and names no
+interval; §2.11.10)_, keyed on the deadline's `due_at` so a paused and resumed
+clock re-raises at the right time, exactly as the deletion warning does. Stuck
+means it _cannot_ activate and Ringly is the blocker (F1.13a); expiring means it
+_has not_, for any reason, and is about to be deleted with its number released.
+After that the number is gone to the carrier and the account is a stranger — an
+outcome worth one email to avoid, given a signup already cost enrichment, a
+number, and up to five calls.
 
-**Delivered by email initially**; moving them to Slack is deferred (§1.9). The
-format carries the same information either way, so the move is a transport change
-rather than a rewrite (F7.14).
+**Moving them to Slack is a transport change, not a rewrite** (F7.14, §1.9), and
+the design is already shaped for it: kinds, reason keys, the queue table, the
+claim loop and the retry schedule are all transport-independent, and the only
+thing an operator entry holds that is email-specific is its `template`. The move
+adds a second `deliver()` selected on `identity === "operator"` and leaves
+everything that makes delivery reliable untouched.
+
+### 2.11.10 Decisions this section makes that the PRD does not
+
+Flagged rather than buried, because each is a place where an implementer would
+otherwise guess:
+
+| Decision                                                                                                                  | Reasoning                                                                                                                                                                                                                               |
+| ------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Eight attempts, base-3 backoff capped at 4 hours (≈14¾ h total)**                                                       | Sized to fit inside I4's 48-hour warning window (F9.3a) with slack for the sweeper                                                                                                                                                      |
+| **Batch of 50, concurrency of 8, 10 s per send**                                                                          | Drains far faster than the minutely cadence at N2.1's volumes; small enough that a stuck batch is one minute of lag                                                                                                                     |
+| **A dead letter is visible in `/ops` and in the dispatcher's response, and alerts nobody**                                | F7.13's alert set and F8.12's condition list are both closed; enlarging either is a PRD change                                                                                                                                          |
+| **Teardown gates on `warned_at`, not on delivery confirmation**                                                           | At-least-once yields no confirmation; gating on one makes a bad address block deletion for ever                                                                                                                                         |
+| **`digest_opted_out_at` on `businesses`, in migration 010**                                                               | F7.4 gives the control and no §2.4 revision records where it lives; it is F7's concern                                                                                                                                                  |
+| **Suppression and rendering both evaluated at enqueue**                                                                   | One rule instead of two, and consistent with §2.13.4's requirement that the tenant may be gone                                                                                                                                          |
+| **Four sending _subdomains_, not four addresses on one domain**                                                           | F7.11's protection is reputational, and reputation is per domain                                                                                                                                                                        |
+| **The per-kind identity mapping in §2.11.3**                                                                              | F7.11 fixes four streams and does not assign kinds to them                                                                                                                                                                              |
+| **`deletion_warning` sends from `service`, not `billing`**                                                                | It fires on three clocks and only two involve money; what the reader loses is the number answering                                                                                                                                      |
+| **Follow-up cadences: grace at days 3 and 6, suspension every 14 days to day 56; cancellation countdown at days 3 and 6** | F6.11 and F6.11b-i require follow-ups and set no cadence. The offsets are the key's second component (§2.11.3) so they are deterministic, and they stop short of the deletion warning so the last thing a business reads is the warning |
 
 **Testing this section**
 
 _Observable_ — what arrives, to whom, from which identity, when, and what it
-says; that nothing outside the registry ever arrives.
+says; that nothing outside the registry ever arrives; that a business opted out of
+the digest still receives everything else.
 
 _Internal_ — the registry file, template components, the queue table, the worker,
-the delivery vendor.
+the delivery vendor, the claim SQL, the backoff schedule, the literal reason-key
+strings, the attempt ceiling, and which migration carries the opt-out column.
 
 _Behaviours owed to the catalogue_
 
@@ -2000,8 +4624,26 @@ _Behaviours owed to the catalogue_
 - Dates in emails are absolute.
 - The deletion warning arrives 48 hours ahead, on every path.
 - The business and the operator are both told when a business is deleted.
-
----
+- Two dispatchers running at the same moment never both claim the same queued
+  message.
+- Two components that independently decide to send the same digest for the same
+  period produce one queued message.
+- One calendar outage produces both a business email and an operator alert, and
+  one of each.
+- A provider outage lasting hours delivers the message when it returns, still
+  inside the 48-hour window.
+- A message to an address the provider rejects outright stops being retried
+  rather than consuming its whole budget, and the deletion it warned about still
+  happens.
+- A deletion warning is sent again, for the new date, after a paused clock is
+  resumed to a later one.
+- A business whose test-call allowance is reset and exhausted a second time is
+  told a second time.
+- Changing a template does not alter a message already queued.
+- An operator alert's subject carries the business name and the figure.
+- The number-release alert is raised once and the operator's queue keeps showing
+  the business until it is resolved.
+- Every email's footer tells the reader to ignore it if it has already arrived.
 
 ## 2.12 The operator surface
 
