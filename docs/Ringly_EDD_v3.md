@@ -891,26 +891,46 @@ When the calendar cannot be read the caller gets an apology and is asked to ring
 back (F2.7); the business gets a banner and **one email per incident, not per
 call**; the operator sees the business under "bookings failing" (F8.12).
 
-**No call writes to `calendar_incidents` on the happy path.** The incident table
-is touched only on a state _transition_, and both transitions happen **after the
-handler has already answered the agent** (N3.2) — nothing here is on the
-caller's clock.
+**Nothing ever reads `calendar_incidents` to decide what to do.** There is no
+`SELECT`, no "is an incident open?" check, and no branch on cached state. Every
+call issues **exactly one statement**, and that statement is a _write whose
+`WHERE` clause is the check_ — evaluated by the database as part of the write,
+which is what makes it safe under concurrency. Both statements run **after the
+handler has answered the agent** (N3.2), so neither is on the caller's clock.
 
-```
-read succeeds
-  └─ cached incident flag clear? → do nothing. Zero writes, the common case.
-  └─ flag set?                   → UPDATE calendar_incidents
-                                      SET closed_at = now()
-                                    WHERE business_id = $1 AND closed_at IS NULL
+```sql
+-- the calendar read SUCCEEDED. Runs on every successful call.
+UPDATE calendar_incidents SET closed_at = now()
+ WHERE business_id = $1 AND closed_at IS NULL;
 
-read fails
-  └─ INSERT INTO calendar_incidents (business_id, opened_at, last_error)
-       VALUES ($1, now(), $2)
-       ON CONFLICT DO NOTHING
-       RETURNING id
-     ├─ a row came back → this call opened the incident → queue the email
-     └─ nothing came back → an incident was already open → attach silently
+-- the calendar read FAILED. Runs on every failed call.
+INSERT INTO calendar_incidents (business_id, opened_at, last_error)
+VALUES ($1, now(), $2)
+    ON CONFLICT DO NOTHING
+  RETURNING id;   -- ← a row here means THIS call opened the incident
 ```
+
+**Four cases, one statement each, and no case needs prior knowledge:**
+
+| Calendar read | An incident was already open | Statement | What happens                       | Email   |
+| ------------- | ---------------------------- | --------- | ---------------------------------- | ------- |
+| succeeded     | no                           | `UPDATE`  | Matches 0 rows. A no-op            | no      |
+| succeeded     | yes                          | `UPDATE`  | Matches 1 row. The incident closes | no      |
+| failed        | no                           | `INSERT`  | Inserts; an id is returned         | **yes** |
+| failed        | yes                          | `INSERT`  | Conflicts; nothing is returned     | no      |
+
+**The returned id is the entire decision procedure for the email.** The handler
+does not need to know, before it writes, whether an incident existed — it finds
+out by whether the insert gave it a row back. That is the difference between this
+and check-then-act, and it is the whole reason forty simultaneous failures send
+one email rather than forty.
+
+**Yes, that is one write per call, and it is the right trade.** A successful call
+on a healthy business issues an `UPDATE` that matches nothing. It costs a single
+indexed lookup against a table with roughly zero rows, it happens after the
+response, and at N2.1's volumes it is well under one write per second across the
+whole platform. The alternative — keeping state to avoid it — is what the removed
+flag tried to do, and it was both wrong and unnecessary (below).
 
 **The uniqueness is a database constraint, not application discipline:**
 
