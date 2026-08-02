@@ -543,7 +543,8 @@ figures even before a tenant exists.
 email_sends(id pk, reason_key unique, business_id (no fk), kind,
             to_address, identity, subject, body,
             queued_at, claimed_at null, sent_at null, attempts,
-            last_error null, provider_idempotency_key)
+            last_error null, provider_idempotency_key,
+            provider_message_id null, bounced_at null)
 ```
 
 **Delivery is at-least-once, and the row is what makes it so** (F7.5). The
@@ -557,8 +558,12 @@ deletion warning is an invariant that silently is not one.
 
 Three things keep the duplicate cheap:
 
-- **`provider_idempotency_key` is sent with the message**, so a redelivery is
-  usually collapsed by the provider before it reaches an inbox.
+- **`provider_idempotency_key` is sent as Resend's `Idempotency-Key` header**,
+  so a redelivery is collapsed at the provider before it reaches an inbox.
+  **Resend's window is 24 hours and the whole retry ladder is ≈14¾ hours**
+  (§2.11.7), so every retry of one message falls inside it — the ladder was sized
+  against I4's 48-hour deadline and happens to clear this too, which is worth
+  knowing before anyone lengthens it.
 - **Every template's footer says to ignore the message if it has already
   arrived** (F7.7).
 - **`reason_key` is unique and is a different thing from delivery.** It carries
@@ -4476,22 +4481,78 @@ credential rotation gone wrong dead-letters the entire queue in one quiet run.
 two, which is why a permanent failure jumps `attempts` to the ceiling rather than
 setting a separate flag. `last_error` says which class it was.
 
-**Who finds out.** Nobody is emailed about it, and that is a constraint rather
-than an oversight: F7.13's alert set is closed and F8.12's condition list is
-named, so both a new alert kind and a new "needs attention" row would be
-requirement changes. **Dead letters are therefore surfaced inside `/ops` (§2.12)
-as a plain count and list — the queue's own health, not a per-business
-condition — and the dispatcher's response body carries `dead` so the timer's
-monitoring sees a non-zero value without reading the database.**
-_(Decision, and the one most worth pushing back into the PRD; §2.11.10.)_
+**Who finds out: the operator, by name and by business.** F7.15 makes
+undeliverable mail a named condition on the "needs attention" queue (F8.12,
+§2.12) — **"email undeliverable"**, one row per business, carrying the kind that
+failed and when. It is deliberately **not** an alert email (F7.13's set stays
+closed): an address that bounces is a queue entry to work through, not a page in
+the night, and emailing about email is its own kind of foolish.
+
+The dispatcher's response body also carries `dead`, so the timer's own monitoring
+sees a non-zero value without reading the database.
 
 **A dead-lettered deletion warning does not stop the deletion.** The teardown gate
 is `warned_at` stamped at least 48 hours earlier (§2.4/008), not a delivery
 confirmation — because under at-least-once no delivery confirmation exists, and
 gating on one would make a business with a permanently invalid contact address
 undeletable for ever, holding a rented number nobody is paying for. The dead
-letter is how a human finds out that a particular warning went nowhere.
-_(Decision; §2.11.10.)_
+letter is how a human finds out that a particular warning went nowhere — and
+under F7.15 it is a named queue condition rather than a number in a panel, which
+is the difference between someone noticing and someone theoretically being able
+to. _(Decision; §2.11.10.)_
+
+### 2.11.7a Delivered is not the same as accepted — the bounce webhook
+
+**The retry loop above covers the wrong half of the problem.** It knows whether
+Resend _accepted_ the message. It cannot know whether the recipient's mail server
+did, because that happens seconds to hours later, on somebody else's
+infrastructure, long after the dispatcher recorded `sent_at` and moved on.
+
+That second failure is the one F7.15 calls the dangerous one, and it is the
+common one: **a contact address that is wrong, dead, or full produces it every
+single time**, and it looks like success at every point except the inbox. F1.11
+verifies the address at onboarding, which catches it being wrong on day one and
+says nothing about it going bad on day four hundred.
+
+**So Ringly subscribes to Resend's webhook.**
+
+```
+POST /api/webhooks/resend          signature-verified before parsing (N6.3)
+
+email.bounced     → UPDATE email_sends SET bounced_at = now(), last_error = $2
+                     WHERE provider_message_id = $1        ← permanent
+email.complained  → same, plus the address is treated as suppressed
+email.delivered   → subscribed to, deliberately not stored
+```
+
+- **`provider_message_id` is the id Resend returns from the send**, stored at
+  step 4 of §2.11.6. It is the only join between a queue row and a delivery
+  event, so a send that does not record it is a message whose fate is
+  unknowable.
+- **`email.delivered` is subscribed to and thrown away.** Nothing in the design
+  acts on a success, storing one would double the write volume of the whole email
+  path, and a row that is neither bounced nor complained is already the answer.
+  It is subscribed to only so that a gap in the event stream is visible if
+  somebody ever needs to debug one.
+- **`email.delivery_delayed` is not permanent** and is ignored; the recipient's
+  server is still trying, and Resend will follow it with a `delivered` or a
+  `bounced`.
+
+**Undeliverable therefore has two definitions and one meaning:**
+
+```sql
+-- the condition behind F8.12's "email undeliverable" row
+WHERE (sent_at IS NULL AND attempts >= 8)   -- never got out of Ringly
+   OR bounced_at IS NOT NULL                -- got out, and came back
+```
+
+Both mean the same thing to the business — **they were not told** — which is why
+they are one queue condition and not two. What differs is the operator's next
+move, and `last_error` is what distinguishes them.
+
+**A bounce is not retried.** A hard bounce is the recipient's server stating a
+permanent fact, and re-sending is how a sending domain's reputation is destroyed
+(F7.11 exists to contain that blast radius, not to license ignoring it).
 
 ### 2.11.8 Format, and the single unsubscribable email
 
@@ -4587,7 +4648,7 @@ otherwise guess:
 | ------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Eight attempts, base-3 backoff capped at 4 hours (≈14¾ h total)**                                                       | Sized to fit inside I4's 48-hour warning window (F9.3a) with slack for the sweeper                                                                                                                                                      |
 | **Batch of 50, concurrency of 8, 10 s per send**                                                                          | Drains far faster than the minutely cadence at N2.1's volumes; small enough that a stuck batch is one minute of lag                                                                                                                     |
-| **A dead letter is visible in `/ops` and in the dispatcher's response, and alerts nobody**                                | F7.13's alert set and F8.12's condition list are both closed; enlarging either is a PRD change                                                                                                                                          |
+| **~~A dead letter alerts nobody~~ — resolved: it is a named "needs attention" condition (F7.15, F8.12)**                  | This section flagged it as the constraint most worth pushing back into the PRD, and the PRD took it. It is a queue condition, not an alert email — F7.13's set stays closed                                                             |
 | **Teardown gates on `warned_at`, not on delivery confirmation**                                                           | At-least-once yields no confirmation; gating on one makes a bad address block deletion for ever                                                                                                                                         |
 | **`digest_opted_out_at` on `businesses`, in migration 010**                                                               | F7.4 gives the control and no §2.4 revision records where it lives; it is F7's concern                                                                                                                                                  |
 | **Suppression and rendering both evaluated at enqueue**                                                                   | One rule instead of two, and consistent with §2.13.4's requirement that the tenant may be gone                                                                                                                                          |
@@ -4662,9 +4723,21 @@ is no customer-deletion control to hide: the product has none (§2.13.5).
 **"Needs attention" is a table of named conditions, not a feeling** (F8.12).
 Every row is a business, the condition, how long it has been in it, and what the
 operator can do, ordered by how little time is left to act. The conditions are
-enumerated in F8.12 and are derived from lifecycle, billing and incident state —
-never stored separately, because a second copy of "is this suspended" is a second
-thing that can be wrong.
+enumerated in F8.12 and are derived from lifecycle, billing, incident and
+**delivery** state — never stored separately, because a second copy of "is this
+suspended" is a second thing that can be wrong.
+
+**"Email undeliverable" is the one condition whose source is not a Ringly state
+machine** (F7.15). It comes from `email_sends`: a row that exhausted its attempts
+without leaving Ringly, or one that Resend accepted and the recipient's server
+bounced (§2.11.7a). Both mean the business was not told something the design
+assumed it had been told, and both are unfixable by anything automatic —
+so the operator's action is to reach them another way and correct the address.
+
+It is a condition and **not** an alert email (F7.13's set stays closed), which is
+the right shape: emailing an operator about email that is not arriving has an
+obvious flaw, and a bouncing address is work to schedule rather than an
+emergency.
 
 **Four controls, and they are the only ones** (F8.10, F8.13, F9.1b, F9.1c):
 pause or resume a deletion clock; reset the test-call allowance **and rebind the
@@ -5225,6 +5298,19 @@ Stripe's configuration surface._
   _Testing_; granular consent means calendar can be declined independently of
   sign-in (F1.7a); `events.list` exposes event ids where `freebusy` does not,
   which is why §2.7 uses it.
+- **Resend** _(verified 2026-08-01)_ — the selected delivery provider (N7).
+  Idempotent sends via an **`Idempotency-Key` header**, max **256 characters**,
+  with a **24-hour** window — which the ≈14¾-hour retry ladder fits inside
+  (§2.11.7). Webhooks cover the delivery lifecycle: **`email.bounced`**
+  (recipient's server permanently rejected it), `email.complained` (delivered,
+  then marked as spam), `email.delivery_delayed` (temporary, still trying),
+  plus `sent` / `delivered` / `failed` / `suppressed`. `email.bounced` is what
+  makes F7.15's second failure class observable at all (§2.11.7a).
+
+  **Not yet verified to the standard of the three above**: the exact rate limit
+  on the send endpoint, which the docs do not state. §2.11.10's batch-of-50 and
+  concurrency-of-8 are sized on volume rather than on a published ceiling, and
+  should be checked against a real account before Phase 2 ships.
 
 ---
 
