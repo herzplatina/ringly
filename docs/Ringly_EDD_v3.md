@@ -2916,11 +2916,6 @@ of it can be written. An implementer reading top to bottom will meet forward
 references to those five; they are deliberate, because the rules are what the
 mechanics are answerable to and not the other way round.
 
-**Two citations in the PRD point at the pre-renumber EDD.** F6.10b and
-F6.10b-i say "EDD §2.9.5" and F6.11b-ii says "§2.9.3"; their current homes are
-**§2.10.6** and **§2.10.8**. F6.19's "EDD §2.9.4" is now **§2.13.4**. Noted once
-here rather than repeated.
-
 ### 2.10.1 States
 
 A transition table rather than a diagram, because the side effects are the part

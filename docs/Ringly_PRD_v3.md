@@ -765,7 +765,7 @@ charge failed first (F6.11).
     two leaves it suspended, and the email says what remains.
   - **It does not matter how the payment cleared** — an automatic retry, a new
     card, or the business paying the invoice by hand. All three reach Ringly the
-    same way (EDD §2.9.5).
+    same way (EDD §2.10.6).
   - **Which period they land in follows F6.11b-iii**: the original one if it is
     still running, otherwise a new one opened that day. **The original is never
     extended** — the days lost to suspension are lost (F6.11b).
@@ -774,7 +774,7 @@ charge failed first (F6.11).
 - **F6.10b-i** **A business that has paid and is still not being answered is the
   worst state in the system**, so recovery must not depend on a single message
   arriving. If the notification of payment is lost, a **daily reconciliation**
-  finds any suspended business that owes nothing and restores it (EDD §2.9.5).
+  finds any suspended business that owes nothing and restores it (EDD §2.10.6).
   A lost notification may cost such a business hours; it must never cost it days,
   and it must never cost it the account.
 - **F6.10c** **A new billing period opens, charged $100 that day, whenever
@@ -859,7 +859,7 @@ charge failed first (F6.11).
   against.** F6.11b stops Ringly billing for a phone nobody answers; F6.11b-i
   stops Ringly going quiet on a debt and letting a recoverable business drift to
   day 60 in silence. The implementation detail that makes the pair work is at
-  §2.9.3 — a subscription whose collection is fully paused would stop the
+  EDD §2.10.8 — a subscription whose collection is fully paused would stop the
   retries, which is not what is wanted.
 
 - **F6.11b-iii** **On restore, where the business lands depends on one question:
@@ -1080,7 +1080,7 @@ charge failed first (F6.11).
 > **Architectural consequence.** Pricing is **policy data, not code**: rates, the
 > cap, the fixed fee, and the set of outcomes that count as billable all live in
 > a versioned `pricing_policy` record with an effective date, and each
-> `billing_periods` row records which version it was settled under (EDD §2.9).
+> `billing_periods` row records which version it was settled under (EDD §2.4/007).
 > Widening billing to all connected minutes — the expected next model — becomes a
 > new policy row, not a deploy.
 
@@ -1105,7 +1105,7 @@ charge failed first (F6.11).
   destroys the identifier every one of those steps needs, leaving a saved card on
   file belonging to nobody and a rented number belonging to nobody. The email goes
   before the number because releasing the number cannot be undone (F9.3d). The full
-  reasoning for each position in that order is at EDD §2.9.4.
+  reasoning for each position in that order is at EDD §2.13.4.
 - **F6.20** **The division of responsibility with the payment provider is
   explicit, and nothing is done twice.** Where both could act, exactly one does:
 
@@ -1240,7 +1240,7 @@ declines.
 **Two endings.**
 
 **They pay on day 75.** The retry succeeds; the webhook arrives; nothing is
-outstanding (§2.9.5). Ringly rebinds the agent and verifies it, and **the number
+outstanding (EDD §2.10.6). Ringly rebinds the agent and verifies it, and **the number
 answers again that day**. No period is open, so **period 3 opens on day 75 and
 its $100 is charged then** (F6.10c) — two movements on the same day, both in the
 billing history. Period 3 runs to day 104. If _that_ $100 had declined, it would
@@ -1260,7 +1260,7 @@ it had on day 60.**
 
 **Who does what** is one table, in F7 — every scenario, who invoices and who
 writes the words. **The teardown order** is F6.19, with the reasoning for each
-position at EDD §2.9.4.
+position at EDD §2.13.4.
 
 ### F6c — Invariants
 
@@ -1426,7 +1426,7 @@ suspension (F6.11b-ii).
 | Suspension                  | Stripe **still retrying**; no new invoice (F6.11c) | **Ringly** — suspension notice, then follow-ups           |
 | Service restored            | New period's $100, if one opens: **Stripe**        | **Ringly**                                                |
 | 48h before deletion         | —                                                  | **Ringly**                                                |
-| Deletion                    | Teardown voids open invoices (§2.9.4)              | **Ringly** — to the business **and** the operator (F9.3c) |
+| Deletion                    | Teardown voids open invoices (EDD §2.13.4)         | **Ringly** — to the business **and** the operator (F9.3c) |
 | Cancellation requested      | — nothing charged in the window                    | **Ringly** — confirmation, then countdown                 |
 | Cancellation settles        | Final usage: **Stripe**                            | **Ringly** — closing statement                            |
 | Refund (goodwill only)      | **Stripe**, by hand (F5.9)                         | none automated                                            |
@@ -1817,7 +1817,7 @@ open, or what is destroyed in forty-eight hours.
   open, billing Ringly, because Resend is slow.
 
   This fixes the position of the send inside the teardown order (F6.19, EDD
-  §2.9.4) — it is not a step that can be moved to the end for tidiness.
+  §2.13.4) — it is not a step that can be moved to the end for tidiness.
 
 - **F9.4** A business's telephone number is its public identity, printed on
   signage and listings, and losing it is not recoverable. **How long it is held
@@ -2047,7 +2047,7 @@ failure modes are stated explicitly.
 | **Supabase**                                       | All tenant data             | **Total outage.** The agent cannot resolve the business or its catalogue. Not survivable.                                     |
 | **Application host** (N8, undecided)               | The application itself      | **Total outage.**                                                                                                             |
 | **Google Calendar** (or other scheduling provider) | Verifying a slot is free    | **Booking fails audibly** (F2.7). The caller is told; nothing is written. Enquiries still work.                               |
-| **Stripe**                                         | Charging, refunds, tax      | Calls continue. Charges queue and settle later; usage accrues locally regardless (§2.9).                                      |
+| **Stripe**                                         | Charging, refunds, tax      | Calls continue. Charges queue and settle later; usage accrues locally regardless (EDD §2.10).                                 |
 | **Resend**                                         | Business and operator email | Calls continue. Email retries; delivery is delayed. A message that still cannot be delivered surfaces to the operator (F7.15) |
 | **Google Places**                                  | Onboarding enrichment       | New onboarding degrades to manual entry. Existing businesses unaffected.                                                      |
 
@@ -2076,7 +2076,7 @@ and **Google Cloud Run**, and nothing in this document assumes either.
   adopted without recording the decision to be locked in. This is cheap to hold
   now and expensive to undo later.
 - **N8.3** **Scheduled work is the only place the two hosts differ materially**,
-  and it is where every background worker in this design lives (§2.2). The
+  and it is where every background worker in this design lives (EDD §2.2). The
   design therefore specifies workers as **idempotent HTTP endpoints invoked by
   an external timer**, which both platforms can drive and neither owns.
 - **N8.4** Whichever is chosen must run in a **US region**, alongside the
@@ -2211,7 +2211,7 @@ that assumed one is retired.
 "v1", "v2" and "v3" refer only to **documents**; product scope is either _in v3_
 or listed below. **Nothing here is scaffolded in advance** — no dormant table, no
 unused column, no dead code path held open against a future that may not arrive
-(§2.4/005, F6.5).
+(EDD §2.4/005, F6.5).
 
 ### Soon after v3
 
@@ -2229,7 +2229,7 @@ unused column, no dead code path held open against a future that may not arrive
 - **A third copy of the money records, outside the primary provider account**
   (N10). v3 ships point-in-time recovery plus cross-region backups, which both
   live in one account and share its fate. The eventual fix is an append-only
-  daily export under separate credentials with object lock (§2.14.1 records the
+  daily export under separate credentials with object lock (EDD §2.14.5 records the
   shape). **Deferred because it is real work against a rare failure**, and
   because Stripe independently holds the payments half in the meantime (N10.7).
   Worth doing once there is enough revenue to miss.
