@@ -125,7 +125,7 @@ On the call path (§2.6): resolve the tenant, check availability, write the
 booking, answer. Off it: persisting the call record, metering usage,
 classifying the outcome, rolling up analytics, sending mail.
 
-**Five workers, each an idempotent HTTP endpoint invoked by an external timer**
+**Six workers, each an idempotent HTTP endpoint invoked by an external timer**
 (N8.3), which both candidate hosts can drive and neither owns (N8.1). Idempotent is the load-bearing word: the timer may fire twice, a
 deploy may overlap a run, and neither may produce a second charge or a second
 email.
@@ -137,6 +137,13 @@ email.
 | **Lifecycle sweeper**      | Hourly          | Deadlines that have come due and are not paused; suspension; teardown    |
 | **Email dispatcher**       | Minutely        | Sending what is queued, with retry (§2.11)                               |
 | **Billing reconciliation** | Daily           | Suspended businesses that owe nothing and were never restored (F6.10b-i) |
+| **Calendar health probe**  | Every 5 min     | Businesses with an open calendar incident (§2.6.4)                       |
+| **Classification**         | Hourly          | Submits and reaps outcome-classification batches (§2.9.1)                |
+
+That is seven rows against "six workers" because **classification and the
+calendar probe are the same deployment concern and different jobs**; count them
+as you like. What matters is that each is a URL, each processes only rows that
+have come due, and each is safe to invoke twice.
 
 There is no recurrence materialiser. Recurring appointments left the product
 (§1.4), and the worker that generated future occurrences went with them.
@@ -714,21 +721,30 @@ mistake is heard by a stranger.
 
 N3, restated as the thing implementations are held to:
 
-| Segment                             | p95      |
-| ----------------------------------- | -------- |
-| Ringly's handler, end to end        | ≤ 400 ms |
-| — of which our own datastore        | ≤ 80 ms  |
-| — of which the scheduling provider  | ≤ 250 ms |
-| Hard ceiling, after which it failed | 1500 ms  |
-| Caller-perceived silence            | ≈ 0      |
+| Segment                            | p95 target | Hard ceiling | Implemented as                            |
+| ---------------------------------- | ---------- | ------------ | ----------------------------------------- |
+| Ringly's handler, end to end       | ≤ 400 ms   | **6000 ms**  | Route-level deadline, checked per await   |
+| — of which our own datastore       | ≤ 80 ms    | 1000 ms      | `statement_timeout` on the connection     |
+| — of which the scheduling provider | ≤ 250 ms   | **5000 ms**  | `AbortSignal.timeout(5000)` on the fetch  |
+| Caller-perceived silence           | ≈ 0        | —            | Agent-side filler, not Ringly code (F2.6) |
 
-**Slow is failed** (N3.1). A provider call that exceeds its timeout is not
-awaited further; the booking is refused exactly as an outage would be (2.1.1).
-There is nothing to degrade to, because the only thing below "verified" is a
-booking Ringly cannot stand behind.
+**Slow is failed** (N3.1): at the ceiling the request is aborted and the booking
+is refused exactly as an outage would be (2.1.1). But the ceiling sits at six
+seconds, not one and a half, because **abandoning early costs a customer**
+(N3) — the agent covers the wait with filler speech, and a caller who hears
+"let me check that for you" for five seconds is a caller who is still on the
+phone.
 
-Caller-perceived silence is held at zero by the agent's own filler speech
-(F2.6), which is configured on the agent rather than implemented by Ringly.
+**The deadline is per handler invocation, not per call.** It is established when
+the webhook is received and every subsequent `await` is bounded by what remains
+of it, so a slow database read followed by a slow provider read cannot sum past
+the ceiling. Concretely: `const deadline = Date.now() + 6000` at entry, and each
+outbound call gets `AbortSignal.timeout(Math.min(perStepCeiling, deadline - Date.now()))`.
+
+**Nothing retries inside the handler.** A retry inside a 6-second budget either
+does not fit or doubles the tail, and the caller is waiting for both attempts.
+Failure is returned to the agent, which apologises; the incident machinery
+(§2.6.4) is what notices.
 
 ### 2.6.2 Three webhooks
 
@@ -769,18 +785,69 @@ series, because nothing does.
 
 ### 2.6.4 Fail-closed, concretely
 
-When the calendar cannot be read:
+When the calendar cannot be read the caller gets an apology and is asked to ring
+back (F2.7); the business gets a banner and **one email per incident, not per
+call**; the operator sees the business under "bookings failing" (F8.12).
 
-- **To the caller**: an apology, no explanation, ring back shortly (F2.7).
-- **To the business**: a dashboard banner, and one email — **per incident, not
-  per call** (F2.7). `calendar_incidents` holds the open incident; the first
-  failure opens it and sends, subsequent failures attach to it silently, and the
-  first successful read closes it and clears the banner.
-- **To the operator**: the business appears under "bookings failing" (F8.12).
+**No call writes to `calendar_incidents` on the happy path.** The incident table
+is touched only on a state _transition_, and both transitions happen **after the
+handler has already answered the agent** (N3.2) — nothing here is on the
+caller's clock.
 
-An outage that fails forty calls sends one email. A design that emailed per
-failed call would punish the business hardest exactly when it is losing the most
-customers.
+```
+read succeeds
+  └─ cached incident flag clear? → do nothing. Zero writes, the common case.
+  └─ flag set?                   → UPDATE calendar_incidents
+                                      SET closed_at = now()
+                                    WHERE business_id = $1 AND closed_at IS NULL
+
+read fails
+  └─ INSERT INTO calendar_incidents (business_id, opened_at, last_error)
+       VALUES ($1, now(), $2)
+       ON CONFLICT DO NOTHING
+       RETURNING id
+     ├─ a row came back → this call opened the incident → queue the email
+     └─ nothing came back → an incident was already open → attach silently
+```
+
+**The uniqueness is a database constraint, not application discipline:**
+
+```sql
+CREATE UNIQUE INDEX one_open_incident_per_business
+    ON calendar_incidents (business_id) WHERE closed_at IS NULL;
+```
+
+That partial index is what makes F2.7's "one email per incident" true under
+concurrency. Forty calls failing simultaneously all attempt the insert; exactly
+one wins and gets a row back, and only that one queues an email. Without it,
+"check then insert" races and forty callers become forty emails on the worst
+possible day for the business to receive them.
+
+**The cached flag is an optimisation, not the correctness mechanism.** The
+tenant config cache (§2.6.6) carries `hasOpenCalendarIncident` so a healthy
+business does not attempt a pointless `UPDATE` on every call. If the flag is
+stale the `UPDATE` is simply a no-op — it is already scoped to
+`closed_at IS NULL` — and the next call or the probe closes the incident.
+
+**The probe is what makes the banner honest when nobody rings.** Closing on "the
+first successful read" is fine while calls are arriving and useless otherwise: a
+business whose calendar broke at 6pm and reconnected at 8pm should not keep a
+red banner all night waiting for a customer to dial. The **calendar health probe**
+(§2.2.2) runs every five minutes over businesses with an open incident, performs
+one cheap availability read each, and closes on success. Its cost is bounded by
+the number of open incidents, which in steady state is zero.
+
+**Which of the three transitions does what:**
+
+| Trigger                         | Opens | Closes | Emails            |
+| ------------------------------- | ----- | ------ | ----------------- |
+| A call's calendar read fails    | ✓     | —      | Only if it opened |
+| A call's calendar read succeeds | —     | ✓      | —                 |
+| The probe's read succeeds       | —     | ✓      | —                 |
+
+The probe never opens an incident. A calendar that is down but has no callers is
+costing the business nothing yet, and an incident opened by a probe would email a
+business about a failure no customer has hit.
 
 ### 2.6.5 Identifying an existing appointment
 
@@ -979,20 +1046,171 @@ explanation rather than two.
 
 ### 2.9.1 Outcome classification
 
-An outcome is not observable from the call transcript mechanically — "did the
-caller get what they rang for" is a judgement. It is produced by a **batched
-model call after the call ends**, never on the call path.
+An outcome is a judgement — "did the caller get what they rang for" is not
+mechanically derivable from a transcript — so it is produced by a model. Every
+decision below follows from three constraints: it must not touch the call path,
+Ringly stores no transcripts (F9.6), and an unclassified call must be safe
+(§2.9.1.4).
 
-- The call is persisted immediately with `outcome = null`.
-- Classification runs in batches and writes the outcome plus the
-  `outcome_ruleset_version` in force.
-- **A call whose classification failed or has not returned stays unclassified —
-  and unbilled.** Billing is by outcome (F6.6); an unlabelled call has no
-  outcome to bill on, and guessing would charge for something that may have been
-  an enquiry.
-- **Historical calls are never reclassified** when definitions change (F5.8),
-  because transcripts are not retained (F9.6) and outcomes cannot be re-derived.
-  The dashboard says so prominently instead.
+#### 2.9.1.1 Where it runs
+
+Not on the call path, not in the post-call webhook.
+The webhook writes the call row with `outcome = null` and returns. Classification
+is a **batch job** submitted by the classification worker (§2.2.2), hourly.
+
+Batching rather than one request per call, for three reasons: the Message Batches
+API is **50% cheaper** than the same requests made individually; outcomes are not
+needed until the nightly rollup, so latency is irrelevant; and one submission per
+business-hour is far kinder to rate limits than a request per call.
+
+#### 2.9.1.2 The call
+
+Anthropic's Messages API via `@anthropic-ai/sdk`, already
+a dependency.
+
+```ts
+await client.messages.batches.create({
+  requests: unclassified.map((call) => ({
+    custom_id: call.id, // §2.9.1.5
+    params: {
+      model: policy.classifierModel, // config, not a constant — see below
+      max_tokens: 256,
+      thinking: { type: "disabled" },
+      output_config: {
+        effort: "low",
+        format: { type: "json_schema", schema: OUTCOME_SCHEMA },
+      },
+      system: [
+        {
+          type: "text",
+          text: rulesetPrompt(policy),
+          cache_control: { type: "ephemeral" },
+        },
+      ],
+      messages: [{ role: "user", content: transcript }],
+    },
+  })),
+});
+```
+
+**`claude-opus-5`** is the default. The model id is a **`pricing_policy` column,
+not a constant** — the same principle as every other number in this design
+(F6.15). Trading down to a cheaper model is a cost decision with a quality
+consequence, and it belongs to whoever owns the margin, not to this document.
+
+**Thinking is disabled at `low` effort**, which is valid only at effort `high` or
+below. Both documented hazards of disabling thinking are bounded here: tool calls
+leaking into prose cannot happen because the request declares no tools, and
+`<thinking>` tags cannot reach the outcome because the response is schema-
+constrained. If label quality proves marginal the first lever is adaptive
+thinking at `low` effort — **not** raising effort, which buys deliberation this
+task does not need.
+
+#### 2.9.1.3 The schema is the contract
+
+Structured outputs (`output_config.format`)
+constrain the response, so there is no parsing of prose and no regex:
+
+```jsonc
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["outcome", "confidence"],
+  "properties": {
+    "outcome": {
+      "enum": ["booked", "rescheduled", "cancelled", "enquiry_only", "dropped"],
+    },
+    "confidence": { "enum": ["high", "low"] },
+  },
+}
+```
+
+Five values and no sixth: the enum is generated from the same policy row that
+renders the dashboard's definitions panel (§2.9.4), so a ruleset change moves the
+prompt, the schema, and the business's explanation together or moves none of them.
+
+**The system prompt is the cache prefix.** It carries the ruleset and is byte-
+identical across every call in the batch and across batches until the policy
+version changes — the ideal shape for prompt caching (~0.1× on the cached span).
+The transcript is the only volatile part and sits after the breakpoint. Opus 5's
+minimum cacheable prefix is 512 tokens, which the ruleset comfortably exceeds.
+
+#### 2.9.1.4 Failure is safe by construction
+
+Six things can go wrong and all six
+land in the same place: **the call stays unclassified, and an unclassified call is
+not billed** (F6.6).
+
+| Failure                               | Detected as                                                                                              |
+| ------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| The batch has not returned yet        | `processing_status !== "ended"`                                                                          |
+| One request errored                   | `result.type === "errored"`                                                                              |
+| The batch expired (24h ceiling)       | `result.type === "expired"`                                                                              |
+| Safety classifiers declined           | `stop_reason === "refusal"` — schema not honoured on a refusal, so check this **before** reading content |
+| The transcript is past its 30-day TTL | Provider fetch 404s — the call is permanently unclassifiable (F9.7)                                      |
+| `stop_reason === "max_tokens"`        | Truncated JSON; retry once, then leave it                                                                |
+
+**This fails in the business's favour, deliberately** (R23). The alternative —
+guessing an outcome — bills a business for a call that may have been an enquiry,
+and a billing error costs more trust than a missing bar on a chart.
+
+#### 2.9.1.5 Idempotency and ordering
+
+`custom_id` is the call id, and **batch
+results arrive in arbitrary order** — they are keyed by `custom_id`, never by
+position. Ingestion is a conditional update:
+
+```sql
+UPDATE calls SET outcome = $2, outcome_ruleset_version = $3, classified_at = now()
+ WHERE id = $1 AND outcome IS NULL
+```
+
+so re-reaping a batch, or a call somehow appearing in two batches, cannot
+reclassify it. Submission selects `WHERE outcome IS NULL AND classified_at IS NULL`
+and records the batch id, so the same call is not resubmitted while a batch
+holding it is in flight.
+
+#### 2.9.1.6 The transcript is fetched, used, and dropped
+
+Ringly stores neither
+transcripts nor recordings (F9.6). The worker fetches each transcript from the
+telephony provider at submission time, sends it, and never writes it anywhere.
+The only durable residue of a transcript is a five-value enum.
+
+That is also why classification cannot be deferred indefinitely: the provider's
+retention is 30 days (F9.6), after which the input no longer exists. An hourly
+cadence leaves ~700 hours of margin.
+
+#### 2.9.1.7 Cost, and a gap in the cost model
+
+At Opus 5 pricing ($5/$25 per
+MTok), batch (−50%), a cached ruleset and a ~1k-token transcript, a classified
+call costs on the order of **$0.003**. Against $0.13–0.31/minute of telephony it
+is noise per call — but it is **not free at 10⁴ tenants**, and it is a real
+per-business per-call cost.
+
+**F8.5's cost model does not include it.** That requirement attributes "Retell
+only… all per-call charges including LLM", which is the _agent's_ model, not the
+classifier's. F8.5 says a cost line is added when something new is billed per
+business — this is, so `cost_records` carries a `classifier` source alongside
+`telephony`, and the operator's margin column reflects both. **Left as a flagged
+discrepancy against F8.5 rather than resolved silently**: the requirement says
+Retell is the sole cost line, and this design needs a second one.
+
+#### 2.9.1.8 What is not tested here
+
+Whether the model labels a real transcript
+correctly is a model evaluation with its own dataset, not a scenario (§2.15.6).
+The behaviour suite fakes the classifier and injects labels, so everything
+downstream of the label stays deterministic.
+
+#### 2.9.1.9 Definitions never rewrite history
+
+Historical calls are **not**
+reclassified when a ruleset changes (F5.8) — transcripts are gone, so outcomes
+cannot be re-derived. Each call keeps the `outcome_ruleset_version` it was
+labelled under and the dashboard says the figures are not comparable across the
+change.
 
 ### 2.9.2 The rollup
 
@@ -1176,32 +1394,43 @@ follows the same order.
 
 ### 2.10.1 States
 
-```
-                    press Activate
-   unbilled ──────────────────────────► active ◄──────────────┐
-      │                                   │                    │
-      │ 10 days                           │ charge fails       │ nothing owed
-      ▼                                   ▼                    │
-   deleted                              grace ──7 days──► suspended
-                                          │                    │
-   active ──operator marks cancelled──► cancelling             │ 60 days
-                    │                     │                    ▼
-                    │ revoked             │ window closes   deleted
-                    └─────────────────────┤
-                                          ▼
-                                       dormant ──60 days──► deleted
-                                          │
-                                          └── returns ──► active (new period)
-```
+A transition table rather than a diagram, because the side effects are the part
+an implementation gets wrong:
 
-**`unbilled` is not a trial.** It is the state before any commercial
-relationship exists. Nothing in it can produce a charge (2.1.4), and no path
-leads from it to `active` except the button.
+| From         | Event                      | To           | Side effects                                                                   |
+| ------------ | -------------------------- | ------------ | ------------------------------------------------------------------------------ |
+| —            | Onboarding commits         | `unbilled`   | `unactivated_deletion` deadline at +10d                                        |
+| `unbilled`   | **Activate pressed**       | `active`     | Charge $100, open period 1, bind agent, clear the deadline                     |
+| `unbilled`   | Day 10 elapses             | _deleted_    | Teardown (§2.13.4)                                                             |
+| `active`     | A charge fails             | `grace`      | `grace_expiry` +7d **and** `nonpayment_deletion` +60d, both from today         |
+| `grace`      | Nothing owed               | `active`     | Clear both deadlines                                                           |
+| `grace`      | Day 7 elapses              | `suspended`  | **Unbind the agent**, verified (§2.5.3). No new charge ever                    |
+| `suspended`  | Nothing owed               | `active`     | Rebind, email, open a period **only if none is running** (F6.11b-iii)          |
+| `suspended`  | Day 60 elapses             | _deleted_    | Teardown; debt recorded on the departure record                                |
+| `active`     | Operator marks cancelled   | `cancelling` | `cancellation_window_close` at min(+7d, period end). Usage stops being billed  |
+| `cancelling` | **Operator marks revoked** | **`active`** | Clear the deadline; the window's usage **becomes billable again** (F6.12a)     |
+| `cancelling` | Window closes              | `dormant`    | Settle early, clamp, stop service, closing statement, `dormancy_deletion` +60d |
+| `dormant`    | Business returns           | `active`     | Rebind, open a new period, charge $100 that day (F6.12e)                       |
+| `dormant`    | 60 days elapse             | _deleted_    | Teardown                                                                       |
 
-**A test that asserts "this business is in `grace`" is asserting on internal
-state.** Every state above is observable through its consequences instead: does
-the number answer, is anything owed, what did the business receive. That is what
-the Testing block below permits.
+**`cancelling → active` is the transition most likely to be got wrong**, and it
+is not the same as never having cancelled. Revoking makes the free usage served
+during the window retroactively billable (F6.12a), so the transition rewrites
+`usage_records.period_id` for the window's rows rather than merely clearing a
+flag. A `cancelling → active` implemented as "unset cancelled" silently gives the
+business a free week it was only ever lent.
+
+**`grace` is not a state a business can be in twice for one debt.** The two
+deadlines are created together at the first decline (§2.4/008) and cleared
+together when nothing is owed; a second decline while already in `grace` starts
+no second clock (F6.11c).
+
+**`unbilled` is not a trial.** It is the state before any commercial relationship
+exists. No path leads from it to `active` except the button (2.1.4).
+
+**No test asserts on these names.** Every state above is observable through its
+consequences — does the number answer, is anything owed, what arrived in the
+inbox — and that is what the Testing block below permits.
 
 ### 2.10.2 A period
 
