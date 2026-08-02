@@ -859,8 +859,11 @@ charge failed first (F6.11).
   against.** F6.11b stops Ringly billing for a phone nobody answers; F6.11b-i
   stops Ringly going quiet on a debt and letting a recoverable business drift to
   day 60 in silence. The implementation detail that makes the pair work is at
-  EDD §2.10.8 — a subscription whose collection is fully paused would stop the
-  retries, which is not what is wanted.
+  EDD §2.10.8, and it is settled by **not using a payment-provider subscription
+  at all** (D1): with no recurring-invoice generator there is nothing to pause,
+  so "no new invoice" and "the open one keeps being retried" stop being two
+  settings that fight each other and become one design in which neither failure
+  is reachable.
 
 - **F6.11b-iii** **On restore, where the business lands depends on one question:
   is the period it was suspended in still running?**
@@ -1096,9 +1099,9 @@ charge failed first (F6.11).
   state. Tax is Stripe's calculation, not Ringly's; Ringly stores the resulting
   amounts for reconciliation only.
 - **F6.19** **Deleting a business tears down its external state before its own,
-  in order**: capture the lifetime totals (F9.10) → cancel the subscription →
-  void any open invoices → detach the payment method → delete the payment-provider
-  customer → **email the business and the operator** (F9.3c) → **release the phone
+  in order**: capture the lifetime totals (F9.10) → **assert that no
+  payment-provider subscription exists** (EDD D1, §2.10.8) → void any open
+  invoices → detach the payment method → delete the payment-provider customer → **email the business and the operator** (F9.3c) → **release the phone
   number to the telephony provider** (F9.4b) → **delete Ringly's rows and write the
   departure record, together in a single transaction** (F9.10). Deleting Ringly's
   rows first
@@ -2202,6 +2205,14 @@ that assumed one is retired.
 - **A2 — A load exercise against the N2.1 targets** (10,000 businesses × 10,000
   customers), which an end-to-end suite cannot express (EDD §2.15.6).
 - **A3 — A restore drill** proving N10.5, including from the cross-region copy.
+- **A4 — Confirm, against a payment-provider test account, that one open invoice
+  is still retried on day 59.** F6.11b-i makes "the retries that never stopped"
+  the whole recovery path, and F6.11d case (a) needs a single invoice retried
+  from the day-1 decline to the day-60 deletion. The provider's automatic retry
+  window is roughly two months, so this runs very close to its edge — and if it
+  runs out, a recoverable business goes un-chased for the days that matter most,
+  silently. **Blocks Phase 4 shipping to real customers**, not Phase 4 starting.
+  A test clock answers it in an afternoon.
 
 ---
 
