@@ -846,7 +846,7 @@ charge failed first (F6.11).
   not getting.
 
 - **F6.11b-ii** **Ringly writes and sends every one of those emails; Stripe
-  retries the card in silence** (Q7, F6.20, F6.21). Suspension is a Ringly
+  retries the card in silence** (F6.20, F6.21). Suspension is a Ringly
   concept and Stripe knows nothing about it — not that the agent has been
   unbound, not that no new period will open, not that the number goes in 48
   hours.
