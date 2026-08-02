@@ -1929,13 +1929,28 @@ open, or what is destroyed in forty-eight hours.
 Caller-perceived silence is the metric that matters. Budget per agent turn that
 involves a backend call:
 
-| Segment                                            | Target p95 |
-| -------------------------------------------------- | ---------- |
-| Ringly webhook handler, end to end                 | ≤ 400 ms   |
-| — of which our own datastore                       | ≤ 80 ms    |
-| — of which external scheduling provider            | ≤ 250 ms   |
-| Hard ceiling, after which the operation has failed | 1500 ms    |
-| Caller-perceived silence (filler covers)           | ≈ 0        |
+| Segment                                  | Target p95 | Hard ceiling |
+| ---------------------------------------- | ---------- | ------------ |
+| Ringly webhook handler, end to end       | ≤ 400 ms   | **6000 ms**  |
+| — of which our own datastore             | ≤ 80 ms    | 1000 ms      |
+| — of which external scheduling provider  | ≤ 250 ms   | **5000 ms**  |
+| Caller-perceived silence (filler covers) | ≈ 0        | —            |
+
+**The p95 target and the hard ceiling answer different questions, and the gap
+between them is deliberate.** The target is what the system should normally do.
+The ceiling is the point at which waiting longer is worse than giving up — and
+for the scheduling provider on a live call, that point is much further out than
+it looks.
+
+**Giving up costs a customer.** A refused booking is a caller told to ring back,
+and most of them do not (F2.7). Six seconds of the agent saying "let me just
+check that for you" costs a slightly awkward pause; abandoning at 1.5 seconds
+costs the business the booking. The agent covers the wait with filler speech
+(F2.6), so the caller hears someone working rather than silence.
+
+**The ceiling is not a licence to be slow.** A provider routinely taking seconds
+is a provider failing its p95, and that is an operational problem to raise
+(N7.3) rather than absorb quietly.
 
 - **N3.1** Any backend operation on the call path has a hard timeout and a
   defined outcome on expiry. **Slow is treated as failed** — and for the
