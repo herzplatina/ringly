@@ -3519,7 +3519,7 @@ what is destroyed in 48 hours. Those are Ringly's timelines and Ringly's data,
 and two differently-worded messages from what looks like one company is the
 failure this prevents.
 
-#### R21, and the decision that dissolves it
+#### 2.10.8.1 R21, and the decision that dissolves it
 
 **R21 is that suspension must stop new invoices while preserving retries on the
 open one, and that these are usually configured together.** The verified
