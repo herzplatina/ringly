@@ -62,5 +62,7 @@ never waits on a phase.
 when this business complained" is answerable.
 
 **Docs are code.** The PRD/EDD lives in `docs/` and changes by PR like anything
-else. `docs/Ringly_PRD_EDD_v3.md` is current; earlier versions are retained and
-marked superseded.
+else. `docs/Ringly_PRD_v3.md` (requirements) and `docs/Ringly_EDD_v3.md`
+(engineering design) are current and are revised separately — they were one file
+until 2026-08-01 and were split so each carries its own history. Earlier versions
+are retained and marked superseded.

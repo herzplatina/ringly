@@ -1,7 +1,16 @@
 # Behaviour tests
 
-269 scenarios covering every requirement in `docs/Ringly_PRD_EDD_v3.md` Part 1.
-The catalogue is EDD **§2.21**; the strategy behind them is **§2.20**.
+> **STALE as of 2026-08-01.** The design was rewritten from the requirements and
+> the 269-scenario catalogue this directory implements was withdrawn: it was
+> numbered against the pre-renumber requirements and included a group for
+> recurring appointments, which the product no longer has. The harness
+> architecture below still stands — `docs/Ringly_EDD_v3.md` §2.15 describes it —
+> but the scenario manifest, the requirement citations throughout `harness/`, and
+> the counts on this page all describe the old catalogue. The replacement is the
+> next piece of work; §2.15.7 lists what changes.
+
+Scenarios covering every requirement in `docs/Ringly_PRD_v3.md`. The strategy is
+`docs/Ringly_EDD_v3.md` **§2.15**; the catalogue is **§2.19**.
 
 ## Why this directory is not called `e2e`
 
