@@ -423,6 +423,22 @@ _(Carried from v2; renumbered. v2 FR1–FR10 map to F1.1–F1.10.)_
   during the call — date, time, service, and business — and nothing else. Ringly
   cannot reach the caller after the call (§1.4), so the read-back is the whole
   confirmation and the agent must not promise a message that will never arrive.
+- **F2.12** **No appointment is booked without the caller's phone number. There
+  are no anonymous bookings.** A customer's identity is their number (F2.4), so
+  an appointment with no number attached belongs to nobody: the business cannot
+  tell who is coming, and a later call cannot reschedule or cancel it against a
+  customer record that was never created.
+  - **Caller ID supplies it in the ordinary case**, and the agent never has to
+    ask. If the number is withheld or unavailable, **the agent asks for one and
+    will not complete the booking until it has one.**
+  - **A caller who will not give a number is refused, plainly**, and told why.
+    That is a worse outcome than booking them, and it is still better than a
+    diary entry the business cannot act on.
+  - **This does not change how an existing appointment is found** (F2.4). A
+    caller may still ring from a different phone or withhold their number when
+    rescheduling, because that lookup runs over appointments rather than over
+    customer records. The number is required to **create** an appointment, not to
+    find one.
 
 ### F3 — Service catalogue and opening hours
 
@@ -609,8 +625,7 @@ needs — the full list is F5.15.
 - **F5.15** From the dashboard a business can: manage its service catalogue and
   opening hours (F3.1, F3.5), confirm its test call succeeded (F1.12), set its
   own booking horizons (F2.9), reconnect a calendar after a
-  failure (F1.7b), **delete a customer by phone number** (F9.1a-i), and opt out
-  of the stats digest (F7.4). **It cannot change its timezone** (F3.6) or cancel
+  failure (F1.7b), and opt out of the stats digest (F7.4). **It cannot change its timezone** (F3.6) or cancel
   its account (F9.2); both go through Ringly.
 - **F5.16** **The dashboard states how fresh it is, on the page, always.**
   - **A nightly rollup is the right grain for every call metric** (F5.3).
@@ -730,9 +745,15 @@ charge failed first (F6.11).
   **unless the business has asked to cancel**. A business marked cancelled is
   **never charged again**, and resumes billing only if it explicitly withdraws
   the cancellation.
-- **F6.10a** Because cancellation arrives by email (F9.2), **the operator sets
-  and clears a business's cancelled status from the operator dashboard** (F8.10).
-  It is the single control that stops future charges.
+- **F6.10a** Because cancellation arrives by email (F9.2), **the operator sets,
+  clears, and marks revoked a business's cancelled status from the operator
+  dashboard** (F8.10). It is the single control that stops future charges.
+  **Marking a cancellation revoked is its own act, distinct from clearing it**
+  (F6.12a): clearing is for a cancellation that should never have been recorded,
+  while revoking is a business changing its mind inside the window — and revoking
+  has a consequence clearing does not, since the usage served during the window
+  becomes billable again. One control doing both would make a billing outcome
+  depend on which of the two the operator had in mind.
 - **F6.10b** **Payment clearing is the trigger; restoration is the consequence.**
   Ringly does not charge a suspended business to bring it back — it is already
   being charged, continuously, by the retries that never stopped (F6.11b-i).
@@ -1003,7 +1024,9 @@ charge failed first (F6.11).
     charged, though the service is still given. Ringly absorbs it.
   - **Countdown emails run through the window**, saying what happens, when, and
     what the business will and will not be charged.
-- **F6.12a** **Revoking inside the window erases it, retroactively.** The period
+- **F6.12a** **Revoking inside the window erases it, retroactively.** The
+  business asks by emailing the same address it cancelled through (F9.2) and the
+  operator marks the cancellation revoked (F6.10a). The period
   continues to its original end as though the request never happened — and the
   usage served during the window, which would have been free had they left,
   **becomes billable after all**. The free window is a concession for leaving,
@@ -1460,9 +1483,9 @@ open, or what is destroyed in forty-eight hours.
   names**. This is how a support conversation gets resolved — looking at the same
   screen the person on the phone is describing.
   - **Read-only. Every control in F5.15 is absent**, not disabled — editing
-    services and hours, setting horizons, confirming a test call, the digest
-    opt-out, and above all **deleting a customer** (F9.1a-i), which is
-    irreversible and belongs to the business alone.
+    services and hours, setting horizons, confirming a test call, and the digest
+    opt-out. **There is no customer-deletion control to hide**, here or on the
+    business's own dashboard (F9.1a).
   - **Visibly a borrowed view**, banner-marked with the business's name.
   - **Not impersonation.** No business session is created and no business
     credential is used; the page renders inside `/ops` from the operator's own
@@ -1520,9 +1543,11 @@ open, or what is destroyed in forty-eight hours.
 - **F8.9** Shows **rented phone numbers that are not earning**: numbers held for
   businesses that never activated, are suspended, or are otherwise not paying the
   $100 minimum. Every such number is a standing cost with no revenue against it.
-- **F8.10** The operator **sets and clears a business's cancelled status** here
-  (F6.10a), since cancellation arrives by email. It is the control that stops
-  future charges, and the only place it exists.
+- **F8.10** The operator **sets, clears, and marks revoked a business's cancelled
+  status** here (F6.10a), since both cancelling and revoking arrive by email
+  (F9.2). It is the control that stops future charges, and the only place it
+  exists. **Revoked is a distinct outcome from cleared**, because revoking inside
+  the window makes the usage served during it billable again (F6.12a).
 - **F8.11** Shows the same **outcome definitions** the business sees (F5.7), so
   both sides of a conversation about the numbers are reading the same
   definitions.
@@ -1589,45 +1614,48 @@ open, or what is destroyed in forty-eight hours.
   they have a relationship with; Ringly is the business's service provider
   (N6.5) and offers the caller no interface.
 
-  **Customer PII is destroyed on exactly two occasions, and both are automatic.
-  There is no third, and neither involves anyone at Ringly:**
+  **Customer PII is destroyed on exactly one occasion: when the business itself
+  is deleted.** There is no second occasion and no partial one. Nobody at Ringly
+  can do it, the business cannot do it from its dashboard, and no support action
+  reaches it.
 
-  |                      | **Path 1 — one customer**                                                              | **Path 2 — the whole business**                                                |
-  | -------------------- | -------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
-  | **What triggers it** | The business owner presses delete on the dashboard, having been asked by that customer | A lifecycle deadline expires — day 10 unactivated, day 60 suspended or dormant |
-  | **Who acts**         | The business owner, self-serve                                                         | Nobody. The lifecycle sweeper, on a timer                                      |
-  | **Scope**            | That one customer                                                                      | Every customer the business ever had, and the business itself                  |
-  | **Requirement**      | F9.1a-i                                                                                | F9.1a-ii                                                                       |
+  **There is deliberately no way to delete a single customer.** An earlier
+  version of this document gave the business a self-serve control for it; that
+  requirement is **withdrawn**, and its absence is the design:
+  - **A per-customer delete is a per-customer lookup**, and Ringly does not have
+    one. Every figure in this product is aggregate precisely because a customer
+    cannot be reliably identified (F5.3, F5.11) — the same person rings from two
+    phones and becomes two records (F2.4). A control that resolves a phone number
+    to a customer in order to erase them is the per-customer view the dashboard
+    exists to exclude, arriving through a side door.
+  - **Deleting one customer rewrites settled figures or lies about them.** Their
+    past appointments carry revenue the rollups already counted (F5.3) and
+    invoices already settled against them (F6.16). Either those figures move,
+    which breaks F6.16, or the appointment is kept with the name stripped, which
+    means the deletion was partial and the product said it was not.
+  - **A deletion path nobody can reach cannot be got wrong**, and this one would
+    be reached rarely and tested least.
 
-- **F9.1a-i** **Path 1 — deleting one customer, self-serve and immediate.** The
-  owner enters the caller's phone number, is shown what will be erased, confirms
-  once, and it is done. No email to Ringly, no operator, no ticket, no waiting —
-  a deletion right that depends on somebody reading an inbox is not a deletion
-  right.
+  **The consequence is stated rather than hidden** (R23): a business that
+  receives a consumer erasure request cannot action it through Ringly except by
+  ending its own account. Ringly is the processor and the business is the
+  controller (N6.5), so the obligation is the business's — but Ringly's ability
+  to assist with it is, deliberately, all-or-nothing.
 
-  **Phone number is the only way in**, because it is the customer's identity
-  (F2.4) and the only thing a caller can state unambiguously. This is a targeted
-  lookup in order to delete, **not** a customer directory: it never lists
-  customers and never resolves a partial match into a name, or it would become
-  exactly the per-customer view F5.11 excludes.
+- **F9.1a-i — Retired.** The number is left unused so references in earlier
+  documents and commits still resolve. It held the withdrawn per-customer
+  deletion path.
 
-  |                                           | Outcome                                                                                                          | Why                                                                                                                                                                                                                                                   |
-  | ----------------------------------------- | ---------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-  | **The `customers` row** — name, phone     | **Deleted**                                                                                                      | It is the PII. This is the point of the operation                                                                                                                                                                                                     |
-  | **Future appointments** for that customer | **Cancelled and deleted**, from the Ringly DB                                                                    | An appointment whose customer no longer exists is a slot the business holds open for a ghost                                                                                                                                                          |
-  | **Past appointments**                     | **Kept, with the customer link removed** — service, duration, price and date survive; the name and number do not | They carry revenue the business already earned and the rollups already counted (F5.3), and invoices already settled against them (F6.16). Deleting them would silently rewrite closed figures. What is left is a transaction with nobody's name on it |
-  | **`calls`**                               | **Untouched — nothing to touch**                                                                                 | Calls carry no customer link (F5.3) and no transcript or recording (F9.6). There is no PII in them to erase                                                                                                                                           |
-  | **Analytics rollups**                     | **Untouched**                                                                                                    | Daily aggregates only; no customer grain exists anywhere in them (§2.8)                                                                                                                                                                               |
-  | **Billing and money records**             | **Untouched**                                                                                                    | They are about the business, never about its callers (F9.9)                                                                                                                                                                                           |
-  | **The business's own calendar**           | Future events removed; **past events left alone**                                                                | Past events are the business's own record in a system Ringly does not own                                                                                                                                                                             |
+- **F9.1a-ii** **Every customer goes when the business does, automatically, and
+  only then.** When a lifecycle deadline expires — day 10 unactivated, day 60
+  suspended, or 60 days dormant after cancellation — the sweeper deletes the
+  tenant, and **customers, appointments and calls are ordinary tenant rows caught
+  by that** (F9.3, F9.8). **Nobody requests it and nobody performs it.**
 
-  **It is irreversible, and says so before the confirmation.**
-
-- **F9.1a-ii** **Path 2 — the business is deleted, and every customer goes with
-  it, automatically.** When a lifecycle deadline expires (day 10 unactivated, day
-  60 suspended or dormant) the sweeper deletes the tenant, and customers and
-  appointments are ordinary tenant rows caught by that (F9.3, F9.8). **Nobody
-  requests it and nobody performs it.**
+  **They are deleted in the same transaction that writes the departure record**
+  (F9.10). Not before it and not after it: the business ceasing to exist and its
+  customer data ceasing to exist are one event, and there is no window in which
+  either has happened without the other.
 
   **Exactly one thing survives, and it contains no consumer data by
   construction**: `departed_businesses` (F9.9) — the business's id and name, when
@@ -1649,9 +1677,22 @@ open, or what is destroyed in forty-eight hours.
   nowhere, or an answering phone with no calls left to prove itself with. The
   operator normally does this alongside pausing the clock (F9.1b).
 - **F9.2** **Cancellation is not self-serve in v3.** All business-initiated
-  account actions — cancellation, deletion, reactivation — go through Ringly's
-  **official contact email address**, which is the single supported channel.
-  _(Self-serve cancellation is deferred to soon after v3 — §1.9.)_
+  account actions — cancellation, **revoking a cancellation**, deletion and
+  reactivation — go through Ringly's **official contact email address**, which is
+  the single supported channel.
+  - **It is the same address in both directions.** A business that emailed to
+    cancel emails that same address to undo it, and the address is stated in
+    every cancellation-countdown email so it is in front of them at the moment
+    they might change their mind. Asking someone to find a different route to
+    reverse a decision than the one they used to make it is how a reconsideration
+    window goes unused.
+  - **A revocation is judged by when the business sent it, not by when Ringly
+    read it.** The window is short (F6.12) and the channel is asynchronous, so a
+    request sent inside it stands even if it is actioned after it has closed.
+    Otherwise a business that changed its mind in good time loses its account to
+    Ringly's own inbox latency.
+    _(Self-serve cancellation and self-serve revocation are both deferred to soon
+    after v3 — §1.9.)_
 - **F9.3** The two paths differ sharply. **Non-payment withdraws service after
   a week. Cancellation never withdraws it at all** — it runs out the period the
   business already paid for.
@@ -1796,7 +1837,10 @@ open, or what is destroyed in forty-eight hours.
     clock the ending sets (F9.3, F9.4): **day 60** for non-payment, **60 days
     after service stops** for a business that cancelled, **day 10** for one that
     never activated.
-  - There is no partial or rolling deletion, and no field-level expiry.
+  - **It all goes at once, in the transaction that writes the departure record**
+    (F9.1a-ii, F9.10) — customers, appointments, calls, usage and costs together.
+  - There is no partial or rolling deletion, no field-level expiry, and **no way
+    to delete any part of it early** (F9.1a).
 - **F9.9** **A departed business leaves a permanent financial record.** When a
   business is deleted, Ringly retains, indefinitely and outside the purge:
   - the business's **id and name**;
@@ -1909,11 +1953,12 @@ involves a backend call:
 - **N6.2** Card data never touches Ringly infrastructure (F6.3), keeping us out
   of PCI-DSS scope beyond SAQ-A.
 - **N6.3** All inbound webhooks verify provider signatures before acting.
-- **N6.4** Customer PII (name, phone) is per-tenant and deletable **without a
-  human in the loop** — wholesale and automatically when the tenant leaves
-  (N1.3, F9.1a-ii), and individually through a self-serve control on the
-  business dashboard (F9.1a-i). No deletion path depends on anyone at Ringly
-  reading an email.
+- **N6.4** Customer PII (name, phone) is per-tenant and is destroyed **wholesale
+  and automatically when the tenant leaves** (N1.3, F9.1a-ii), in the transaction
+  that writes the departure record. **That is the only deletion path, and it
+  needs no human in the loop** — it neither waits on anyone at Ringly nor offers
+  anyone a control to press. **There is deliberately no per-customer deletion**
+  (F9.1a).
 - **N6.5** **Ringly is a service provider to the business, not a controller of
   the caller's data.** The business owns its customer relationship and its own
   privacy obligations; Ringly processes on its behalf and offers the caller no
@@ -2101,8 +2146,11 @@ unused column, no dead code path held open against a future that may not arrive
 
 ### Soon after v3
 
-- **Self-serve cancellation.** Replaces the email-based flow in F9.2. Recorded
-  now because it raises questions that should be answered before it is built:
+- **Self-serve cancellation, and self-serve revocation with it.** Replaces the
+  email-based flow in F9.2 in both directions — a business that can cancel from
+  its own dashboard must be able to undo it there too, or the reconsideration
+  window is harder to use than the decision it exists to soften. Recorded now
+  because it raises questions that should be answered before it is built:
   - Does cancelling take effect immediately, or at period end?
   - What stops a business cycling — cancel, re-activate, and reset the $500 cap
     (F6.9) — which is only safe today because a human sees every cancellation?
