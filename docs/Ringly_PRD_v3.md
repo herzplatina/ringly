@@ -1465,6 +1465,31 @@ open, or what is destroyed in forty-eight hours.
   information either way, so the move is a transport change rather than a
   rewrite.
 
+**When a message cannot be delivered**
+
+- **F7.15** **Mail that cannot be delivered is surfaced, never swallowed.** A
+  message is only useful if it arrives, and the whole of F7 is built on the
+  assumption that telling a business something counts as having told them. When
+  that assumption fails it must fail **loudly to Ringly**, because it has already
+  failed silently to the business.
+  - **There are two ways a message fails permanently, and the second is worse.**
+    Either **the send never succeeded** — the delivery provider was unreachable
+    and the retries ran out — or **the provider accepted it and the recipient's
+    mail server rejected it**. The second is the dangerous one: it looks like
+    success at every point except the inbox, and a wrong or dead contact address
+    produces it every single time.
+  - **Both appear as a named condition on the operator's "needs attention" queue**
+    (F8.12). The business cannot be told by email that its email is not working,
+    so a human has to reach them another way.
+  - **It does not become a new operator alert email** (F7.13 is a closed set).
+    An address that bounces is a queue entry to work through, not a page in the
+    night.
+  - **An undeliverable deletion warning is the case that matters most**, because
+    I4 says nothing is deleted without one. Whether "warned" means _sent_ or
+    _delivered_ is deliberately settled at F9.3c — best effort to the address on
+    file, because an unactivated business may never have confirmed an address —
+    but the operator sees it, and that is the point of the queue.
+
 ### F8 — Operator dashboard (Ringly-internal)
 
 - **F8.1** Visible **only to the operator**. No business owner may reach it by
@@ -1610,11 +1635,12 @@ open, or what is destroyed in forty-eight hours.
 
   **Needs a human, or nothing will happen**
 
-  | Condition             | Trigger                                         | Operator action                                               |
-  | --------------------- | ----------------------------------------------- | ------------------------------------------------------------- |
-  | **Clock paused**      | An operator paused a lifecycle deadline (F9.1b) | Resolve and unpause — a paused clock never resumes itself     |
-  | **Dispute open**      | A chargeback was filed (F6.17)                  | Contest or concede by hand in Stripe; may outlast the account |
-  | **Debt on departure** | A settlement charge failed (F6.12f)             | Informational — recorded as owed, not pursued                 |
+  | Condition               | Trigger                                                                        | Operator action                                                                                            |
+  | ----------------------- | ------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------- |
+  | **Clock paused**        | An operator paused a lifecycle deadline (F9.1b)                                | Resolve and unpause — a paused clock never resumes itself                                                  |
+  | **Dispute open**        | A chargeback was filed (F6.17)                                                 | Contest or concede by hand in Stripe; may outlast the account                                              |
+  | **Debt on departure**   | A settlement charge failed (F6.12f)                                            | Informational — recorded as owed, not pursued                                                              |
+  | **Email undeliverable** | A message exhausted its retries, or the recipient's server rejected it (F7.15) | Reach the business another way and correct the address. **Assume they know none of what the message said** |
 
   A business can appear under several conditions at once and is listed once per
   condition, because they need different actions.
@@ -2015,15 +2041,15 @@ Ringly is assembled from services it does not control. Pretending otherwise
 produced the wrong behaviour once already (R1), so the dependencies and their
 failure modes are stated explicitly.
 
-| Dependency                                         | Used for                    | If it is down                                                                                   |
-| -------------------------------------------------- | --------------------------- | ----------------------------------------------------------------------------------------------- |
-| **Retell**                                         | Telephony, STT, LLM, TTS    | **Total outage.** No call is answered. Nothing Ringly can do; not survivable by design.         |
-| **Supabase**                                       | All tenant data             | **Total outage.** The agent cannot resolve the business or its catalogue. Not survivable.       |
-| **Application host** (N8, undecided)               | The application itself      | **Total outage.**                                                                               |
-| **Google Calendar** (or other scheduling provider) | Verifying a slot is free    | **Booking fails audibly** (F2.7). The caller is told; nothing is written. Enquiries still work. |
-| **Stripe**                                         | Charging, refunds, tax      | Calls continue. Charges queue and settle later; usage accrues locally regardless (§2.9).        |
-| **Resend**                                         | Business and operator email | Calls continue. Email retries; nothing is lost, delivery is delayed.                            |
-| **Google Places**                                  | Onboarding enrichment       | New onboarding degrades to manual entry. Existing businesses unaffected.                        |
+| Dependency                                         | Used for                    | If it is down                                                                                                                 |
+| -------------------------------------------------- | --------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| **Retell**                                         | Telephony, STT, LLM, TTS    | **Total outage.** No call is answered. Nothing Ringly can do; not survivable by design.                                       |
+| **Supabase**                                       | All tenant data             | **Total outage.** The agent cannot resolve the business or its catalogue. Not survivable.                                     |
+| **Application host** (N8, undecided)               | The application itself      | **Total outage.**                                                                                                             |
+| **Google Calendar** (or other scheduling provider) | Verifying a slot is free    | **Booking fails audibly** (F2.7). The caller is told; nothing is written. Enquiries still work.                               |
+| **Stripe**                                         | Charging, refunds, tax      | Calls continue. Charges queue and settle later; usage accrues locally regardless (§2.9).                                      |
+| **Resend**                                         | Business and operator email | Calls continue. Email retries; delivery is delayed. A message that still cannot be delivered surfaces to the operator (F7.15) |
+| **Google Places**                                  | Onboarding enrichment       | New onboarding degrades to manual entry. Existing businesses unaffected.                                                      |
 
 - **N7.1** A failure in a **non-critical** dependency (Stripe, Resend, Places)
   must never prevent an existing business from answering calls. Retell, Supabase
