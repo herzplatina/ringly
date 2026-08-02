@@ -16,9 +16,10 @@ the document this one is answerable to. Supersedes Part 2 of
 > plan; **§2.18** carries the risk register, whose numbers are cited from the PRD
 > and from commit messages and are therefore stable.
 
-> **Not yet written: the scenario catalogue and the requirement coverage map**
-> (§2.19). Until they land, `tests/behaviour/` still describes the withdrawn
-> catalogue.
+> **Not yet written: the scenario catalogue** (§2.19), and with it the
+> requirement coverage it carries — each scenario names the requirement it holds,
+> so the catalogue _is_ the coverage map. Until it lands, `tests/behaviour/` still
+> describes the withdrawn catalogue.
 
 > **Revision history is in `git log docs/Ringly_EDD_v3.md`** — one commit per
 > decision, each carrying the reasoning for that decision alone.
