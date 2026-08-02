@@ -1514,13 +1514,21 @@ open, or what is destroyed in forty-eight hours.
   currently past due — so irregular payers are visible at a glance.
 - **F8.4** Platform totals: revenue, cost, margin, and **the number of active
   businesses**, across all businesses in the selected range.
-- **F8.5** **Cost model (v1): Retell only.** Retell is the sole recurring cost
-  attributed per business, covering the telephony number rental and all per-call
-  charges including LLM. Deliberately excluded: Supabase and the application
-  host (fixed platform overhead, immaterial per tenant, and **not yet chosen** —
-  N8) and Google Places (one-off at onboarding, considered covered by the first
-  $100). A cost line is added to this model only when something new is billed
-  per business; nothing is carried here in advance of that.
+- **F8.5** **Cost model (v1): two lines, both billed per business per call.**
+  - **Telephony and the voice agent** — the number rental plus all per-call
+    charges including the agent's own LLM.
+  - **Outcome classification** — the model call that labels each call's outcome
+    (EDD §2.9.1). It is a separate vendor and a separate charge from the agent's
+    LLM, and it is metered per call, so it belongs here rather than in platform
+    overhead. It is small next to telephony and **is not therefore allowed to be
+    invisible**: a cost that nobody attributes is a cost nobody notices growing.
+
+  Deliberately excluded: the database and the application host (fixed platform
+  overhead, immaterial per tenant, and **not yet chosen** — N8) and Google Places
+  (one-off at onboarding, considered covered by the first $100). A cost line is
+  added to this model only when something new is billed per business; nothing is
+  carried here in advance of that.
+
 - **F8.6** **Operator alerts** are the set in F7.13 and no other: a business
   reaching its cap (F6.9b, with cost-to-serve and margin), a payment failure,
   a calendar unreachable (F2.7), an activation stuck (F1.13a), **an unactivated

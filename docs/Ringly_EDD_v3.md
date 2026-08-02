@@ -301,6 +301,9 @@ calls(id pk, business_id fk, provider_call_id unique,
       started_at, ended_at, connected_seconds,
       is_test_call, calendar_incident_id fk null,
       outcome null, outcome_ruleset_version null, classified_at null)
+
+call_sessions(provider_call_id pk, business_id fk, snapshot jsonb,
+              opened_at, expires_at)
 ```
 
 The decisions in that block that are load-bearing:
@@ -349,6 +352,14 @@ them, so a creation timestamp would be a third near-identical instant that
 nothing reads — scaffolding of exactly the kind §1.9 forbids. **The timestamp
 that does earn its place is `classified_at`**, because it is genuinely later than
 the call and the rollup has to reason about that gap (§2.9.2).
+
+**`call_sessions` is a per-conversation freeze, not a cache.** It holds the
+configuration resolved at call start so every tool call in that conversation sees
+the same catalogue, hours and horizon — F3.2's "a caller mid-conversation keeps
+what they started with". It is a table rather than process memory because the two
+webhooks of one conversation can land on different instances, and it doubles as
+the tenancy boundary for a surface with no session (§2.6.6.2). Rows are deleted
+at call end and swept at `expires_at`.
 
 **`calls.calendar_incident_id` records that a call was refused because the
 calendar could not be read**, written at the time of the refusal in the same
@@ -520,8 +531,11 @@ either.
 **No median column, deliberately.** A median cannot be recovered from daily
 aggregates, which is why F5.16 makes it the one live query in the dashboard.
 
-**`cost_records.business_id` is nullable** so that onboarding enrichment spend,
-which happens before a business exists, is still attributable (N9.2).
+**`cost_records.source` has exactly three values.** Two bill per business —
+`telephony` and `classifier` (F8.5) — and `enrichment` covers onboarding spend
+that has no business to bill to yet. **`business_id` is nullable for exactly that
+third case** (N9.2): a runaway enrichment loop must appear in the operator's cost
+figures even before a tenant exists.
 
 ### 010 — email (F7)
 
@@ -748,40 +762,128 @@ Failure is returned to the agent, which apologises; the incident machinery
 
 ### 2.6.2 Three webhooks
 
-| Webhook        | When              | Does                                                                 |
-| -------------- | ----------------- | -------------------------------------------------------------------- |
-| **Call start** | The call connects | Resolves the business from the dialled number; returns tenant config |
-| **Tool call**  | Mid-conversation  | Availability, book, reschedule, cancel                               |
-| **Call end**   | The call hangs up | Persists the call, meters usage, queues classification               |
+All three are `POST`, all three verify the provider's signature **before parsing
+the body** (N6.3) using the vendor's own helper, and all three reject anything
+whose signature does not check with `401` and no side effect.
 
-Every one verifies the provider's signature before acting (N6.3), using the
-vendor's own helper rather than a hand-rolled comparison.
+| Webhook        | Fires              | Sync work                                      | Returns to the agent               |
+| -------------- | ------------------ | ---------------------------------------------- | ---------------------------------- |
+| **Call start** | Call connects      | Resolve business, build and persist a snapshot | Dynamic variables for the greeting |
+| **Tool call**  | Agent calls a tool | Availability / book / reschedule / cancel      | The tool result                    |
+| **Call end**   | Call hangs up      | Persist the call row and its usage record      | `204`                              |
 
-**The business is resolved once, at call start, from the number that was
-dialled** — never from anything the caller says or supplies. That single fact is
-what keeps N1.2 true across a surface with no session (§2.3.1).
+#### 2.6.2.1 Call start
+
+```
+1. verify signature                                  (reject → 401)
+2. business_id ← number_index[to_number]             (miss → single query, cache)
+3. snapshot    ← config_cache[business_id]           (miss → single query, cache)
+4. INSERT INTO call_sessions (provider_call_id, business_id, snapshot, expires_at)
+     VALUES ($1, $2, $3, now() + interval '4 hours')
+     ON CONFLICT (provider_call_id) DO NOTHING
+5. return { business_name, greeting, services_summary, timezone }
+```
+
+**`to_number` is the only routing input, and it is trustworthy because the
+signature covers it.** Nothing here reads the caller's number, and nothing
+downstream re-derives the tenant (2.3.1).
+
+**Step 4 is what makes "resolved once, passed down" real.** Without it, "passed
+down" is an aspiration: the tool webhook arrives at a _different process_, with
+no session, carrying only a call id.
+
+#### 2.6.2.2 Tool call
+
+```
+1. verify signature                                  (reject → 401)
+2. session ← SELECT business_id, snapshot FROM call_sessions
+               WHERE provider_call_id = $1           (miss → refuse + alert)
+3. dispatch on tool name, scoped to session.business_id
+4. return the tool result
+```
+
+**Every query in step 3 names `session.business_id` explicitly.** This surface
+runs under the service role with no RLS (2.3.1), so the single-row lookup in step
+2 _is_ the tenancy boundary. A payload field naming a business is never trusted;
+there is no such field.
+
+**A missing session row is fail-closed, not fail-back.** It cannot happen in
+normal operation — the row is written before the agent can speak — so it means a
+Ringly fault. The booking is refused, the caller gets the standard apology, and
+the operator is alerted. Re-resolving the tenant from the payload instead would
+turn a Ringly bug into a cross-tenant risk.
+
+**The four tools, as the agent sees them:**
+
+| Tool                    | Input                                            | Output                                          |
+| ----------------------- | ------------------------------------------------ | ----------------------------------------------- |
+| `check_availability`    | `{ service, from, to }`                          | `{ slots: [...] }` or `{ refused, reason }`     |
+| `book_appointment`      | `{ service, at, customer_name, customer_phone }` | `{ booked, at, service }` or `{ refused, ... }` |
+| `find_appointment`      | `{ name, date, time, service }`                  | `{ match }` or `{ refused, unmatched_field }`   |
+| `reschedule` / `cancel` | `{ appointment_ref, to? }`                       | `{ done }` or `{ refused, reason }`             |
+
+`appointment_ref` is issued by `find_appointment` and is opaque and
+session-scoped — the agent never handles an appointment id, so a hallucinated
+identifier cannot address someone else's booking.
+
+`customer_phone` is required on `book_appointment` (F2.12); the agent asks for it
+when caller ID does not supply one, and the tool refuses without it.
+
+#### 2.6.2.3 Call end
+
+```
+1. verify signature                                  (reject → 401)
+2. INSERT INTO calls (...) ON CONFLICT (provider_call_id) DO NOTHING
+3. INSERT INTO usage_records (...) if the period is open
+4. DELETE FROM call_sessions WHERE provider_call_id = $1
+5. return 204
+```
+
+`is_test_call` is written here from the business's billing status **at this
+moment** (F1.13c), and `outcome` is left null for §2.9.1. The `ON CONFLICT` makes
+a redelivered webhook a no-op rather than a double-metered call.
 
 ### 2.6.3 Booking, in order
 
-1. Resolve the requested time in the **business's** timezone (F2.5, N5.2).
-2. Reject anything beyond the business's booking horizon (F2.9).
-3. Reject anything outside opening hours (F2.8) — the agent answers 24 hours,
-   the diary does not.
-4. **Read the connected calendar and Ringly's own appointments together.** If
-   the calendar read fails for any reason, stop here and refuse (F2.7, F2.7a).
-5. Write the appointment and the provider event.
-6. Read the booking back to the caller (F2.11).
+Steps 1–3 are local and cost nothing; step 4 is the only external call and owns
+the whole provider budget (§2.6.1).
 
-**The write is guarded against the race that happens between offering a slot and
-taking it** (F2.3a). A unique constraint on the business's own appointments is
-the arbiter; the loser is told the slot has just gone and is re-offered times.
-Two callers racing is not an exotic case at these volumes — it is the normal
-consequence of offering the same nearest-open time to both.
+```
+1. resolve the requested time in the business's timezone   (N5.2)     local
+2. reject beyond booking_horizon_days                      (F2.9)     local
+3. reject outside opening hours                            (F2.8)     local
+4. read provider busy-intervals AND own appointments       (F2.3)     ≤5000 ms
+   └─ failure of any kind → refuse, open/attach incident (§2.6.4)
+5. INSERT the appointment                                  (F2.3a)    local
+   └─ unique violation → "that slot has just been taken", re-offer
+6. create the provider event                               (F2.11)    ≤5000 ms
+   └─ failure → DELETE the appointment, refuse
+7. return the confirmation for the agent to read back
+```
+
+**Steps 5 and 6 are not a transaction and cannot be**, because one of them is an
+HTTP call to somebody else. The order is chosen so the failure is recoverable in
+the safe direction: taking the local row first means the slot is held against a
+concurrent caller, and unwinding it on provider failure leaves no booking rather
+than a booking the business will never see in its own calendar. The reverse order
+would leave an orphaned calendar event nobody can cancel.
+
+**The race is arbitrated by the database, not by checking first** (F2.3a):
+
+```sql
+CREATE UNIQUE INDEX no_overlap_per_business ON appointments
+  USING gist (business_id WITH =, tstzrange(starts_at, ends_at) WITH &&)
+  WHERE status = 'booked';
+```
+
+Two callers offered the same nearest-open slot both attempt the insert; one gets
+a unique violation and hears "that slot has just been taken." At these volumes
+that is the normal consequence of offering the same time to both, not an exotic
+case.
 
 **A repeating request books its first instance and stops** (F2.2a). There is no
-series, nothing is materialised, and the agent says plainly that one appointment
-was booked. Nothing downstream may ask whether an appointment belongs to a
-series, because nothing does.
+series, nothing is materialised, and no requirement downstream may ask whether an
+appointment belongs to one.
 
 ### 2.6.4 Fail-closed, concretely
 
@@ -823,11 +925,28 @@ one wins and gets a row back, and only that one queues an email. Without it,
 "check then insert" races and forty callers become forty emails on the worst
 possible day for the business to receive them.
 
-**The cached flag is an optimisation, not the correctness mechanism.** The
-tenant config cache (§2.6.6) carries `hasOpenCalendarIncident` so a healthy
-business does not attempt a pointless `UPDATE` on every call. If the flag is
-stale the `UPDATE` is simply a no-op — it is already scoped to
-`closed_at IS NULL` — and the next call or the probe closes the incident.
+**"Was the call healthy" is not a lookup.** It is the return value of the read
+the handler just performed, in the handler, on the stack. There is no state to
+consult and nothing to keep in sync: step 4 of §2.6.3 either returned busy
+intervals or it did not, and that boolean is the whole input to the transition.
+
+**An earlier draft cached an `hasOpenCalendarIncident` flag to skip the no-op
+`UPDATE` on healthy calls. It is removed, and it was wrong twice over.**
+
+- **It could not work.** The config cache is process-local (§2.6.6) and the
+  application runs many instances. A failure handled by instance A sets a flag
+  instance B has never seen, so B's next successful call would skip the close
+  anyway. The flag would have been correct only in a single-process deployment,
+  which this is not.
+- **It optimised nothing worth optimising.** The `UPDATE` is already scoped to
+  `closed_at IS NULL`, so on a healthy business it matches no rows, touches no
+  pages, and returns. It runs **after the response** (N3.2), so it is not on the
+  caller's clock, and at N2.1's volumes it is well under one write per second
+  across the whole platform.
+
+So the `UPDATE` is issued unconditionally after responding. The cheapest correct
+thing beat the fastest incorrect one, and the design carries one less piece of
+state that could drift.
 
 **The probe is what makes the banner honest when nobody rings.** Closing on "the
 first successful read" is fine while calls are arriving and useless otherwise: a
@@ -869,20 +988,79 @@ about it because voice input is lossy.
   Tuesday, and the agent states the full date back and waits for confirmation
   before acting.
 
-### 2.6.6 Tenant config cache
+### 2.6.6 Configuration on the call path
 
-The call-start webhook needs the business, its services, hours, timezone and
-horizon on every call. N4.2 forbids hitting the database or a paid API for
-slow-changing configuration on every call.
+Two different problems, deliberately solved by two different mechanisms. Getting
+them confused is how a caller ends up hearing prices change mid-conversation.
 
-**A process-local cache with a 60-second TTL**, which is not a coincidence:
-F3.2 requires a catalogue or hours change to reach the agent within 60 seconds,
-so the TTL _is_ the propagation guarantee. A caller already mid-conversation
-keeps the configuration they started with, because the config is resolved once
-at call start and passed down.
+#### 2.6.6.1 The 60-second cache — avoiding a query per call
 
-No shared cache product, because 2.1.6 forbids the host dependency and a
-60-second TTL over 10⁴ tenants does not need one.
+N4.2 forbids re-reading slow-changing configuration from the database on every
+call. A **process-local, in-memory cache** with a **60-second TTL** holds two
+maps:
+
+| Map            | Key           | Value                                                                               | Invalidated by |
+| -------------- | ------------- | ----------------------------------------------------------------------------------- | -------------- |
+| `number_index` | `to_number`   | `business_id`                                                                       | TTL            |
+| `config_cache` | `business_id` | timezone, horizon, greeting, active services with price and duration, opening hours | TTL            |
+
+**The 60 seconds is the requirement, not a tuning choice.** F3.2 gives a
+catalogue or hours change ≤60s to reach the next caller, so the TTL _is_ the
+propagation guarantee. Raising it would break F3.2; lowering it would buy nothing
+a business can perceive.
+
+**Nothing invalidates it on write.** An owner saving a price does not notify
+running processes — there is no bus to notify them over, and 2.1.6 forbids
+adopting one. Expiry is the whole mechanism, and it is why the guarantee is
+stated as "within 60 seconds" rather than "immediately".
+
+**No shared cache product.** 10⁴ tenants × a few KB is a few tens of MB per
+process, each instance warms independently, and a miss costs one indexed query.
+Redis would add a host dependency (2.1.6) and a second thing to be down.
+
+**A cold process is correct, just slower** — every miss falls through to the
+database. There is no path where a cache miss produces a wrong answer, only a
+slower one, which is what keeps the 400ms p95 an average-case concern rather than
+a correctness one.
+
+#### 2.6.6.2 The per-call snapshot — freezing config for one conversation
+
+The cache above is emphatically **not** what the tool webhook reads. If it were,
+a caller quoted £40 at the start of a call could be booked at £45 sixty seconds
+later, because the TTL expired mid-conversation. F3.2 says the opposite: _a
+caller already mid-conversation keeps the catalogue they started with._
+
+So the call-start webhook **writes the resolved configuration once**, and every
+tool call in that conversation reads that frozen copy:
+
+```
+call_sessions(provider_call_id pk, business_id, snapshot jsonb,
+              opened_at, expires_at)
+```
+
+- **Written once**, at call start, never updated during the call.
+- **Read by primary key** on every tool call — a single-row lookup, ~1ms, inside
+  the 80ms datastore budget.
+- **Deleted** by the call-end webhook; a sweeper removes rows past `expires_at`
+  (4 hours) for calls whose end webhook never arrived.
+
+It has to be a table rather than a process-local map for the same reason the
+incident flag failed: **the tool webhook may reach a different instance than the
+call-start webhook did.** Process-local memory is not a place two webhooks of one
+conversation can meet.
+
+It also earns its place twice. Besides freezing the catalogue, it is the
+mechanism behind §2.3.1's "resolved once and passed down" — the row _is_ the
+passing down, and the tenancy boundary on a surface with no session (§2.6.2.2).
+
+#### 2.6.6.3 What is deliberately not cached
+
+- **Calendar busy intervals.** Read live on every booking (R6). A stale
+  conflict check is worse than a slow one — it is 2.1.1 with extra steps.
+- **Calendar incident state.** Not cached anywhere; see §2.6.4 for why the flag
+  was removed.
+- **Anything about money.** Billing state is read live where it is needed and
+  never on the call path.
 
 **Testing this section**
 
@@ -1065,46 +1243,46 @@ business-hour is far kinder to rate limits than a request per call.
 
 #### 2.9.1.2 The call
 
-Anthropic's Messages API via `@anthropic-ai/sdk`, already
-a dependency.
+Anthropic's Messages API via `@anthropic-ai/sdk`, already a dependency.
 
 ```ts
 await client.messages.batches.create({
   requests: unclassified.map((call) => ({
     custom_id: call.id, // §2.9.1.5
     params: {
-      model: policy.classifierModel, // config, not a constant — see below
+      model: policy.classifierModel, // "claude-haiku-4-5"
       max_tokens: 256,
-      thinking: { type: "disabled" },
       output_config: {
-        effort: "low",
         format: { type: "json_schema", schema: OUTCOME_SCHEMA },
       },
-      system: [
-        {
-          type: "text",
-          text: rulesetPrompt(policy),
-          cache_control: { type: "ephemeral" },
-        },
-      ],
-      messages: [{ role: "user", content: transcript }],
+      system: rulesetPrompt(policy),
+      messages: [{ role: "user", content: fullTranscript }],
     },
   })),
 });
 ```
 
-**`claude-opus-5`** is the default. The model id is a **`pricing_policy` column,
-not a constant** — the same principle as every other number in this design
-(F6.15). Trading down to a cheaper model is a cost decision with a quality
-consequence, and it belongs to whoever owns the margin, not to this document.
+**`claude-haiku-4-5`.** Five mutually exclusive labels against a transcript that
+already contains the answer is the shape Haiku is for, and the cheapest model
+that can do a job correctly is the right one when the job runs on every call. The
+id is a **`pricing_policy` column, not a constant** (F6.15), so moving up a tier
+if labels disappoint is a configuration change and a cost decision, not a deploy.
 
-**Thinking is disabled at `low` effort**, which is valid only at effort `high` or
-below. Both documented hazards of disabling thinking are bounded here: tool calls
-leaking into prose cannot happen because the request declares no tools, and
-`<thinking>` tags cannot reach the outcome because the response is schema-
-constrained. If label quality proves marginal the first lever is adaptive
-thinking at `low` effort — **not** raising effort, which buys deliberation this
-task does not need.
+**The whole transcript goes, never an excerpt.** Whether a caller got what they
+rang for is frequently settled in the last few turns — a booking agreed and then
+abandoned, an enquiry that became a reschedule. Truncating to save tokens would
+trade away the thing being measured for a rounding error: at Haiku's batch rate a
+1,500-token transcript costs about a tenth of a cent, and Haiku 4.5's 200K
+context makes even a very long call a non-issue.
+
+**Two request-shape details are specific to Haiku 4.5 and easy to get wrong:**
+
+- **No `output_config.effort`.** Effort is not supported on Haiku 4.5 and sending
+  it is a `400`. Depth is not a lever here; the schema is.
+- **No `thinking` field.** Haiku 4.5 predates adaptive thinking, so omitting the
+  parameter already means no thinking — which is what a five-way classification
+  wants. `{type: "adaptive"}` would be a `400`;
+  `{type: "enabled", budget_tokens: N}` would work and would be waste.
 
 #### 2.9.1.3 The schema is the contract
 
@@ -1129,11 +1307,17 @@ Five values and no sixth: the enum is generated from the same policy row that
 renders the dashboard's definitions panel (§2.9.4), so a ruleset change moves the
 prompt, the schema, and the business's explanation together or moves none of them.
 
-**The system prompt is the cache prefix.** It carries the ruleset and is byte-
-identical across every call in the batch and across batches until the policy
-version changes — the ideal shape for prompt caching (~0.1× on the cached span).
-The transcript is the only volatile part and sits after the breakpoint. Opus 5's
-minimum cacheable prefix is 512 tokens, which the ruleset comfortably exceeds.
+**Prompt caching is deliberately not used, and the reason is a number.** The
+ruleset system prompt is byte-identical across every request — the ideal shape
+for caching — but **Haiku 4.5's minimum cacheable prefix is 4,096 tokens** and
+the ruleset is a few hundred. A `cache_control` marker below that floor does not
+error; it silently does nothing and reports `cache_creation_input_tokens: 0`.
+Padding a prompt to reach the floor would cost more than the cache saves.
+
+Written down because it is exactly the kind of thing someone "fixes" by adding
+the marker back. If the classifier ever moves to a model whose floor it clears —
+512 tokens on Opus 5, 1,024 on Sonnet — caching becomes worth adding and the cost
+figures below change.
 
 #### 2.9.1.4 Failure is safe by construction
 
@@ -1181,21 +1365,28 @@ That is also why classification cannot be deferred indefinitely: the provider's
 retention is 30 days (F9.6), after which the input no longer exists. An hourly
 cadence leaves ~700 hours of margin.
 
-#### 2.9.1.7 Cost, and a gap in the cost model
+#### 2.9.1.7 Cost, and where it lands
 
-At Opus 5 pricing ($5/$25 per
-MTok), batch (−50%), a cached ruleset and a ~1k-token transcript, a classified
-call costs on the order of **$0.003**. Against $0.13–0.31/minute of telephony it
-is noise per call — but it is **not free at 10⁴ tenants**, and it is a real
-per-business per-call cost.
+Haiku 4.5 is $1.00 / $5.00 per MTok; the Batch API halves both to **$0.50 /
+$2.50**. A representative call — a ~1,500-token transcript, a ~600-token ruleset,
+a ~30-token answer:
 
-**F8.5's cost model does not include it.** That requirement attributes "Retell
-only… all per-call charges including LLM", which is the _agent's_ model, not the
-classifier's. F8.5 says a cost line is added when something new is billed per
-business — this is, so `cost_records` carries a `classifier` source alongside
-`telephony`, and the operator's margin column reflects both. **Left as a flagged
-discrepancy against F8.5 rather than resolved silently**: the requirement says
-Retell is the sole cost line, and this design needs a second one.
+|                              | Tokens |         Rate |          Cost |
+| ---------------------------- | -----: | -----------: | ------------: |
+| Input (transcript + ruleset) |  2,100 | $0.50 / MTok |      $0.00105 |
+| Output (the JSON object)     |     30 | $2.50 / MTok |      $0.00008 |
+| **Per classified call**      |        |              | **≈ $0.0011** |
+
+A business taking 100 calls in a period spends about **12 cents** of
+classification against its $100. Two comparisons give it scale: it is roughly
+**1% of what the same call costs in telephony**, and across N2.1's 10⁴ tenants it
+is a four-figure annual line rather than a rounding error.
+
+**It is attributed per business** (F8.5): written to `cost_records` with source
+`classifier` alongside `telephony`, and reflected in the operator's cost and
+margin columns (§2.9.5). Small is not the same as invisible — a cost nobody
+attributes is a cost nobody notices growing, and this one grows with call volume,
+which is precisely the axis the margin table exists to watch.
 
 #### 2.9.1.8 What is not tested here
 
@@ -1313,11 +1504,16 @@ anything an accountant can use. **Only money actually received counts as
 revenue, and only real incurred cost counts as cost** — neither is accrued nor
 projected.
 
-**Cost model v1 is Retell only** (F8.5): the number rental and all per-call
-charges including LLM. Deliberately excluded — the database and application host
-(fixed overhead, immaterial per tenant, and the host is not yet chosen) and
-Places (one-off at onboarding, covered by the first $100). A cost line is added
-when something new is billed per business, not in advance of it.
+**Cost model v1 is two lines, both per business per call** (F8.5): **telephony
+and the voice agent** — number rental plus per-call charges including the agent's
+own LLM — and **outcome classification** (§2.9.1.7, ≈$0.0011/call). Separate
+vendors, separate meters; collapsing them would hide the one that grows fastest
+with volume.
+
+Deliberately excluded — the database and application host (fixed overhead,
+immaterial per tenant, and the host is not yet chosen) and Places (one-off at
+onboarding, covered by the first $100). A cost line is added when something new
+is billed per business, not in advance of it.
 
 **Two filters govern the page** (F8.2): a range — current calendar month, past 3,
 6 or 12 — and a business selector listing every business active in that range,
