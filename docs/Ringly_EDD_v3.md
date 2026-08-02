@@ -282,7 +282,8 @@ business_hours(business_id fk, weekday, opens_at, closes_at)
 customers(id pk, business_id fk, phone, name, created_at,
           unique (business_id, phone))
 
-appointments(id pk, business_id fk, customer_id fk null, service_id fk null,
+appointments(id pk, business_id fk, customer_id fk not null,
+             service_id fk not null on delete restrict,
              starts_at, duration_minutes, status,
              provider_event_id, created_at)
 
@@ -292,7 +293,7 @@ calls(id pk, business_id fk, provider_call_id unique,
       classified_at null, created_at)
 ```
 
-Four decisions in that block are load-bearing.
+Five decisions in that block are load-bearing.
 
 **`is_test_call` is written at the time of the call, never derived** (F1.13c).
 Billing status changes; a call's history must not. Deriving it from today's
@@ -313,9 +314,24 @@ copy. An appointment never becomes unpriceable because the catalogue moved on.
 identity is their phone number (F2.4). The same person ringing from two phones
 becomes two records and Ringly cannot tell; F2.4 accepts that explicitly.
 
-**`appointments.customer_id` is nullable and set null on customer delete**, not
-cascaded — F9.1a-i keeps past appointments with the customer link removed,
-because they carry revenue the rollups already counted.
+**`appointments.service_id` is NOT NULL, and that is the same decision as the
+soft delete above.** They are a pair and neither survives alone. Because a
+deleted service keeps its row and its versions, the foreign key target always
+exists, so the column can never legitimately be null — and if it were nulled the
+appointment would become precisely what F3.4 forbids: unpriceable, because
+nulling the reference is exactly how the link to the last known price is lost.
+`on delete restrict` rather than `set null`, so an implementation that tries to
+hard-delete a service fails loudly instead of quietly producing that state.
+
+**`appointments.customer_id` is NOT NULL, and there is no path that ever makes it
+null.** Two rules meet here and both point the same way. **No appointment is
+booked without the caller's number** (F2.12) — there are no anonymous bookings,
+so it is never null at creation. And **there is no per-customer deletion**
+(F9.1a) — customers are destroyed only when the business is, in the transaction
+that removes it (§2.13.5), so there is never a surviving appointment whose
+customer has gone. A nullable column here would model a state the product does
+not have and invite a `set null` that silently orphans revenue the rollups have
+already counted.
 
 ### 006 — scheduling credentials (F4)
 
@@ -461,6 +477,7 @@ _Behaviours owed to the catalogue_
 - A call's test-call status does not change when the business activates.
 - Grace usage served while no period is open is recorded and never charged.
 - A policy change applies to the next period and leaves settled ones untouched.
+- No appointment can exist without a customer or without a service, by any route.
 
 ---
 
@@ -725,6 +742,9 @@ _Behaviours owed to the catalogue_
 - A caller ringing from a number the business has never seen can still reschedule.
 - "Tuesday at 2" resolves to the next Tuesday and is stated back before acting.
 - A repeating request books exactly one appointment and says so.
+- A caller with a withheld number is asked for one and is refused if they will not
+  give it; a caller with a withheld number can still reschedule an existing
+  appointment.
 - A catalogue change reaches the next caller within 60 seconds and does not
   disturb a caller mid-conversation.
 - A caller the agent cannot help is given the business's own details and recorded
@@ -1196,7 +1216,11 @@ current period.
   still given. Ringly absorbs it.
 - **Revoking erases the window retroactively** (F6.12a) and the usage served
   during it **becomes billable after all**. The free window is a concession for
-  leaving, not a way to take a week of free service and stay.
+  leaving, not a way to take a week of free service and stay. The business asks
+  by emailing the same address it cancelled through, and the operator marks it
+  revoked (§2.12). **A revocation is judged by when it was sent, not when it was
+  read** (F9.2): the window is short and the inbox is asynchronous, so the design
+  must accept one actioned after the window closed and unwind the settlement.
 - **When it closes**, the period settles early for usage up to the request,
   clamped. **The $100 is not refunded, in whole or in part** (F6.12b).
 - **Then 60 days dormant**, fully recoverable, number and every record retained
@@ -1275,6 +1299,8 @@ _Behaviours owed to the catalogue_
 - Cancelling continues service, stops billing usage, and settles early when the
   window closes.
 - Revoking inside the window makes the free usage billable again.
+- A revocation sent inside the window but actioned after it closed is honoured,
+  and the early settlement is unwound.
 - The $100 is never refunded or prorated on any path.
 - A business behind on payment cannot cancel into free service.
 - A chargeback follows the non-payment path exactly.
@@ -1409,9 +1435,8 @@ credential.
 
 **The borrowed view is a render, not an impersonation** (F8.2e). The operator
 picks a business by name and sees that business's dashboard as it sees it,
-banner-marked, **read-only — every control absent rather than disabled**. Above
-all, deleting a customer is absent: it is irreversible and belongs to the
-business alone.
+banner-marked, **read-only — every control absent rather than disabled**. There
+is no customer-deletion control to hide: the product has none (§2.13.5).
 
 **"Needs attention" is a table of named conditions, not a feeling** (F8.12).
 Every row is a business, the condition, how long it has been in it, and what the
@@ -1420,10 +1445,16 @@ enumerated in F8.12 and are derived from lifecycle, billing and incident state �
 never stored separately, because a second copy of "is this suspended" is a second
 thing that can be wrong.
 
-**Three controls, and they are the only ones** (F8.10, F8.13, F9.1b, F9.1c):
+**Four controls, and they are the only ones** (F8.10, F8.13, F9.1b, F9.1c):
 pause or resume a deletion clock; reset the test-call allowance **and rebind the
-agent, as one action** (either alone leaves the business exactly as stuck); set
-or clear a business's cancelled status.
+agent, as one action** (either alone leaves the business exactly as stuck); set a
+business's cancelled status; and **mark a cancellation revoked**.
+
+**Revoked is deliberately not the same control as cleared** (F6.10a). Clearing is
+for a cancellation that should never have been recorded; revoking is a business
+changing its mind inside the window, and it makes the usage served during that
+window billable again (F6.12a). Collapsing them into one toggle would make a
+billing outcome depend on which sentence the operator had in mind.
 
 **A pause is an explicit act with a visible owner, never a side effect**, and
 paused businesses are listed with who paused them and when.
@@ -1446,6 +1477,8 @@ _Behaviours owed to the catalogue_
 - Pausing a clock stops the deletion; silence does not.
 - Resetting the allowance also rebinds, and the number answers again.
 - Marking cancelled stops future charges; clearing it resumes them.
+- Marking a cancellation revoked resumes them **and** makes the window's usage
+  billable, which clearing does not.
 
 ---
 
@@ -1537,26 +1570,36 @@ carrier's responsibility.
 
 ### 2.13.5 Customer PII
 
-**Destroyed on exactly two occasions, both automatic** (F9.1a):
+**Destroyed on exactly one occasion, automatically** (F9.1a): when the business
+itself is deleted. When a lifecycle deadline expires, customers, appointments and
+calls are ordinary tenant rows caught by step 8 of §2.13.4 — **in the same
+transaction that writes the departure record**. Nobody requests it and nobody
+performs it.
 
-**Path 1 — one customer, self-serve and immediate** (F9.1a-i). The owner enters
-the caller's phone number — the only way in, because it is the customer's
-identity — is shown what will be erased, confirms once, and it is done. No
-email to Ringly, no operator, no ticket: a deletion right that depends on
-somebody reading an inbox is not a deletion right. It is **a targeted lookup in
-order to delete, not a customer directory**: it never lists customers and never
-resolves a partial match into a name.
+**There is no per-customer deletion, and the schema says so.** An earlier design
+gave the business a self-serve control to erase one caller by phone number; that
+requirement is withdrawn (F9.1a). What replaces it is an absence with teeth:
 
-The customer row goes. Future appointments are cancelled and deleted. **Past
-appointments are kept with the customer link removed** — they carry revenue the
-rollups already counted and invoices already settled against them, and deleting
-them would silently rewrite closed figures. Calls carry no customer link and no
-content, so there is nothing in them to erase. It is irreversible and says so
-before the confirmation.
+- `appointments.customer_id` is **NOT NULL** with no path that makes it null
+  (§2.4/005). There is no `set null`, so there is no orphaned appointment to
+  reason about and no half-deleted customer to render.
+- There is **no lookup from a phone number to a customer for the purpose of
+  erasing them**, which would have been the per-customer view the dashboard
+  exists to exclude (F5.11) arriving through a side door.
+- The dashboard carries no such control (F5.15), and neither does the operator's
+  borrowed view (F8.2e) — **absent, not hidden**, because a control that exists
+  but is unreachable is a control someone will eventually make reachable.
 
-**Path 2 — the whole business** (F9.1a-ii), when a lifecycle deadline expires.
-Customers and appointments are ordinary tenant rows caught by step 8 above.
-Nobody requests it and nobody performs it.
+**The engineering argument for the absence is that the alternative cannot be made
+correct.** A customer's past appointments carry revenue the rollups already
+counted and invoices already settled against them (F6.16). Deleting them rewrites
+settled figures; keeping them with the name stripped means the erasure was
+partial while the product claimed it was complete. There is no third option, so
+the product does not offer the operation.
+
+**The cost is recorded rather than argued away** (R23): a business that receives a
+consumer erasure request can only action it through Ringly by ending its own
+account.
 
 ### 2.13.6 Call content
 
@@ -1615,9 +1658,12 @@ _Behaviours owed to the catalogue_
 - The departure record holds identity and money and no consumer data.
 - A crash between releasing the number and deleting the rows leaves recoverable
   state, not a lost record.
-- Deleting one customer erases them, cancels their future appointments, and
-  leaves past appointments and settled figures unchanged.
-- The customer-delete control never lists customers or resolves a partial match.
+- There is no way to delete one customer: no control on the business dashboard,
+  none on the operator's borrowed view, and no route that leaves an appointment
+  without a customer.
+- Customers, appointments and calls survive right up to the deletion transaction
+  and are gone the moment it commits.
+- The departure record exists and holds no consumer data at the same instant.
 - A 10-day deletion issues a provider-side content delete; a 60-day one does not
   need to.
 
@@ -1652,8 +1698,9 @@ states the full date and time back.
   (N6.3), using the vendor's own verification helper. Never a hand-rolled
   comparison — for Retell that means the SDK's `verify`, for Stripe
   `constructEvent`.
-- **Customer PII is deletable without a human in the loop** (N6.4), wholesale and
-  individually (§2.13.5).
+- **Customer PII is destroyed wholesale when the tenant leaves and at no other
+  time** (N6.4, §2.13.5). It needs no human in the loop because there is no
+  control to press: it happens in the teardown transaction or not at all.
 - **Ringly is a service provider to the business, not a controller of the
   caller's data** (N6.5). Every consumer request arrives through the business,
   and Ringly's duty is to be able to action it, not to adjudicate it.
@@ -1889,7 +1936,12 @@ why it survives a from-scratch design. It needs four corrections:
 3. **`CallAnalytics` follows the new dashboard**: `callsThatBooked` becomes
    `appointmentsBooked`, and the chart projection takes a grouping and a filter
    rather than exposing two fixed views (F5.4b).
-4. **Phase labels follow §2.16.**
+4. **Per-customer deletion is removed**: `owner.deletesCustomer`, and
+   `AppointmentView.customerName`'s `"__erased__"` value, which modelled a state
+   the product no longer has (F9.1a). `AppointmentView.customer` stops being
+   nullable, because there are no anonymous bookings (F2.12) — the harness had
+   assumed both, and neither was ever a requirement.
+5. **Phase labels follow §2.16.**
 
 The scenario manifest and `CATALOGUE_SIZE` are regenerated with the catalogue
 (§2.19), not before.
@@ -2021,10 +2073,9 @@ freeing it.
   calls** (F9.5). Needs an explicit provider-side delete on that path only; the
   general "the TTL expires first" argument does not cover it (§2.13.6).
 - **R19 — No caller has any way to reach Ringly** (§1.4, F9.1a). Accepted: Ringly
-  is a service provider, not the caller's counterparty (N6.5). **Narrowed** by
-  making deletion self-serve and immediate for the business (F9.1a-i) — the
-  request still arrives through the business, but it no longer waits on anyone at
-  Ringly.
+  is a service provider, not the caller's counterparty (N6.5). **No longer
+  narrowed** — the self-serve per-customer deletion that previously softened this
+  is withdrawn (R23).
 - **R20 — The agent has no fallback** (F2.10). Anything it cannot handle is a
   dropped call and a lost customer, with no transfer and no message taken. The
   `dropped` metric (F5.4) exists to show how often; revisit when it is measured
@@ -2045,16 +2096,26 @@ freeing it.
   (§1.9): the failure is rare, and Stripe independently holds the payments
   (N10.7) — though not which period they settled or under which terms, which is
   precisely the part that would be lost.
-- **R23 — A model call decides what is billable.** The outcome classifier drives
+- **R23 — A business cannot action a consumer erasure request through Ringly.**
+  Per-customer deletion is withdrawn (F9.1a), so the only way to remove one
+  caller's data is to delete the whole account. Ringly is the processor and the
+  business is the controller (N6.5), so the obligation sits with the business —
+  but Ringly's ability to assist with it is now all-or-nothing. **Accepted
+  deliberately**, on the grounds that a partial deletion either rewrites settled
+  figures (F6.16) or claims a completeness it does not have, and that a rarely
+  used deletion path is the one most likely to be wrong when it is finally
+  exercised. Revisit if a business actually receives such a request, or if the
+  processor obligation is tested.
+- **R24 — A model call decides what is billable.** The outcome classifier drives
   usage billing (F6.6), and a model is not deterministic. Mitigated by failing in
   the business's favour: an unclassified call is counted, excluded from outcomes,
   and **not billed** (§2.9.1). The residual risk is under-billing, which is the
   right direction to be wrong in.
-- **R24 — A silent unbind failure leaks revenue with no other symptom.** Every
+- **R25 — A silent unbind failure leaks revenue with no other symptom.** Every
   other component believes service has stopped, so nothing else in the system
   would ever notice (F1.12a-ii). Mitigated by reading provider state back on
   every bind and unbind, under its own operator alert (§2.5.3, F7.13a).
-- **R25 — Test-mode payment clocks make the behaviour suite slow.** Advancing one
+- **R26 — Test-mode payment clocks make the behaviour suite slow.** Advancing one
   is a server-side job polled to completion. Mitigated by giving the suite its
   own runner and timeout and keeping it out of the fast unit suite (§2.15).
 
