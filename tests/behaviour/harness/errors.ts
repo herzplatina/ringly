@@ -5,11 +5,8 @@
 
 /** Thrown by any adapter member whose body has not been written yet. */
 export class NotImplementedError extends Error {
-  constructor(
-    readonly holds: string,
-    readonly phase: string,
-  ) {
-    super(`Not implemented — holds ${holds}, lands in ${phase} (EDD §2.16)`);
+  constructor(readonly holds: string) {
+    super(`Not implemented — holds ${holds}`);
     this.name = "NotImplementedError";
   }
 }

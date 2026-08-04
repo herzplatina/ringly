@@ -5230,7 +5230,7 @@ the design has already said what will be observable.
 
 ### 2.15.1 The loop
 
-For each requirement, in the phase that owns it:
+For each requirement:
 
 1. **Derive scenarios** from the requirement, using its section's Testing block.
    A scenario is a sentence about what someone does and what then becomes true.
@@ -5276,7 +5276,7 @@ Split by **direction, not by ownership**, so that "does the number answer?" and
 | `actors.ts`      | Writes: prospect · caller · owner · operator · system                                          |
 | `projections.ts` | Reads, **including reads of the fakes**                                                        |
 | `fakes.ts`       | Arranging vendors: calendar · telephony · email · payments · classifier · enrichment · storage |
-| `pending.ts`     | `notImplemented()`, naming the requirement and the phase                                       |
+| `pending.ts`     | `notImplemented()`, naming the requirement held                                                |
 
 **Actors drive Ringly through surfaces the product actually exposes** — telephony
 webhooks for a caller, the app's own routes for an owner, `/ops` for the
@@ -5364,7 +5364,12 @@ why it survives a from-scratch design. It needs four corrections:
    the product no longer has ([F9.1a](Ringly_PRD_v3.md#f9-1a)). `AppointmentView.customer` stops being
    nullable, because there are no anonymous bookings ([F2.12](Ringly_PRD_v3.md#f2-12)) — the harness had
    assumed both, and neither was ever a requirement.
-5. **Phase labels follow [§2.16](#216-delivery-plan).**
+5. **Phase labels are removed, not re-mapped.** Every stub carried a delivery
+   phase alongside the requirement it holds. Build order is downstream of the
+   design (2.1.5a) and is expected to be re-cut, so a label there made the test
+   scaffolding encode a plan it has no stake in — and one that would need
+   re-mapping every time the plan moved. What a member _holds_ is a fact about
+   the requirement and does not move; that is all it carries now.
 
 The scenario manifest and `CATALOGUE_SIZE` are regenerated with the catalogue
 ([§2.19](#219-scenario-catalogue)), not before.

@@ -208,29 +208,6 @@ const BUILDER_STEPS = [
   "withServices",
 ];
 
-/**
- * The delivery phases of EDD §2.16, verbatim.
- *
- * A stub's phase is **the phase in which that adapter member becomes
- * implementable** — the one that first ships a surface it can drive or read.
- * That is usually, but not always, the phase delivering the requirement it
- * holds: `connectedCalendar` reads the calendar fake and so works from Phase 1,
- * though F4 lands at 7.
- */
-const DELIVERY_PHASES = [
-  "Phase 0 — Google verification",
-  "Phase 1 — Foundations",
-  "Phase 2 — Email plumbing",
-  "Phase 3 — Onboarding",
-  "Phase 4 — Billing",
-  "Phase 5 — Lifecycle",
-  "Phase 6 — Catalogue + hours",
-  "Phase 7 — Provider abstraction",
-  "Phase 8 — Business dashboard",
-  "Phase 9 — Recurrence",
-  "Phase 10 — Operator dashboard",
-];
-
 const B = { id: "b1" };
 
 /** Calls a stub with throwaway arguments; an unimplemented adapter ignores them. */
@@ -362,7 +339,7 @@ describe("harness", () => {
       },
     );
 
-    it("names a requirement and a real phase, never a blank failure", async () => {
+    it("names the requirement it holds, never a blank failure", async () => {
       const seen: NotImplementedError[] = [];
       const collect = async (fn: unknown) => {
         await (invoke(fn) as Promise<unknown>).catch((e) => seen.push(e));
@@ -371,7 +348,7 @@ describe("harness", () => {
         await collect((harness as unknown as Record<string, unknown>)[name]);
       }
       // Stub-object members and call turns too, not just the free functions —
-      // an earlier version checked only the latter, and a bogus phase on
+      // an earlier version checked only the latter, and a blank `holds` on
       // `operator.setsPolicy` sailed through.
       for (const [name, members] of Object.entries(STUB_OBJECTS)) {
         const obj = (
@@ -399,12 +376,12 @@ describe("harness", () => {
         PROSPECT_STEPS.length;
       expect(seen).toHaveLength(expected);
       for (const e of seen) {
-        // The label is the map an implementer follows, so it is checked
-        // against the closed set of real phases. A loose `/^Phase \d+/` would
-        // accept "Phase 99 — Nonexistent", which is exactly the typo that
-        // sends someone looking for a phase that does not exist.
-        expect(e.holds).toMatch(/^[FNA]\d|^§\d/);
-        expect(DELIVERY_PHASES).toContain(e.phase);
+        // `holds` is the only thing a stub carries, so it is the only thing
+        // worth pinning: a member that rejects without naming a requirement
+        // tells an implementer nothing about what it is for. The shape is
+        // checked rather than the value, because the requirement set changes
+        // with the PRD and this assertion must not need editing when it does.
+        expect(e.holds).toMatch(/^[FN]\d|^§\d/);
       }
     });
 
@@ -423,7 +400,7 @@ describe("harness", () => {
       // Written as a bare `rejects.toThrow()`, every one of them passed against
       // an implementation that did not exist. They must name `Refused`, and
       // `Refused` must be unsatisfiable by `NotImplementedError`.
-      const notBuilt = new NotImplementedError("F2.8", "Phase 1 — Foundations");
+      const notBuilt = new NotImplementedError("F2.8");
       const refused = new Refused("outside opening hours");
       expect(notBuilt).not.toBeInstanceOf(Refused);
       expect(refused).not.toBeInstanceOf(NotImplementedError);
@@ -483,8 +460,8 @@ describe("harness", () => {
     });
 
     it("throws only when a builder step would actually create something", async () => {
-      await expect(aBusiness().activated()).rejects.toThrow(/F1\.12a.*Phase 4/);
-      await expect(aBusiness().provisioned()).rejects.toThrow(/Phase 3/);
+      await expect(aBusiness().activated()).rejects.toThrow(/F1\.12a/);
+      await expect(aBusiness().provisioned()).rejects.toThrow(/F1\.9/);
     });
   });
 
