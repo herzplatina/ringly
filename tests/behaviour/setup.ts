@@ -11,7 +11,7 @@ import { resetWorld } from "./harness";
  * There is no try/catch here on purpose. An earlier version swallowed
  * `NotImplementedError` so the scaffold could stay green, and mutation testing
  * showed the swallow could be widened to hide *any* teardown failure with no
- * test noticing. `resetWorld` is a no-op until Phase 1 instead, so a rejection
+ * test noticing. `resetWorld` is a no-op while unimplemented instead, so a rejection
  * from here always means a real leak.
  */
 afterEach(async () => {

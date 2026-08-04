@@ -50,12 +50,12 @@ export type Prospect = {
 
 export function aProspect(): Prospect {
   return {
-    submits: () => pending("F1.1, F1.3, F1.6", "Phase 3 — Onboarding"),
-    picksCandidate: () => pending("F1.3", "Phase 3 — Onboarding"),
-    edits: () => pending("F1.5", "Phase 3 — Onboarding"),
-    grantsConsent: () => pending("F1.7, F1.7c", "Phase 3 — Onboarding"),
-    declinesCalendarScope: () => pending("F1.7a", "Phase 3 — Onboarding"),
-    commits: () => pending("F1.9", "Phase 3 — Onboarding"),
+    submits: () => pending("F1.1, F1.3, F1.6"),
+    picksCandidate: () => pending("F1.3"),
+    edits: () => pending("F1.5"),
+    grantsConsent: () => pending("F1.7, F1.7c"),
+    declinesCalendarScope: () => pending("F1.7a"),
+    commits: () => pending("F1.9"),
   };
 }
 
@@ -167,18 +167,18 @@ export function caller(_from: PhoneNumber): Caller {
     // down before either booking started — the trap `pending()` exists to
     // prevent, one level up in the factory.
     calls: () => ({
-      andAsksToBook: () => pending("F2.1–F2.6", "Phase 1 — Foundations"),
-      andAsksToSetUpRecurring: () => pending("F5.1", "Phase 9 — Recurrence"),
-      andAsksToReschedule: () => pending("F2.4", "Phase 1 — Foundations"),
-      andAsksToCancel: () => pending("F2.4", "Phase 1 — Foundations"),
-      andAsksAboutServices: () => pending("F6.4", "Phase 1 — Foundations"),
-      andAsksForSomethingElse: () => pending("F2.10", "Phase 1 — Foundations"),
-      andSays: () => pending("F2.1", "Phase 1 — Foundations"),
-      andConfirms: () => pending("F2.4", "Phase 1 — Foundations"),
-      andCorrects: () => pending("F2.4", "Phase 1 — Foundations"),
-      andChooses: () => pending("F5.3", "Phase 9 — Recurrence"),
-      andHangsUp: () => pending("F2.11", "Phase 1 — Foundations"),
-      transcript: () => pending("F2.2", "Phase 1 — Foundations"),
+      andAsksToBook: () => pending("F2.1–F2.6"),
+      andAsksToSetUpRecurring: () => pending("F5.1"),
+      andAsksToReschedule: () => pending("F2.4"),
+      andAsksToCancel: () => pending("F2.4"),
+      andAsksAboutServices: () => pending("F6.4"),
+      andAsksForSomethingElse: () => pending("F2.10"),
+      andSays: () => pending("F2.1"),
+      andConfirms: () => pending("F2.4"),
+      andCorrects: () => pending("F2.4"),
+      andChooses: () => pending("F5.3"),
+      andHangsUp: () => pending("F2.11"),
+      transcript: () => pending("F2.2"),
     }),
   };
 }
@@ -188,7 +188,7 @@ export function caller(_from: PhoneNumber): Caller {
 // ---------------------------------------------------------------------------
 
 export type Owner = {
-  // Onboarding (F1) — Phase 3
+  // Onboarding (F1)
   verifiesEmail(): Promise<void>;
   confirmsTestCallWorked(): Promise<void>;
   addsPaymentMethod(): Promise<void>;
@@ -198,7 +198,7 @@ export type Owner = {
   reconnectsCalendar(): Promise<void>;
   changesContactEmail(to: EmailAddress): Promise<void>;
 
-  // Catalogue and hours (F3) — Phase 6
+  // Catalogue and hours (F3)
   addsService(s: ServiceSpec): Promise<void>;
   /** F3.1 — name, description, price and duration are all editable. */
   editsService(name: string, to: Partial<ServiceSpec>): Promise<void>;
@@ -210,7 +210,7 @@ export type Owner = {
   reordersServices(namesInOrder: readonly string[]): Promise<void>;
   setsOpeningHours(hours: OpeningHours): Promise<void>;
 
-  // Dashboard controls (F6.13) — Phase 8
+  // Dashboard controls (F5.15)
   setsBookingHorizon(days: number): Promise<void>;
   setsRecurrenceHorizon(days: number): Promise<void>;
   /** F10.1a-i — irreversible, and the product warns before confirming. */
@@ -222,25 +222,24 @@ export type Owner = {
 
 export function owner(_business: BusinessRef): Owner {
   return {
-    verifiesEmail: () => pending("F1.11", "Phase 3 — Onboarding"),
-    confirmsTestCallWorked: () => pending("F1.12", "Phase 3 — Onboarding"),
-    addsPaymentMethod: () => pending("F1.12", "Phase 3 — Onboarding"),
-    pressesActivate: () => pending("F1.12a", "Phase 4 — Billing"),
-    reconnectsCalendar: () => pending("F1.7b", "Phase 3 — Onboarding"),
-    changesContactEmail: () => pending("F1.11", "Phase 3 — Onboarding"),
-    addsService: () => pending("F3.1", "Phase 6 — Catalogue + hours"),
-    editsService: () => pending("F3.1", "Phase 6 — Catalogue + hours"),
-    deactivatesService: () => pending("F3.3", "Phase 6 — Catalogue + hours"),
-    deletesService: () => pending("F3.4", "Phase 6 — Catalogue + hours"),
-    repricesService: () => pending("F3.4", "Phase 6 — Catalogue + hours"),
-    reordersServices: () => pending("F3.1", "Phase 6 — Catalogue + hours"),
-    setsOpeningHours: () => pending("F3.5", "Phase 6 — Catalogue + hours"),
-    setsBookingHorizon: () => pending("F6.13", "Phase 8 — Business dashboard"),
-    setsRecurrenceHorizon: () =>
-      pending("F6.13", "Phase 8 — Business dashboard"),
-    deletesCustomer: () => pending("F10.1a-i", "Phase 8 — Business dashboard"),
-    optsOutOfStatsDigest: () => pending("F8.4", "Phase 8 — Business dashboard"),
-    cancels: () => pending("F7.10", "Phase 4 — Billing"),
+    verifiesEmail: () => pending("F1.11"),
+    confirmsTestCallWorked: () => pending("F1.12"),
+    addsPaymentMethod: () => pending("F1.12"),
+    pressesActivate: () => pending("F1.12a"),
+    reconnectsCalendar: () => pending("F1.7b"),
+    changesContactEmail: () => pending("F1.11"),
+    addsService: () => pending("F3.1"),
+    editsService: () => pending("F3.1"),
+    deactivatesService: () => pending("F3.3"),
+    deletesService: () => pending("F3.4"),
+    repricesService: () => pending("F3.4"),
+    reordersServices: () => pending("F3.1"),
+    setsOpeningHours: () => pending("F3.5"),
+    setsBookingHorizon: () => pending("F6.13"),
+    setsRecurrenceHorizon: () => pending("F6.13"),
+    deletesCustomer: () => pending("F10.1a-i"),
+    optsOutOfStatsDigest: () => pending("F8.4"),
+    cancels: () => pending("F7.10"),
   };
 }
 
@@ -271,15 +270,13 @@ export type Operator = {
 };
 
 export const operator: Operator = {
-  pausesDeletionClock: () => pending("F10.1b", "Phase 10 — Operator dashboard"),
-  resumesDeletionClock: () =>
-    pending("F10.1b", "Phase 10 — Operator dashboard"),
-  resetsTestCallAllowance: () =>
-    pending("F10.1c", "Phase 10 — Operator dashboard"),
-  marksCancelled: () => pending("F9.10", "Phase 10 — Operator dashboard"),
-  clearsCancelled: () => pending("F9.10", "Phase 10 — Operator dashboard"),
-  viewsAsBusiness: () => pending("F9.7", "Phase 10 — Operator dashboard"),
-  setsPolicy: () => pending("F7.8", "Phase 4 — Billing"),
+  pausesDeletionClock: () => pending("F10.1b"),
+  resumesDeletionClock: () => pending("F10.1b"),
+  resetsTestCallAllowance: () => pending("F10.1c"),
+  marksCancelled: () => pending("F9.10"),
+  clearsCancelled: () => pending("F9.10"),
+  viewsAsBusiness: () => pending("F9.7"),
+  setsPolicy: () => pending("F7.8"),
 };
 
 // ---------------------------------------------------------------------------
@@ -334,8 +331,8 @@ export type System = {
 };
 
 export const system: System = {
-  advanceTo: () => pending("§2.20.1", "Phase 1 — Foundations"),
-  advanceBy: () => pending("§2.20.1", "Phase 1 — Foundations"),
-  runWorker: () => pending("§2.2a", "Phase 1 — Foundations"),
-  runDueWorkers: () => pending("§2.2a", "Phase 1 — Foundations"),
+  advanceTo: () => pending("§2.20.1"),
+  advanceBy: () => pending("§2.20.1"),
+  runWorker: () => pending("§2.2a"),
+  runDueWorkers: () => pending("§2.2a"),
 };

@@ -58,12 +58,12 @@ export type CalendarFake = {
 };
 
 export const calendar: CalendarFake = {
-  ownerCreatesEvent: () => pending("F6.10", "Phase 1 — Foundations"),
-  becomesUnreachable: () => pending("F2.7", "Phase 1 — Foundations"),
-  becomesSlow: () => pending("N3.1", "Phase 1 — Foundations"),
-  revokesConsent: () => pending("F2.7a", "Phase 1 — Foundations"),
-  recovers: () => pending("F2.7", "Phase 1 — Foundations"),
-  willDeclineCalendarScope: () => pending("F1.7a", "Phase 3 — Onboarding"),
+  ownerCreatesEvent: () => pending("F6.10"),
+  becomesUnreachable: () => pending("F2.7"),
+  becomesSlow: () => pending("N3.1"),
+  revokesConsent: () => pending("F2.7a"),
+  recovers: () => pending("F2.7"),
+  willDeclineCalendarScope: () => pending("F1.7a"),
 };
 
 // ---------------------------------------------------------------------------
@@ -81,11 +81,10 @@ export type TelephonyFake = {
 };
 
 export const telephony: TelephonyFake = {
-  willSilentlyIgnoreNextBind: () =>
-    pending("F1.12a-ii", "Phase 3 — Onboarding"),
-  willSilentlyIgnoreNextUnbind: () => pending("F10.4b", "Phase 5 — Lifecycle"),
-  willFailNextBind: () => pending("F1.12a-ii", "Phase 3 — Onboarding"),
-  willFailNextUnbind: () => pending("F10.4b", "Phase 5 — Lifecycle"),
+  willSilentlyIgnoreNextBind: () => pending("F1.12a-ii"),
+  willSilentlyIgnoreNextUnbind: () => pending("F10.4b"),
+  willFailNextBind: () => pending("F1.12a-ii"),
+  willFailNextUnbind: () => pending("F10.4b"),
 };
 
 // ---------------------------------------------------------------------------
@@ -101,9 +100,9 @@ export type EmailFake = {
 };
 
 export const email: EmailFake = {
-  goesDown: () => pending("N7.1", "Phase 2 — Email plumbing"),
-  comesBack: () => pending("N7.1", "Phase 2 — Email plumbing"),
-  dropsNextDelivery: () => pending("F8.5", "Phase 2 — Email plumbing"),
+  goesDown: () => pending("N7.1"),
+  comesBack: () => pending("N7.1"),
+  dropsNextDelivery: () => pending("F8.5"),
 };
 
 // ---------------------------------------------------------------------------
@@ -137,15 +136,15 @@ export type PaymentsControl = {
 };
 
 export const payments: PaymentsControl = {
-  declineNextCharge: () => pending("F7.11", "Phase 4 — Billing"),
-  payOutstanding: () => pending("F7.10b", "Phase 4 — Billing"),
-  pays: () => pending("F7.10b", "Phase 4 — Billing"),
-  filesChargeback: () => pending("F7.17", "Phase 4 — Billing"),
-  goesDown: () => pending("N7.1", "Phase 4 — Billing"),
-  comesBack: () => pending("N7.1", "Phase 4 — Billing"),
-  dropsNextWebhook: () => pending("F7.10b-i", "Phase 4 — Billing"),
-  redeliversLastWebhook: () => pending("F7.10b-i", "Phase 4 — Billing"),
-  sendsUnsignedWebhook: () => pending("N4.2", "Phase 4 — Billing"),
+  declineNextCharge: () => pending("F7.11"),
+  payOutstanding: () => pending("F7.10b"),
+  pays: () => pending("F7.10b"),
+  filesChargeback: () => pending("F7.17"),
+  goesDown: () => pending("N7.1"),
+  comesBack: () => pending("N7.1"),
+  dropsNextWebhook: () => pending("F7.10b-i"),
+  redeliversLastWebhook: () => pending("F7.10b-i"),
+  sendsUnsignedWebhook: () => pending("N4.2"),
 };
 
 // ---------------------------------------------------------------------------
@@ -173,10 +172,10 @@ export type ClassifierFake = {
 };
 
 export const classifier: ClassifierFake = {
-  willClassifyNextAs: () => pending("§2.8.1", "Phase 1 — Foundations"),
-  holdsNextResult: () => pending("§2.8.1", "Phase 1 — Foundations"),
-  willFailNext: () => pending("F7.6", "Phase 1 — Foundations"),
-  deliverPending: () => pending("§2.8.1", "Phase 1 — Foundations"),
+  willClassifyNextAs: () => pending("§2.8.1"),
+  holdsNextResult: () => pending("§2.8.1"),
+  willFailNext: () => pending("F7.6"),
+  deliverPending: () => pending("§2.8.1"),
 };
 
 // ---------------------------------------------------------------------------
@@ -196,11 +195,11 @@ export type EnrichmentFake = {
 };
 
 export const enrichment: EnrichmentFake = {
-  goesDown: () => pending("N7.1", "Phase 3 — Onboarding"),
-  comesBack: () => pending("N7.1", "Phase 3 — Onboarding"),
-  willReturnCandidates: () => pending("F1.3", "Phase 3 — Onboarding"),
-  websiteOffers: () => pending("F1.4", "Phase 3 — Onboarding"),
-  websiteUnreachable: () => pending("F1.4", "Phase 3 — Onboarding"),
+  goesDown: () => pending("N7.1"),
+  comesBack: () => pending("N7.1"),
+  willReturnCandidates: () => pending("F1.3"),
+  websiteOffers: () => pending("F1.4"),
+  websiteUnreachable: () => pending("F1.4"),
 };
 
 // ---------------------------------------------------------------------------
@@ -218,6 +217,6 @@ export type StorageFake = {
 };
 
 export const storage: StorageFake = {
-  failsNextWrite: () => pending("N10", "Phase 4 — Billing"),
-  recovers: () => pending("N10", "Phase 4 — Billing"),
+  failsNextWrite: () => pending("N10"),
+  recovers: () => pending("N10"),
 };

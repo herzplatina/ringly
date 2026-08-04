@@ -75,10 +75,10 @@ export function aBusiness(): BusinessBuilder {
     openingHours: () => self,
     withServices: () => self,
     withDayOneOn: () => self,
-    provisioned: () => pending("F1.1–F1.9", "Phase 3 — Onboarding"),
-    readyToActivate: () => pending("F1.12", "Phase 3 — Onboarding"),
-    activated: () => pending("F1.12a", "Phase 4 — Billing"),
-    activatedOn: () => pending("F1.12a", "Phase 4 — Billing"),
+    provisioned: () => pending("F1.1–F1.9"),
+    readyToActivate: () => pending("F1.12"),
+    activated: () => pending("F1.12a"),
+    activatedOn: () => pending("F1.12a"),
   };
   return self;
 }
@@ -117,7 +117,8 @@ export function aCustomerNumber(): PhoneNumber {
  * Tear down whatever the test created — the provider customer and test clock,
  * the tenant's rows, every fake's captured *and arranged* state.
  *
- * A no-op until Phase 1, deliberately: there is nothing to reset yet, and a
+ * A no-op while the world is unimplemented, deliberately: there is nothing to
+ * reset yet, and a
  * `pending()` here would either redden every test or force the teardown hook to
  * swallow errors — and a hook that swallows is a hook that hides the leak it
  * exists to prevent.

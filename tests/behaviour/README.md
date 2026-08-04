@@ -75,7 +75,7 @@ it before treating green as done.
 harness/
   index.ts        the only import a spec may make — barrel
   types.ts        the vocabulary: Money, Day/Instant, outcomes, read models
-  pending.ts      notImplemented() / pending(), naming requirement + phase
+  pending.ts      notImplemented() / pending(), naming the requirement held
   world.ts        aBusiness() builder, per-test lifecycle
   actors.ts       writes: caller · owner · operator · system · stripe
   projections.ts  reads, including reads of the fakes — see below
@@ -107,10 +107,14 @@ between what is claimed and what is covered is on its own summary line. A
 scenario leaves that list by being written; an accounting test fails if one is
 merely deleted.
 
-The interface covers Phases 1–5 well and the later phases thinly — the
-operator-dashboard and catalogue read-back projections land with their phases.
+The interface covers the call path, onboarding, billing and lifecycle well, and
+the operator-dashboard and catalogue read-backs thinly — those projections are
+sketched and will fill out as the surfaces they read do.
 Every actor, projection and fake rejects with `NotImplementedError` naming the
-requirement it holds and the phase in which that member becomes implementable.
+requirement it holds. **It names no delivery phase**: build order is downstream
+of the design (EDD §2.1.5a) and is expected to be re-cut, so a phase label here
+would make the test scaffolding encode a plan it has no stake in and need
+re-mapping every time that plan moved.
 
 `harness.spec.ts` guards the scaffold **by enumeration, not by sampling**. An
 earlier version tested two projections out of seventeen, and mutation testing
