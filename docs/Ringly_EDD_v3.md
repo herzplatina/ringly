@@ -209,11 +209,10 @@ pattern is claim, call, record — never open, call, commit — because a
 transaction spanning a network call holds locks for its whole tail and can roll
 back after the vendor has already acted.
 
-**There is no billing settlement worker.** Periods open and close because Stripe
-raised an invoice, in a webhook handler rather than on a timer
-([§2.10.3](#2103-the-rollover-one-webhook-does-the-whole-thing)) — which is the largest thing the subscription
-took off Ringly's critical path, and why a scheduler that stops no longer means
-nobody is charged ([R28](#r28)).
+**No worker settles billing.** Periods open and close because Stripe raised an
+invoice, in a webhook handler rather than on a timer ([§2.10.3](#2103-the-rollover-one-webhook-does-the-whole-thing)) —
+so a scheduler that stops delays a usage line rather than stopping the money
+([R28](#r28)).
 
 **Hourly, not daily, for the sweeper**, because the 48-hour warning has to land
 48 hours out and not 48-to-72 ([I4](Ringly_PRD_v3.md#i4)). It is cheap — it processes only rows that
@@ -682,8 +681,7 @@ later; the copies are what make them stable.
 #### `billing_events` stays in 005, with a narrower job
 
 The ledger ([F6.14](Ringly_PRD_v3.md#f6-14), [N10.4](Ringly_PRD_v3.md#n10-4)) is unchanged in shape and smaller in scope than
-it was, because the events it recorded around activation no longer exist. What
-writes to it now:
+it was. What writes to it:
 
 | Writer                                                                        | Rows                                                                                                                            |
 | ----------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
@@ -734,17 +732,16 @@ businesses(... contact_email, contact_email_verified_at,
 calls(... is_trial_call, ...)
 ```
 
-- **Gone: `test_call_confirmed_at`, `test_calls_used`, `activated_at`.** The
-  checklist item they served is withdrawn ([F1.12e](Ringly_PRD_v3.md#f1-12e)) and there is no
-  activation instant to stamp — a business starts paying because a trial ended,
-  which `trials.ended_at` already records.
-- **Renamed: `calls.is_test_call` → `is_trial_call`.** Same column, same
-  write-at-call-time rule ([F1.12d](Ringly_PRD_v3.md#f1-12d)), different name for a different thing: it
-  no longer means "the owner testing" but "inside the free window", and a call
-  from a real customer can now carry it.
-- **Gone: `billing_status`. Replaced by `service_state`**
-  ([§2.10.1](#2101-service-state-is-four-values)), because the old name described a fact about money and
-  the thing every caller of it actually wanted was whether the phone answers.
+- **`service_state` rather than a billing status**
+  ([§2.10.1](#2101-service-state-is-four-values)). Every reader of it wants to know whether the phone
+  answers; naming it after money would make each of them infer that from a fact
+  about invoices.
+- **`is_trial_call` means "inside the free window", not "the owner testing"** —
+  a call from a real customer carries it, because the number is live and public
+  throughout ([F1.12d](Ringly_PRD_v3.md#f1-12d)). Written at the time of the call, never derived.
+- **There is no activation timestamp**, because there is no activation. A
+  business starts paying because a trial ended, which `trials.ended_at` records
+  along with which bound ended it.
 - **`stripe_subscription_id` is the handle everything else hangs off.** It is
   written once, when the number goes live ([§2.5.2](#252-provisioning-and-the-start-of-the-trial)), and
   cleared only at teardown.
@@ -781,18 +778,13 @@ sweeper no access to a reason.
 
 #### One kind of deadline replaces five
 
-The previous design had a `lifecycle_deadlines` table keyed by `kind`, carrying
-`unactivated_deletion`, `grace_expiry`, `nonpayment_deletion`,
-`cancellation_window_close` and `dormancy_deletion` — with a business in trouble
-legitimately holding two at once, and a page of prose explaining which cleared
-which.
+**There is one clock and it starts when the phone stops answering** ([F9.3](Ringly_PRD_v3.md#f9-3)),
+so the table needs no `kind` column and does not have one. A deadline keyed by
+kind would invite a second: the moment two rows can exist for one business,
+every query has to say which it means and every transition has to say which it
+clears.
 
-**There is one clock and it starts when the phone stops answering** ([F9.3](Ringly_PRD_v3.md#f9-3)).
-Every other deadline was removed by a decision in the PRD rather than by a schema
-change: the ten-day clock by the trial converting itself, the grace clock by the
-retry window being the grace, the cancellation window by cancellation taking
-effect immediately. What is left needs no `kind` column, so it does not have one,
-and the sweeper's query is the whole of the lifecycle:
+The sweeper's queries are the whole of the lifecycle:
 
 ```sql
 -- warn (48 hours out, once)
@@ -1320,10 +1312,9 @@ provisioned ever see this page. Item 1 renders from Ringly's own row if either
 vendor is slow, and the others say so — which costs nothing real, since a business
 cannot add a card while Stripe is down and Ringly could not charge one either.
 
-**The old second item is gone.** It asked the owner to confirm that a test call
-had sounded right, and it existed to gate the Activate button ([F1.12e](Ringly_PRD_v3.md#f1-12e)). With
-no button it gates nothing, and the operator signal it fed is derived instead
-([§2.5.4.1](#2541-the-failing-trial-signal)). Its column goes with it ([§2.4](#24-data-model)/007).
+**There is no fourth item asking whether the agent sounded right** ([F1.12e](Ringly_PRD_v3.md#f1-12e)).
+It would gate nothing, and the signal it would produce is derived from calls and
+bookings instead ([§2.5.4.1](#2541-the-failing-trial-signal)).
 
 **Editing the contact address clears its verification**, because [F1.10](Ringly_PRD_v3.md#f1-10) exists to
 stop the 48-hour deletion warning going to an address nobody reads, and a
@@ -1428,8 +1419,7 @@ Ringly or on itself — and its trial has not started, so nothing is expiring wh
 it waits.
 
 **There is no failure mode in which a business is charged and not told why**,
-which was the entire subject of the previous design's hardest subsection. That
-subsection is gone with the button it protected.
+which is why this subsection is short.
 
 #### 2.5.2.2 The one transaction, and what a crash leaves
 
@@ -1583,13 +1573,11 @@ raises the invoice from its own scheduler; Ringly finds out afterwards, from
 after the usage record is written and is the same atomic increment described in
 [§2.10.2](#2102-ending-the-trial-on-the-call-bound).
 
-**Neither bound unbinds the agent.** This is the change from the design this
-replaces, and it is worth stating in the negative because the old behaviour was
-load-bearing there: a business that used its allowance had its number taken away
-until it paid. Now the number keeps answering and billing simply begins
-([F1.12b](Ringly_PRD_v3.md#f1-12b)). **`stopService` is not called from anywhere in the trial path**, and
-the only unbind in the product is the one that ends service for good
-([§2.10.6](#2106-stopping-service)).
+**Neither bound unbinds the agent** ([F1.12b](Ringly_PRD_v3.md#f1-12b)). The number keeps answering and
+billing simply begins. **`stopService` is not called from anywhere in the trial
+path**, and the only unbind in the product is the one that ends service for good
+([§2.10.6](#2106-stopping-service)) — stated in the negative because "the trial ended" and "service
+stopped" are the two events most easily conflated.
 
 **A trial call is written as one at the time of the call, never derived**
 ([F1.12d](Ringly_PRD_v3.md#f1-12d)):
@@ -1631,10 +1619,9 @@ SELECT b.id FROM businesses b
    AND NOT EXISTS (SELECT 1 FROM appointments a WHERE a.business_id = b.id);
 ```
 
-**It replaces a checkbox.** The old checklist asked the owner to confirm a test
-call had worked, which gated the Activate button and produced this signal as a
-side effect. It depended on the business telling Ringly, and the business having
-the worst time is the least likely to say anything.
+**It is derived rather than asked** ([F1.12e](Ringly_PRD_v3.md#f1-12e)). Asking depends on the business
+telling Ringly, and the business having the worst time is the least likely to say
+anything.
 
 **Calls but no bookings is the shape of a broken agent** — a mishearing prompt, a
 wrong service menu, a calendar refusing every slot ([§2.6.4](#264-fail-closed-concretely)) — and
@@ -1655,7 +1642,7 @@ implementation:
 
 | #   | Decision                                                                                              | Because                                                                                                                                                                                                     |
 | --- | ----------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1   | Commit the business row **before** checking granted scopes (steps 5 and 6 swapped)                    | [F1.7b](Ringly_PRD_v3.md#f1-7b)'s "the draft is kept" is only durable if it is a row                                                                                                                        |
+| 1   | Commit the business row **before** checking granted scopes                                            | [F1.7b](Ringly_PRD_v3.md#f1-7b)'s "the draft is kept" is only durable if it is a row                                                                                                                        |
 | 2   | The checklist holds **no state of its own**: one local column, one credential lookup, one Stripe read | Three facts with three owners ([§2.4](#24-data-model)/005). A local mirror of any of the last two drifts toward a green checklist over a dead card or a revoked grant                                       |
 | 3   | Provisioning waits for **all three** checklist items, not just the calendar                           | A number costs rent from purchase ([F8.9](Ringly_PRD_v3.md#f8-9)). Requiring the card too means every rented number belongs to a business that has proved it can be served and can pay                      |
 | 4   | The trial clock starts when the **number is live**, not when the checklist goes green                 | Steps 1–2 depend on a third party. A business must never lose trial days to Ringly's provisioning, and the day count is meaningless before the phone can ring ([F1.11b](Ringly_PRD_v3.md#f1-11b))           |
@@ -3309,7 +3296,7 @@ revenue, cost, margin, sortable. With thousands of businesses no chart
 distinguishes them; a table sorted by margin puts the ones losing money on top,
 which is the question the operator actually has.
 
-**Reported by calendar month, not by each business's 30-day period** ([F8.8](Ringly_PRD_v3.md#f8-8)). No
+**Reported by calendar month, not by each business's own billing month** ([F8.8](Ringly_PRD_v3.md#f8-8)). No
 two businesses share a period, so per-period figures cannot be summed into
 anything an accountant can use. **Only money actually received counts as
 revenue, and only real incurred cost counts as cost** — neither is accrued nor
@@ -3413,9 +3400,10 @@ recovery, cancellation, crash behaviour and the arithmetic.
 
 ### 2.10.1 Service state is four values
 
-`businesses.service_state` replaces the old `billing_status`. The rename is the
-design: every caller of the old column wanted to know whether the phone answers,
-and answered it by inferring from a fact about money.
+`businesses.service_state` is the one column the call path, the sweeper and the
+bind reconciler all read. **It names the phone, not the money**, because every
+caller of it wants to know whether the number answers — and a column named after
+billing would make each of them infer that from a fact about invoices.
 
 | State      | The agent is | Meaning                                                                 |
 | ---------- | ------------ | ----------------------------------------------------------------------- |
@@ -3494,9 +3482,9 @@ the same answer rather than ending a trial twice.
 it, on its own schedule, through the same `invoice.created` path as every other
 period ([§2.10.3](#2103-the-rollover-one-webhook-does-the-whole-thing)). **The first period is not a special
 case anywhere in this design**, which is the single largest simplification the
-subscription buys: the old model had an activation charge that was a `PaymentIntent`
-where everything else was an invoice, and every property that held for ordinary
-periods had to be re-argued for period 1.
+subscription buys: an activation charge outside the invoice sequence would mean
+every property that holds for ordinary periods — tax, receipts, retries, the
+clamp — has to be re-argued for period 1.
 
 **Ringly does send the email** ([F1.12b](Ringly_PRD_v3.md#f1-12b)), because Stripe was told only that the
 trial ended and never why.
@@ -3587,8 +3575,8 @@ record and enqueues the cap-reached email with a per-period reason key
 
 ### 2.10.5 When a charge fails
 
-**Nothing happens.** This section exists to say so, because the old design's
-largest component lived here.
+**Nothing happens**, and this section exists to say so — it is the place a
+reader most expects to find machinery.
 
 Stripe records the decline, emails the business, and schedules a retry from its
 own dunning configuration ([F6.11](Ringly_PRD_v3.md#f6-11)). Ringly stays `serving`: the agent stays
@@ -4994,7 +4982,8 @@ performs it.
 
 **There is no per-customer deletion, and the schema says so.** An earlier design
 gave the business a self-serve control to erase one caller by phone number; that
-requirement is withdrawn ([F9.1a](Ringly_PRD_v3.md#f9-1a)). What replaces it is an absence with teeth:
+There is deliberately no way to delete one ([F9.1a](Ringly_PRD_v3.md#f9-1a)), and the absence has
+teeth:
 
 - `appointments.customer_id` is **NOT NULL** with no path that makes it null
   ([§2.4](#24-data-model)/005). There is no `set null`, so there is no orphaned appointment to
@@ -5028,8 +5017,8 @@ transcripts at least 30 and never shorter.
 now always shorter than the deletion clock. The last call a business can have
 taken was on the day service stopped, and deletion is 60 days after that — so
 provider-held content has expired at least 30 days before Ringly's own rows go.
-The explicit provider-side delete the previous design needed existed only for a
-ten-day clock that no longer exists ([§2.4](#24-data-model)/008).
+There is no path on which that is false, which is what makes it a rule rather
+than a rule with an exception ([§2.4](#24-data-model)/008).
 
 ### 2.13.7 Retention, and why there is no export
 
@@ -5110,10 +5099,23 @@ timezone and derives nothing from them, which means a business far from UTC may
 see an invoice dated a few hours either side of its own local midnight — accepted,
 and cheaper than two systems disagreeing about which month a call belongs to.
 
-This is not a formatting concern. A four-hour analytics window, a 30-day billing
-period and an opening-hours check are all boundary computations, and getting any
+This is not a formatting concern. A four-hour analytics window, a local day
+boundary and an opening-hours check are all boundary computations, and getting any
 of them in UTC gives a business in Los Angeles figures that are wrong for a third
 of every day.
+
+**Three storage choices follow from it and are not interchangeable:**
+
+| What                               | Stored as     | Because                                                                               |
+| ---------------------------------- | ------------- | ------------------------------------------------------------------------------------- |
+| An appointment, a call, an invoice | `timestamptz` | It is a moment; the timezone is presentation                                          |
+| Opening hours                      | `time`        | "We open at nine" is a fact about the clock, and stays true across a DST shift        |
+| A rollup's day                     | `date`        | It is a local calendar day, and has no instant of its own ([§2.9.2](#292-the-rollup)) |
+
+**The rollup's `date` is the subtle one.** Two businesses in different timezones
+produce rows keyed on the same `date` from different UTC ranges, and that is
+correct: each is asking about its own day. Storing an instant instead would make
+the key meaningless across tenants.
 
 **DST is handled explicitly** ([N5.3](Ringly_PRD_v3.md#n5-3)), including the duplicated hour in autumn and
 the skipped hour in spring. A booking at a local time that does not exist is
@@ -5217,17 +5219,19 @@ _Behaviours owed to the catalogue_
 
 - A business in one timezone and a business in another group the same UTC instant
   into different days and different four-hour windows.
-- A billing period boundary falls at the right local moment on both sides of a
-  DST transition.
+- Opening hours survive a DST transition unchanged: a business that opens at nine
+  opens at nine on both sides of it.
 - A booking at a local time the clocks skip is refused; one at an hour that
   happens twice resolves to the first and is stated back.
+- An invoice dated by the provider is rendered in the business's timezone and
+  never recomputed from it.
 - An unsigned or wrongly-signed webhook, from either provider, is rejected and
   changes nothing.
 - Enrichment past the daily spend ceiling falls back to manual entry.
 - Enrichment spend is attributable before a business exists.
-- No number is bought before a sign-in.
-- A local write failing immediately after a successful charge does not lose the
-  charge, and the business is never asked to pay twice.
+- No number is bought before the whole checklist is green.
+- A local write failing immediately after a successful vendor call leaves state
+  that repairs itself, and never charges twice.
 
 ---
 
@@ -5639,11 +5643,6 @@ freeing it.
     record of the setting checkable, and a startup assertion compares it against
     what Stripe actually reports. **Neither prevents someone changing the
     dashboard setting and not the row**, which is the residual.
-  - This is the replacement for the risk the previous design carried here, which
-    was the mirror image: Stripe stopping its retries _before_ Ringly's own
-    60-day suspension window ended, leaving Ringly to finish the job. Ringly no
-    longer runs a suspension window and builds no retry loop, so that risk and
-    the requirement carved out for it are both gone.
 
 - <a id="r28"></a>**R28 — Stripe's schedule is now on the billing critical path, and Ringly
   cannot make it run.** The rollover happens because `invoice.created` arrives
@@ -5689,6 +5688,54 @@ freeing it.
   - **Accepted for v3**, because a trial that withheld anything would be testing a
     different product than the one being sold. Revisit when the first month's
     conversion figures exist rather than by guessing the allowance now ([Q7](Ringly_PRD_v3.md#q7)).
+
+- <a id="r34"></a>**R34 — Three vendors can each take the phone off the air, and only one of
+  them tells Ringly.** A call needs Retell to route it, Google to verify a slot,
+  and — for anything that follows — Stripe to be reachable. The design fails
+  closed on Google ([§2.6.4](#264-fail-closed-concretely)) and detects Retell drift by reading provider
+  state back ([§2.5.3](#253-bind-and-unbind-are-verified-by-reading-provider-state-back)), but **there is no synthetic check that the number
+  answers**, because dialling it costs minutes on every probe and proves only
+  that something picked up ([F1.11c](Ringly_PRD_v3.md#f1-11c)).
+  - **The residual is a Retell-side failure that leaves the binding intact**: the
+    read-back agrees, no incident opens, and the first party to notice is a
+    caller who cannot get through.
+  - **Partly covered by absence**: a business with a live number and no calls for
+    an unusual number of days is visible on the operator's own figures, and a
+    trial with no calls at all is already surfaced ([§2.5.4.1](#2541-the-failing-trial-signal)).
+  - **Not mitigated further in v3.** The honest fix is an out-of-band synthetic
+    call on a schedule, and it is [A1](Ringly_PRD_v3.md#a1)'s manual QA until there is evidence it is
+    needed.
+
+- <a id="r35"></a>**R35 — The rollup is a second source of truth for figures a business acts
+  on.** Every dashboard number except the median and the money comes from
+  `daily_call_rollups` rather than from `calls` ([§2.9.2](#292-the-rollup)), so a bug in the
+  rollup shows a business figures its own call history does not support — and
+  **nothing compares the two**.
+  - **The recompute path narrows it**: any day holding a late-classified call is
+    rebuilt, so a systematic classification lag self-corrects.
+  - **It does not cover an arithmetic error in the rollup itself**, which would be
+    consistent, plausible and wrong in every row.
+  - **Mitigated by making the rollup derivable**: it is a pure function of one
+    business's calls for one day, so a discrepancy check is a query rather than a
+    project. **Not scheduled in v3** — deferred until there is production data to
+    check it against, and recorded here so it is a decision rather than an
+    oversight.
+
+- <a id="r36"></a>**R36 — A Google refresh token can expire under a business that is doing
+  nothing wrong.** Credentials are revoked by the user, by Google after prolonged
+  inactivity, or by a password change; a dormant business ([§2.13.1](#2131-one-clock-and-the-sweeper-that-runs-it)) is by
+  definition inactive for up to 60 days, and an operator-paused one for longer
+  still.
+  - **On resume this surfaces as bookings failing rather than as a resume
+    failure**, because `resume()` rebinds the agent and does not exercise the
+    calendar ([§2.10.10](#21010-coming-back)).
+  - **Recommendation, and the reason it is a risk rather than a mechanism**: a
+    calendar probe on resume would catch it at the right moment, and it is one
+    API call on a path that runs rarely. It is not in [§2.10.10](#21010-coming-back) because a
+    failing probe must not block a business getting its number back — so it would
+    be an alert and a banner, which is [§2.6.4](#264-fail-closed-concretely)'s incident machinery reached
+    by a second route. **Left as a risk pending a decision** on whether resume
+    opens an incident or merely reports one.
 - <a id="r22"></a>**R22 — Every backup of the money records lives in one provider account**
   ([N10.2](Ringly_PRD_v3.md#n10-2)). A credential compromise or an account closure takes point-in-time
   recovery and the cross-region copies together. **Accepted for v3 and deferred**
@@ -5696,7 +5743,7 @@ freeing it.
   ([N10.7](Ringly_PRD_v3.md#n10-7)) — though not which period they settled or under which terms, which is
   precisely the part that would be lost.
 - <a id="r23"></a>**R23 — A business cannot action a consumer erasure request through Ringly.**
-  Per-customer deletion is withdrawn ([F9.1a](Ringly_PRD_v3.md#f9-1a)), so the only way to remove one
+  There is no per-customer deletion ([F9.1a](Ringly_PRD_v3.md#f9-1a)), so the only way to remove one
   caller's data is to delete the whole account. Ringly is the processor and the
   business is the controller ([N6.5](Ringly_PRD_v3.md#n6-5)), so the obligation sits with the business —
   but Ringly's ability to assist with it is now all-or-nothing. **Accepted
@@ -5722,12 +5769,17 @@ freeing it.
 
 ## 2.19 Scenario catalogue
 
-**To be derived, next.** The previous catalogue is withdrawn: it was numbered
-against the pre-renumber requirements and contained a group for recurring
-appointments, which the product no longer has.
+**To be derived once these two documents are locked**, from the **Behaviours owed
+to the catalogue** lists at the end of [§2.2](#22-architecture)–[§2.14](#214-cross-cutting-properties) — which is why
+those lists exist and why each section is required to produce one.
 
-The replacement is derived from the **Behaviours owed to the catalogue** lists in
-[§2.2](#22-architecture)–[§2.14](#214-cross-cutting-properties), which is why those lists exist. Each scenario names the requirement
-it holds, belongs to exactly one group, and is written as something a person does
-and what then becomes true. Until it lands, `tests/behaviour/harness/scenarios.ts`
-and its accounting test still describe the old catalogue and are stale.
+Each scenario **names the requirement it holds**, belongs to exactly one group,
+and is written as something a person does and what then becomes true. The
+catalogue is therefore also the coverage map: a requirement with no scenario
+against it is visible as a gap in one place rather than inferred from an absence
+across twenty.
+
+**It is deliberately last.** A catalogue written against requirements that are
+still moving is a catalogue that has to be rewritten, and the scenarios are
+written in the vocabulary of the design sections above — which is settled only
+when they are.

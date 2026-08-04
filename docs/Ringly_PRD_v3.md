@@ -1487,9 +1487,7 @@ should be:
   service stops**, not when a payment fails or a cancellation is requested
   ([F6.12b](#f6-12b)). A business whose retries run for two weeks is deleted roughly 74 days
   after its first decline. **There is now exactly one deletion clock**, which is
-  the single largest simplification in this model: the old three — 10 days
-  unactivated, 60 from a failed charge, 60 after a cancellation window closed —
-  are all gone.
+  the single largest simplification in this model.
 - **"Free service never exceeds the trial."** The trial is bounded twice
   ([F1.12](#f1-12)), and the retry window is bounded by configuration ([F6.11](#f6-11)) — but **the
   $500 cap is deliberately unbounded within a month** ([F6.9b](#f6-9b)). A business that
@@ -1766,10 +1764,6 @@ forty-eight hours.
 - <a id="f8-6a"></a>**F8.6a** **A trial that is going badly is raised to the operator, and the
   test is derived rather than self-reported**: a business inside its trial that
   has taken calls and booked nothing ([F1.12e](#f1-12e)).
-  - **It replaces the old "activation stuck" alert**, which fired when a business
-    used its five test calls without ticking a box saying one of them worked.
-    That depended on the business telling Ringly, and the business least likely
-    to tell Ringly anything is the one having the worst time.
   - **Calls but no bookings is the shape of a broken agent** — a mishearing
     prompt, a wrong service menu, a calendar that refuses every slot ([F2.7](#f2-7)) —
     and it is visible without asking anyone. It also catches the business that
@@ -1814,11 +1808,10 @@ forty-eight hours.
   - **What the operator can still do is pause the dormancy clock** ([F9.1b](#f9-1b),
     [F8.13](#f8-13)) and **extend a trial** ([F9.1c](#f9-1c)). Both are concessions, not
     corrections: neither changes what a business was charged.
-  - **The cap-cycling worry the old control existed to answer is answered
-    differently.** A business that cancels and returns opens a new period at full
-    price on the day it returns ([F6.10a](#f6-10a)), so cycling buys a fresh $500 ceiling
-    at the cost of a fresh $100 fee and a gap in service — which is not a way to
-    get something for nothing, and is why no human needs to be in the loop.
+  - **Cap-cycling needs no human to prevent it.** A business that cancels and
+    returns opens a new period at full price on the day it returns ([F6.10a](#f6-10a)), so
+    cycling buys a fresh $500 ceiling at the cost of a fresh $100 fee and a gap in
+    service. It is not a way to get something for nothing.
 - <a id="f8-11"></a>**F8.11** Shows the same **outcome definitions** the business sees ([F5.7](#f5-7)), so
   both sides of a conversation about the numbers are reading the same
   definitions.
@@ -2443,8 +2436,7 @@ attribute to the product a delay that is the trial length by design.
 | Dashboard load                                            | p95 ≤ 500 ms           |                                                                      |
 | Monthly infra cost per business                           | tracked, trending down |                                                                      |
 
-**Time to live is minutes, not hours**, where the old time-to-activated was under
-a day. The inbox round-trip is still there — the contact email must be verified
+**Time to live is measured in minutes.** The inbox round-trip is there — the contact email must be verified
 ([F1.10](#f1-10)) — but nothing waits on a business deciding whether to pay, because that
 decision has moved to the end of the trial and is made by not cancelling.
 
@@ -2545,8 +2537,7 @@ unused column, no dead code path held open against a future that may not arrive
   for payment methods only.
 - **Plan changes and annual billing.** A subscription makes both cheap for the
   first time — the provider handles proration between prices — and neither is
-  expressible in the old hand-rolled model. Not now, because there is one plan
-  ([§1.4](#14-scope)).
+  Not now, because there is one plan ([§1.4](#14-scope)).
 
 ### Not planned
 
