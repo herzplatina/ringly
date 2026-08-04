@@ -1190,14 +1190,14 @@ current period had accrued.
 
 **If payment fails.** The provider retries; Ringly does nothing.
 
-| Stage             |                                                                                                                                                                                          |
-| ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Decline           | **Service continues.** The provider emails and schedules a retry ([F6.11](#f6-11)). Usage keeps accruing and stays billable. Ringly says nothing — nothing about the service has changed |
-| Retries run       | Up to three attempts across a configured window. **This window is the grace period**; there is no second clock                                                                           |
-| Last retry fails  | **Service stops.** Agent unbound, subscription **paused**, final usage invoice raised, and **Ringly** emails to say what happened and what turns it back on ([F6.11b](#f6-11b))          |
-| Paused, days 0–60 | **No new fixed fee, no new period, no new usage.** Number and all data retained. Settling what is owed restores service that day ([F6.11c](#f6-11c))                                     |
-| ~58               | 48-hour final warning by email, itemising exactly what will be deleted                                                                                                                   |
-| 60                | **Full stop.** Subscription cancelled, number released, data deleted, amount owed recorded permanently ([F9.9](#f9-9))                                                                   |
+| Stage             |                                                                                                                                                                                                                                |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Decline           | **Service continues.** The provider emails and schedules a retry ([F6.11](#f6-11)). Usage keeps accruing and stays billable. Ringly says nothing — nothing about the service has changed                                       |
+| Retries run       | Up to three attempts across a configured window, **which must be shorter than a billing period** or a second $100 invoice is raised behind it ([F6.11](#f6-11)). **This window is the grace period**; there is no second clock |
+| Last retry fails  | **Service stops.** Agent unbound, subscription **paused**, final usage invoice raised, and **Ringly** emails to say what happened and what turns it back on ([F6.11b](#f6-11b))                                                |
+| Paused, days 0–60 | **No new fixed fee, no new period, no new usage.** Number and all data retained. Settling what is owed restores service that day ([F6.11c](#f6-11c))                                                                           |
+| ~58               | 48-hour final warning by email, itemising exactly what will be deleted                                                                                                                                                         |
+| 60                | **Full stop.** Subscription cancelled, number released, data deleted, amount owed recorded permanently ([F9.9](#f9-9))                                                                                                         |
 
 **If the business cancels.** Self-serve, from its own dashboard, **effective
 immediately** ([F6.12](#f6-12)). The screen states the consequences before it confirms.
@@ -1308,6 +1308,11 @@ change that breaks one is a change to the commercial model, not a detail._
   - **It is higher than the old model's $500**, and knowingly so. The old ceiling
     held because only one period could ever be outstanding; a retry window during
     which service continues necessarily produces a second, smaller bill.
+  - **What holds it at two invoices is the retry window being shorter than a
+    billing period** ([F6.11](#f6-11)). Let the retries run past a cycle boundary and the
+    subscription raises another $100 invoice behind them, and there is no ceiling
+    at all — this invariant and that configuration constraint are the same fact
+    seen from two ends.
   - **Reaching it requires a heavy user whose card fails and who keeps taking
     calls right through the retry window.** The second invoice is bounded by that
     window, not by a month, so in practice it is a fraction of $400.
