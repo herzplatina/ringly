@@ -72,7 +72,7 @@ append-only ledgers, versioned pricing policy, and the transaction at the end of
 teardown ([§2.13](#213-lifecycle-dormancy-and-teardown)).
 
 **2.1.4 — Exactly two things end a trial, and nothing else starts billing.**
-[F1.12b](Ringly_PRD_v3.md#f1-12b) closes the set: the trial's last day, or its call allowance. There is
+[F1.11d](Ringly_PRD_v3.md#f1-11b) closes the set: the trial's last day, or its call allowance. There is
 therefore exactly one code path that can create period 1 and take the first $100
 — Stripe raising an invoice because a trial ended ([§2.10.3](#2103-the-rollover-one-webhook-does-the-whole-thing)) — and
 exactly two things that can cause it, one of them the provider's own scheduler
@@ -338,7 +338,7 @@ attempts before their outcome is known, and an attempt has neither a settled
 amount nor an id from the provider until it succeeds.
 
 **The checklist's three items split by who owns the fact, and that is
-deliberate** ([F1.12](Ringly_PRD_v3.md#f1-12)). `contact_email_verified_at` is Ringly's own and lives
+deliberate** ([F1.11](Ringly_PRD_v3.md#f1-11)). `contact_email_verified_at` is Ringly's own and lives
 here. **The calendar grant is the credential store's** ([§2.4](#24-data-model)/006) — the item is
 green when a usable refresh token exists, which is the same question
 [§2.7.3](#273-credentials-and-the-token-lifecycle) already answers for the call path. **The card is
@@ -359,7 +359,7 @@ concept cost a reader more than seven bytes saves. A nullable timestamp is a
 strict superset at the same price: `IS NULL` reads exactly as `= false` would.
 
 **`is_trial_call` is the one boolean, and it is a classification rather than an
-event.** It is written at the time of the call and never derived ([F1.13c](Ringly_PRD_v3.md#f1-13c)):
+event.** It is written at the time of the call and never derived ([F1.12d](Ringly_PRD_v3.md#f1-12c)):
 service state changes, and a call's history must not. Deriving it from today's
 state would reclassify every trial call the instant the trial ended — including
 the call that ended it, which is the one that matters.
@@ -620,11 +620,11 @@ calls(... is_trial_call, ...)
 ```
 
 - **Gone: `test_call_confirmed_at`, `test_calls_used`, `activated_at`.** The
-  checklist item they served is withdrawn ([F1.13d](Ringly_PRD_v3.md#f1-13d)) and there is no
+  checklist item they served is withdrawn ([F1.12e](Ringly_PRD_v3.md#f1-12d)) and there is no
   activation instant to stamp — a business starts paying because a trial ended,
   which `trials.ended_at` already records.
 - **Renamed: `calls.is_test_call` → `is_trial_call`.** Same column, same
-  write-at-call-time rule ([F1.13c](Ringly_PRD_v3.md#f1-13c)), different name for a different thing: it
+  write-at-call-time rule ([F1.12d](Ringly_PRD_v3.md#f1-12c)), different name for a different thing: it
   no longer means "the owner testing" but "inside the free window", and a call
   from a real customer can now carry it.
 - **Gone: `billing_status`. Replaced by `service_state`**
@@ -837,8 +837,8 @@ _Behaviours owed to the catalogue_
 [F1](Ringly_PRD_v3.md#f1--onboarding-and-identity) in order. Three things in this section are harder than they look, and each
 gets its own subsection: an unauthenticated endpoint that spends money ([N9](Ringly_PRD_v3.md#n9--cost-control-on-the-unauthenticated-surface)),
 a checklist whose completion silently commits Ringly to a monthly rental
-([F1.12](Ringly_PRD_v3.md#f1-12)), and a provider write that reports success without taking effect
-([F1.12a-ii](Ringly_PRD_v3.md#f1-12a-ii)).
+([F1.11](Ringly_PRD_v3.md#f1-11)), and a provider write that reports success without taking effect
+([F1.11c](Ringly_PRD_v3.md#f1-11c)).
 
 **Nothing in this section takes money.** That is the largest change from the
 design it replaces, where a single button had to charge exactly once across three
@@ -876,15 +876,15 @@ background; 8–9 are a screen they come back to.** The numbering is load-bearin
    consent means sign-in can succeed while calendar is refused; a refusal stops
    here on the explanation screen with a re-consent button ([F1.7b](Ringly_PRD_v3.md#f1-7b)) and the
    committed draft is what makes "the work already done" survive it.
-7. **The checklist** ([F1.12](Ringly_PRD_v3.md#f1-12)) — three tasks in any order, with the trial's two
+7. **The checklist** ([F1.11](Ringly_PRD_v3.md#f1-11)) — three tasks in any order, with the trial's two
    bounds stated alongside so the business knows what it is agreeing to before it
-   finishes ([F1.13-i](Ringly_PRD_v3.md#f1-13-i)).
+   finishes ([F1.12a](Ringly_PRD_v3.md#f1-12a)).
 8. **Number purchase and agent provisioning, in the background**, triggered by the
    third item going green ([F1.9](Ringly_PRD_v3.md#f1-9), [§2.5.2](#252-provisioning-and-the-start-of-the-trial)). **Nothing
    chargeable to Ringly happens before this point** ([N9.3](Ringly_PRD_v3.md#n9-3)): a bot that gets past
    the rate limiter costs one enrichment call, never a phone number — and now not
    even that, because a card must clear first.
-9. **The trial starts by itself** ([F1.12a](Ringly_PRD_v3.md#f1-12a)). There is no ninth thing for the
+9. **The trial starts by itself** ([F1.11a](Ringly_PRD_v3.md#f1-11a)). There is no ninth thing for the
    business to do; the step is here so the numbering still describes the whole
    flow.
 
@@ -1121,7 +1121,7 @@ Background, off the response, and **gated on the calendar credential existing.**
 
 **Decision — provisioning waits for the whole checklist.** [F1.9](Ringly_PRD_v3.md#f1-9) says number
 purchase runs in the background but does not say from what moment. [F4.1](Ringly_PRD_v3.md#f4-1) says a
-business without a connected calendar cannot take bookings, and [F1.12](Ringly_PRD_v3.md#f1-12) makes a
+business without a connected calendar cannot take bookings, and [F1.11](Ringly_PRD_v3.md#f1-11) makes a
 working card a precondition for the trial — so buying a number before either is
 spending on an account that cannot become a customer. Gating on all three is
 [N9.3](Ringly_PRD_v3.md#n9-3)'s argument two steps further along, and it costs the business nothing: the
@@ -1166,15 +1166,15 @@ vendor is slow, and the others say so — which costs nothing real, since a busi
 cannot add a card while Stripe is down and Ringly could not charge one either.
 
 **The old second item is gone.** It asked the owner to confirm that a test call
-had sounded right, and it existed to gate the Activate button ([F1.13d](Ringly_PRD_v3.md#f1-13d)). With
+had sounded right, and it existed to gate the Activate button ([F1.12e](Ringly_PRD_v3.md#f1-12d)). With
 no button it gates nothing, and the operator signal it fed is derived instead
 ([§2.5.4.1](#2541-the-failing-trial-signal)). Its column goes with it ([§2.4](#24-data-model)/007).
 
-**Editing the contact address clears its verification**, because [F1.11](Ringly_PRD_v3.md#f1-11) exists to
+**Editing the contact address clears its verification**, because [F1.10](Ringly_PRD_v3.md#f1-10) exists to
 stop the 48-hour deletion warning going to an address nobody reads, and a
 verified flag that survives an edit is precisely that failure with a green tick
 on it. **It also updates the Stripe customer's email**, so the invoices and
-decline notices Stripe sends reach the same inbox ([F1.11](Ringly_PRD_v3.md#f1-11)).
+decline notices Stripe sends reach the same inbox ([F1.10](Ringly_PRD_v3.md#f1-10)).
 
 **The verification link is a signed token, not a row** — an HMAC over
 `(business_id, address, issued_at)` with a 24-hour expiry, single-use by virtue
@@ -1195,7 +1195,7 @@ been told nothing and the link is sent.
 
 Any address the owner types instead takes the link, which is the common case since
 billing and personal mail usually differ. And **editing the address clears the
-verification either way** — [F1.11](Ringly_PRD_v3.md#f1-11) exists to stop the 48-hour deletion warning
+verification either way** — [F1.10](Ringly_PRD_v3.md#f1-10) exists to stop the 48-hour deletion warning
 going somewhere nobody reads, and a verified tick that survives an edit is that
 failure wearing a green badge.
 
@@ -1206,7 +1206,7 @@ provider directly and Ringly stores the resulting identifiers.
 ### 2.5.2 Provisioning and the start of the trial
 
 **The checklist going green is the trigger, and it is the only one.** Three items
-([F1.12](Ringly_PRD_v3.md#f1-12)) with three different owners — a verified contact email (Ringly's), a
+([F1.11](Ringly_PRD_v3.md#f1-11)) with three different owners — a verified contact email (Ringly's), a
 calendar grant (the credential store's), a working card (Stripe's) — and the
 moment the third is satisfied, Ringly spends money for the first time.
 
@@ -1236,7 +1236,7 @@ product that cannot book ([F4.1](Ringly_PRD_v3.md#f4-1)); requiring both plus a 
 number belongs to a business that has proved it can be served.
 
 **The trial clock starts at step 3, not when the checklist went green**
-([F1.12a-i](Ringly_PRD_v3.md#f1-12a-i)). Steps 1 and 2 depend on a third party and can take minutes or,
+([F1.11b](Ringly_PRD_v3.md#f1-11b)). Steps 1 and 2 depend on a third party and can take minutes or,
 on a bad day, not complete at all. A business must never lose trial days to
 Ringly's own provisioning, and the day count is meaningless before the phone can
 ring.
@@ -1294,7 +1294,7 @@ property that makes provisioning safe to retry blindly.
 
 ### 2.5.3 Bind and unbind are verified by reading provider state back
 
-[F1.12a-ii](Ringly_PRD_v3.md#f1-12a-ii), and it is the one piece of vendor interaction the design does not
+[F1.11c](Ringly_PRD_v3.md#f1-11c), and it is the one piece of vendor interaction the design does not
 trust. A write that reports success and does not take effect is invisible until
 a customer finds it — R25.
 
@@ -1334,7 +1334,7 @@ disagreement is the repair queue.
 `should_answer <> is_bound` — because it already owns every unbind and rebind in
 the system ([§2.13.2](#2132-unbinding-is-the-one-mechanism-for-stopping-service)) and giving provisioning its own worker would mean two
 components issuing binds for one number. This is a decision the PRD does not
-make; [F1.12a-ii](Ringly_PRD_v3.md#f1-12a-ii) says a failed verification is retried, and this says by whom.
+make; [F1.11c](Ringly_PRD_v3.md#f1-11c) says a failed verification is retried, and this says by whom.
 The cadence is the sweeper's hourly one, which is slow for a business waiting to
 go live; it is accepted because a bind that has already failed its own retry
 ladder has an operator alert against it, and the resume path's own rebind is the
@@ -1388,10 +1388,10 @@ resolves in twenty minutes resolves itself without a human.
 
 #### 2.5.3.3 When it will not take
 
-| Direction  | Alert                                                                                       | Also appears as                                        |
-| ---------- | ------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
-| **Bind**   | Provisioning stuck ([F1.12a-ii](Ringly_PRD_v3.md#f1-12a-ii), [F8.6](Ringly_PRD_v3.md#f8-6)) | [F8.12](Ringly_PRD_v3.md#f8-12), "Provisioning stuck"  |
-| **Unbind** | Its own alert ([F7.13a](Ringly_PRD_v3.md#f7-13a)) — no other symptom                        | [F8.12](Ringly_PRD_v3.md#f8-12), "Number not released" |
+| Direction  | Alert                                                                                 | Also appears as                                        |
+| ---------- | ------------------------------------------------------------------------------------- | ------------------------------------------------------ |
+| **Bind**   | Provisioning stuck ([F1.11c](Ringly_PRD_v3.md#f1-11c), [F8.6](Ringly_PRD_v3.md#f8-6)) | [F8.12](Ringly_PRD_v3.md#f8-12), "Provisioning stuck"  |
+| **Unbind** | Its own alert ([F7.13a](Ringly_PRD_v3.md#f7-13a)) — no other symptom                  | [F8.12](Ringly_PRD_v3.md#f8-12), "Number not released" |
 
 **A failed unbind gets its own alert because it has no other symptom.** Every
 other component believes service has stopped: no period is metering, no
@@ -1401,15 +1401,15 @@ except the reconciliation above. The alert names the business, the number still
 answering, and why Ringly tried to release it, so the operator can release it by
 hand ([F8.12](Ringly_PRD_v3.md#f8-12)).
 
-**It is a read of provider state, never a placed call** ([F1.12a-ii](Ringly_PRD_v3.md#f1-12a-ii)). A synthetic
+**It is a read of provider state, never a placed call** ([F1.11c](Ringly_PRD_v3.md#f1-11c)). A synthetic
 call costs minutes on every bind, lands in `calls` where it corrupts both the
 test-call count ([§2.5.4](#254-the-trials-two-bounds)) and the analytics ([§2.9](#29-analytics-and-the-two-dashboards)), and still proves only that
 something answered. Whether the agent _sounds_ right is a human judgement and
-[F1.12](Ringly_PRD_v3.md#f1-12)'s checklist item 2 exists for exactly that.
+[F1.11](Ringly_PRD_v3.md#f1-11)'s checklist item 2 exists for exactly that.
 
 ### 2.5.4 The trial's two bounds
 
-The trial ends at whichever bound is reached first ([F1.13-i](Ringly_PRD_v3.md#f1-13-i)), and the two are
+The trial ends at whichever bound is reached first ([F1.12a](Ringly_PRD_v3.md#f1-12a)), and the two are
 enforced in different places by different systems — which is the point, because
 the one that matters most is the one Ringly cannot be trusted to run on time.
 
@@ -1432,12 +1432,12 @@ after the usage record is written and is the same atomic increment described in
 replaces, and it is worth stating in the negative because the old behaviour was
 load-bearing there: a business that used its allowance had its number taken away
 until it paid. Now the number keeps answering and billing simply begins
-([F1.13a](Ringly_PRD_v3.md#f1-13a)). **`stopService` is not called from anywhere in the trial path**, and
+([F1.12b](Ringly_PRD_v3.md#f1-12a)). **`stopService` is not called from anywhere in the trial path**, and
 the only unbind in the product is the one that ends service for good
 ([§2.10.6](#2106-stopping-service)).
 
 **A trial call is written as one at the time of the call, never derived**
-([F1.13c](Ringly_PRD_v3.md#f1-13c)):
+([F1.12d](Ringly_PRD_v3.md#f1-12c)):
 
 ```sql
 INSERT INTO calls (…, is_trial_call) VALUES (…, ${snapshot.wasTrialing});
@@ -1449,13 +1449,13 @@ misclassify the call that ends the trial — the one that matters most — becau
 then the state has already moved.
 
 **Trial calls produce no `usage_records` row at all.** They are free of usage and
-of the fixed fee ([F1.13](Ringly_PRD_v3.md#f1-13)), and the cleanest way to guarantee the first invoice
+of the fixed fee ([F1.12](Ringly_PRD_v3.md#f1-12)), and the cleanest way to guarantee the first invoice
 carries no usage line is for there to be nothing to sum. The call is recorded in
 full — it appears in the dashboard, the rollup and the outcome classification like
 any other ([F5.3](Ringly_PRD_v3.md#f5-3)) — and its **cost** is recorded in `cost_records`, because
 what Ringly absorbs, Ringly measures ([F8.5](Ringly_PRD_v3.md#f8-5), [R8](#r8)).
 
-**The trial is the whole product** ([F1.13](Ringly_PRD_v3.md#f1-13)), so there is no branch anywhere in
+**The trial is the whole product** ([F1.12](Ringly_PRD_v3.md#f1-12)), so there is no branch anywhere in
 the call path, the booking path or the calendar integration that consults it. A
 trialing business reaches [§2.6](#26-the-call-path) and [§2.7](#27-scheduling-providers) by exactly the same code as a
 paying one, and its bookings are written to its own Google Calendar with the same
@@ -1503,10 +1503,10 @@ implementation:
 | 1   | Commit the business row **before** checking granted scopes (steps 5 and 6 swapped)                    | [F1.7b](Ringly_PRD_v3.md#f1-7b)'s "the draft is kept" is only durable if it is a row                                                                                                                        |
 | 2   | The checklist holds **no state of its own**: one local column, one credential lookup, one Stripe read | Three facts with three owners ([§2.4](#24-data-model)/005). A local mirror of any of the last two drifts toward a green checklist over a dead card or a revoked grant                                       |
 | 3   | Provisioning waits for **all three** checklist items, not just the calendar                           | A number costs rent from purchase ([F8.9](Ringly_PRD_v3.md#f8-9)). Requiring the card too means every rented number belongs to a business that has proved it can be served and can pay                      |
-| 4   | The trial clock starts when the **number is live**, not when the checklist goes green                 | Steps 1–2 depend on a third party. A business must never lose trial days to Ringly's provisioning, and the day count is meaningless before the phone can ring ([F1.12a-i](Ringly_PRD_v3.md#f1-12a-i))       |
+| 4   | The trial clock starts when the **number is live**, not when the checklist goes green                 | Steps 1–2 depend on a third party. A business must never lose trial days to Ringly's provisioning, and the day count is meaningless before the phone can ring ([F1.11b](Ringly_PRD_v3.md#f1-11b))           |
 | 5   | Ringly decides `trial_end` and tells Stripe; it does not read it back                                 | The trial length comes from `pricing_policy`, so Ringly is its origin. The **billing anchor** points the other way and is read from Stripe ([§2.4](#24-data-model)/007)                                     |
 | 6   | The subscription is created **after** the local commit                                                | A crash between them leaves a trialing business with no subscription — free service, repaired by a sweep, and invisible to the customer. The reverse leaves a subscription with no trial row                |
-| 7   | Reaching the call allowance **does not unbind the agent**                                             | The business that used its trial hardest is the one relying on the number. Ending the trial and taking the phone away are different acts and only one of them is wanted ([F1.13a](Ringly_PRD_v3.md#f1-13a)) |
+| 7   | Reaching the call allowance **does not unbind the agent**                                             | The business that used its trial hardest is the one relying on the number. Ending the trial and taking the phone away are different acts and only one of them is wanted ([F1.12b](Ringly_PRD_v3.md#f1-12a)) |
 | 8   | Intended bind state is derived from `service_state` and never stored                                  | A stored intent has a crash window; a derived one has none, and it is what makes a failed unbind retryable                                                                                                  |
 | 9   | The lifecycle sweeper owns bind reconciliation                                                        | It already owns every other bind and unbind ([§2.13.2](#2132-unbinding-is-the-one-mechanism-for-stopping-service)); two components issuing binds for one number is worse than an hour of latency            |
 | 10  | An address carrying Google's `email_verified` claim needs no second link                              | The proof already happened in the token exchange. The test is the claim, not a string comparison                                                                                                            |
@@ -1691,7 +1691,7 @@ when caller ID does not supply one, and the tool refuses without it.
 5. return 204
 ```
 
-**`is_trial_call` comes from the snapshot, not from the business row.** [F1.13c](Ringly_PRD_v3.md#f1-13c)
+**`is_trial_call` comes from the snapshot, not from the business row.** [F1.12d](Ringly_PRD_v3.md#f1-12c)
 defines a trial call by whether the trial had ended **when the call arrived** — so
 the value is `session.snapshot.was_trialing`, captured at call start
 ([§2.6.6.2](#2662-the-per-call-snapshot--freezing-config-for-one-conversation)) and never re-read here. The window where this matters is
@@ -1880,7 +1880,7 @@ maps:
 | Map            | Key           | Value                                                                                                                                   | Invalidated by |
 | -------------- | ------------- | --------------------------------------------------------------------------------------------------------------------------------------- | -------------- |
 | `number_index` | `to_number`   | `business_id`                                                                                                                           | TTL            |
-| `config_cache` | `business_id` | timezone, horizon, greeting, active services with price and duration, opening hours, `was_unbilled` ([F1.13c](Ringly_PRD_v3.md#f1-13c)) | TTL            |
+| `config_cache` | `business_id` | timezone, horizon, greeting, active services with price and duration, opening hours, `was_unbilled` ([F1.12d](Ringly_PRD_v3.md#f1-12c)) | TTL            |
 
 **The 60 seconds is the requirement, not a tuning choice.** [F3.2](Ringly_PRD_v3.md#f3-2) gives a
 catalogue or hours change ≤60s to reach the next caller, so the TTL _is_ the
@@ -3061,7 +3061,7 @@ and answered it by inferring from a fact about money.
 | State      | The agent is | Meaning                                                                 |
 | ---------- | ------------ | ----------------------------------------------------------------------- |
 | `pending`  | unbound      | Checklist incomplete, or the number is still being provisioned          |
-| `trialing` | **bound**    | Full service, free, inside the trial ([F1.13](Ringly_PRD_v3.md#f1-13))  |
+| `trialing` | **bound**    | Full service, free, inside the trial ([F1.12](Ringly_PRD_v3.md#f1-12))  |
 | `serving`  | **bound**    | Full service, on a subscription, invoiced monthly                       |
 | `dormant`  | unbound      | Service stopped; a `dormancies` row exists ([§2.4](#24-data-model)/008) |
 
@@ -3099,7 +3099,7 @@ change, and it is issued by hand.
 ### 2.10.2 Ending the trial on the call bound
 
 The day bound needs no Ringly code — the subscription's own `trial_end` fires it
-([F1.13b](Ringly_PRD_v3.md#f1-13b)), and it fires whether or not Ringly is running that morning. The
+([F1.12c](Ringly_PRD_v3.md#f1-12b)), and it fires whether or not Ringly is running that morning. The
 call bound is Ringly's, and it runs in the post-call worker
 ([§2.6.2](#262-three-webhooks)) after the usage record is written.
 
@@ -3139,7 +3139,7 @@ subscription buys: the old model had an activation charge that was a `PaymentInt
 where everything else was an invoice, and every property that held for ordinary
 periods had to be re-argued for period 1.
 
-**Ringly does send the email** ([F1.13a](Ringly_PRD_v3.md#f1-13a)), because Stripe was told only that the
+**Ringly does send the email** ([F1.12b](Ringly_PRD_v3.md#f1-12a)), because Stripe was told only that the
 trial ended and never why.
 
 ### 2.10.3 The rollover: one webhook does the whole thing
@@ -3298,7 +3298,7 @@ stopService(businessId, reason):
 
 **Step 1 first, and it is the only step that can refuse to proceed.** Every other
 step is about money; this one is about a phone that is still answering calls
-Ringly has decided to stop metering ([F1.12a-ii](Ringly_PRD_v3.md#f1-12a-ii)). Pausing the subscription
+Ringly has decided to stop metering ([F1.11c](Ringly_PRD_v3.md#f1-11c)). Pausing the subscription
 first would leave a business receiving free service with no invoice ever coming.
 
 **Step 3 before step 4, and this is the subtle one.** `pause_collection` with
@@ -3427,7 +3427,7 @@ paid — it asks `outstanding()` what is true right now and acts on the answer. 
 because the later-processed failure still leads to a live reading in which
 nothing is outstanding.
 
-**It is also why the daily reconciliation is credible** ([F6.11c-i](Ringly_PRD_v3.md#f6-11c-i)): the
+**It is also why the daily reconciliation is credible** ([F6.11d](Ringly_PRD_v3.md#f6-11d)): the
 backstop and the handler run the same function over the same state. It is not a
 second implementation that might disagree — it is the first one, on a timer.
 
@@ -3474,7 +3474,7 @@ resume(businessId):
 self-serve control is disabled by the same reading that stops the automatic path.
 
 **`billing_cycle_anchor: 'now'` resets the anchor to the day of return**
-([F6.10c](Ringly_PRD_v3.md#f6-10c)), and Stripe raises the new period's invoice immediately. The old
+([F6.10a](Ringly_PRD_v3.md#f6-10a)), and Stripe raises the new period's invoice immediately. The old
 anchor is not kept: restoring a business to a billing date it chose months ago
 would charge it for days it spent dormant, or hand it a part-month free,
 depending only on which day it happened to come back.
@@ -3483,7 +3483,7 @@ depending only on which day it happened to come back.
 was given while paused, and the fixed fee is never refunded ([I6](Ringly_PRD_v3.md#i6)).
 
 **Step 3 after step 2, and the failure is loud.** A business that has paid and is
-still not being answered is the worst state in the system ([F6.11c-i](Ringly_PRD_v3.md#f6-11c-i)), so a
+still not being answered is the worst state in the system ([F6.11d](Ringly_PRD_v3.md#f6-11d)), so a
 bind whose read-back fails is retried and then alerted, and the business is left
 visibly mid-restore rather than silently `serving` with a dead number.
 
@@ -3591,7 +3591,7 @@ Ringly. It is not a guarantee that a charge in March will succeed, which is why
 case of it.
 
 **Step 4 is the only place a subscription is created, and it happens after the
-number is confirmed live** ([F1.12a](Ringly_PRD_v3.md#f1-12a)) — so `trial_end` and `trials.started_at`
+number is confirmed live** ([F1.11a](Ringly_PRD_v3.md#f1-11a)) — so `trial_end` and `trials.started_at`
 are the same instant and neither is corrected afterwards.
 
 **`metadata.ringly_business_id` is set on the customer and the subscription**, and
@@ -3954,7 +3954,7 @@ spelling out because the obvious anchor is wrong:
 - **`test_calls_exhausted` is keyed on the fifth `calls.id`**, not on the
   business. The operator can reset the allowance ([F9.1c](Ringly_PRD_v3.md#f9-1c)) and the business can
   exhaust it again; keyed on `business_id` the second exhaustion would be silent
-  and the number would stop answering with nobody told ([F1.13a](Ringly_PRD_v3.md#f1-13a)).
+  and the number would stop answering with nobody told ([F1.12b](Ringly_PRD_v3.md#f1-12a)).
 - **`operator_number_release_failed` is keyed on the business plus the reason for
   the unbind.** The same business can fail to release at the test-call limit and
   again at suspension, and those are two different alerts. Repeated failures of
@@ -4158,7 +4158,7 @@ infrastructure, long after the dispatcher recorded `sent_at` and moved on.
 
 That second failure is the one [F7.15](Ringly_PRD_v3.md#f7-15) calls the dangerous one, and it is the
 common one: **a contact address that is wrong, dead, or full produces it every
-single time**, and it looks like success at every point except the inbox. [F1.11](Ringly_PRD_v3.md#f1-11)
+single time**, and it looks like success at every point except the inbox. [F1.10](Ringly_PRD_v3.md#f1-10)
 verifies the address at onboarding, which catches it being wrong on day one and
 says nothing about it going bad on day four hundred.
 
@@ -4302,7 +4302,7 @@ otherwise guess:
 | **The per-kind identity mapping in [§2.11.3](#2113-four-sending-identities-and-how-a-template-is-bound-to-one)**                                             | [F7.11](Ringly_PRD_v3.md#f7-11) fixes four streams and does not assign kinds to them                                                                                                                                                                                                     |
 | **`deletion_warning` sends from `service`, not `billing`**                                                                                                   | What the reader loses is the number answering, not a payment                                                                                                                                                                                                                             |
 | **Every business-facing kind except `cap_reached` and `account_deleted` sends from `service`**                                                               | The split Ringly is left with after [F7.3a](Ringly_PRD_v3.md#f7-3a) is almost entirely about the state of the phone. The `billing` identity survives for the two that are genuinely about money, and because a stream nobody sends from is a stream with no reputation when it is needed |
-| **`trial_ending_soon` fires once, 72 hours from whichever bound is closer**                                                                                  | [F1.13b](Ringly_PRD_v3.md#f1-13b) requires a reminder and names no interval. "Whichever is closer" is the whole point — a countdown of days sent to a business two calls from the other bound is wrong in the way that matters ([F7.3a](Ringly_PRD_v3.md#f7-3a))                         |
+| **`trial_ending_soon` fires once, 72 hours from whichever bound is closer**                                                                                  | [F1.12c](Ringly_PRD_v3.md#f1-12b) requires a reminder and names no interval. "Whichever is closer" is the whole point — a countdown of days sent to a business two calls from the other bound is wrong in the way that matters ([F7.3a](Ringly_PRD_v3.md#f7-3a))                         |
 
 **Testing this section**
 
@@ -4949,7 +4949,7 @@ revision.** Six corrections:
 6. **Activation is replaced by a trial**, and this is the largest of the six
    because it touches actors, projections and fakes at once:
    - **Actors.** `owner.activates()` goes; it has no counterpart, because nothing
-     the owner does starts billing ([F1.12b](Ringly_PRD_v3.md#f1-12b)). `owner.confirmsTestCall()` goes
+     the owner does starts billing ([F1.11d](Ringly_PRD_v3.md#f1-11b)). `owner.confirmsTestCall()` goes
      with the checklist item it ticked. `owner.cancels()` arrives, on the owner
      rather than the operator ([F9.2](Ringly_PRD_v3.md#f9-2)). `operator.marksCancelled()`,
      `operator.clearsCancellation()` and `operator.revokesCancellation()` all go.
@@ -5100,9 +5100,9 @@ Stripe's configuration surface — [A4](Ringly_PRD_v3.md#a4) is the standing ite
   for any lifecycle transition** — cancellation and resumption are both self-serve
   ([§2.10.12](#21012-cancellation), [§2.10.10](#21010-coming-back)) — but still needed in the footer of
   every message Ringly sends.
-- <a id="q7"></a>**Q7 — the trial's two bounds** ([F1.13-i](Ringly_PRD_v3.md#f1-13-i)). Configuration, so neither blocks
+- <a id="q7"></a>**Q7 — the trial's two bounds** ([F1.12a](Ringly_PRD_v3.md#f1-12a)). Configuration, so neither blocks
   building the trial — but they are shown to the business before it commits
-  ([F1.12](Ringly_PRD_v3.md#f1-12)), so a placeholder is visible to a customer in a way a placeholder
+  ([F1.11](Ringly_PRD_v3.md#f1-11)), so a placeholder is visible to a customer in a way a placeholder
   rate is not. [R33](#r33) is what makes the call bound the one to think hardest about.
 - <a id="q8"></a>**Q8 — the retry count and window** ([F6.11](Ringly_PRD_v3.md#f6-11)). Bounded above by one billing
   period and enforced by a constraint ([§2.4](#24-data-model)/007); [R27](#r27) is the residual.
@@ -5129,8 +5129,6 @@ freeing it.
 - <a id="r5"></a>**R5 — Provider capability mismatch.** Declared, not assumed ([§2.7](#27-scheduling-providers)).
 - <a id="r6"></a>**R6 — Live busy-checks cost real money per turn.** Accepted: a stale conflict
   check is worse (2.1.1).
-- <a id="r7"></a>**R7 — Retired.** The number is left unused rather than reassigned, so
-  references in earlier documents and commits still resolve.
 - <a id="r8"></a>**R8 — Unbooked calls are pure cost.** At $0.13–0.31/min, $100 covers roughly
   320–770 minutes of unbillable calling. [F8](Ringly_PRD_v3.md#f8--operator-dashboard-ringly-internal) exists partly to measure it, and the
   $500 cap is unbounded within a period ([F6.9b](Ringly_PRD_v3.md#f6-9b)) — the largest deliberate giveaway
@@ -5162,11 +5160,6 @@ freeing it.
   burn the daily ceiling and take new signups down to manual entry for the rest
   of that day. Accepted over building machinery for traffic that does not exist;
   the cost figures ([N9.2](Ringly_PRD_v3.md#n9-2)) are what would change the assessment.
-- <a id="r18"></a>**R18 — Retired.** It held that the ten-day unactivated path deleted a business
-  while the telephony provider still held its calls, needing an explicit
-  provider-side delete on that path alone. There is one deletion clock now and it
-  runs 60 days from the day service stopped, which is always longer than the
-  provider's 30-day TTL ([§2.13.6](#2136-call-content)).
 - <a id="r19"></a>**R19 — No caller has any way to reach Ringly** ([§1.4](Ringly_PRD_v3.md#14-scope), [F9.1a](Ringly_PRD_v3.md#f9-1a)). Accepted: Ringly
   is a service provider, not the caller's counterparty ([N6.5](Ringly_PRD_v3.md#n6-5)). **No longer
   narrowed** — the self-serve per-customer deletion that previously softened this
@@ -5234,25 +5227,6 @@ freeing it.
     charged at all. Stripe raises the invoice whether or not Ringly is healthy;
     what is at risk now is only the usage line, not the fee.
 
-- <a id="r29"></a>**R29 — Retired.** It held that without a subscription object a customer in
-  Stripe was a list of invoices with no recurring relationship, so "is this
-  business active, and on what terms" was answerable only from Ringly's own
-  dashboard — costing Stripe's MRR and churn analytics and any
-  revenue-recognition schedule. There is a subscription now, and all of it comes
-  back for free.
-
-- <a id="r30"></a>**R30 — Retired.** It held that a later move to plans, tiers or annual billing
-  would be a migration rather than a setting, because adopting subscriptions with
-  live paying customers and open invoices is a different exercise from starting
-  with them. That migration has been done, before there were any paying customers
-  to do it to. Plan changes and annual billing are deferred by [§1.9](Ringly_PRD_v3.md#19-deferred) rather
-  than blocked by the design.
-
-- <a id="r31"></a>**R31 — Retired.** It recorded that Stripe's Card Account Updater is not
-  subscription-only, answering the fear that dropping the subscription would
-  worsen involuntary churn from expired and reissued cards. The question is moot;
-  the answer is unchanged and now uninteresting.
-
 - <a id="r32"></a>**R32 — Two systems both believe they know when a trial ends.** Ringly holds
   `trials.ends_at` and Stripe holds `trial_end`, written from it
   ([§2.5.2](#252-provisioning-and-the-start-of-the-trial)). Any path that moves one without the other —
@@ -5270,7 +5244,7 @@ freeing it.
 
 - <a id="r33"></a>**R33 — The trial gives away full service, and the call bound is the only
   thing sizing that gift.** A trialing business gets real bookings on its real
-  calendar at Ringly's cost ([F1.13](Ringly_PRD_v3.md#f1-13)), and the day bound does nothing to limit it.
+  calendar at Ringly's cost ([F1.12](Ringly_PRD_v3.md#f1-12)), and the day bound does nothing to limit it.
   If `trial_call_allowance` is set generously, a busy salon can consume more in
   telephony and model minutes during one trial than its first month's fee
   recovers.
@@ -5303,7 +5277,7 @@ freeing it.
   right direction to be wrong in.
 - <a id="r25"></a>**R25 — A silent unbind failure leaks revenue with no other symptom.** Every
   other component believes service has stopped, so nothing else in the system
-  would ever notice ([F1.12a-ii](Ringly_PRD_v3.md#f1-12a-ii)). Mitigated by reading provider state back on
+  would ever notice ([F1.11c](Ringly_PRD_v3.md#f1-11c)). Mitigated by reading provider state back on
   every bind and unbind, under its own operator alert ([§2.5.3](#253-bind-and-unbind-are-verified-by-reading-provider-state-back), [F7.13a](Ringly_PRD_v3.md#f7-13a)).
 - <a id="r26"></a>**R26 — Test-mode payment clocks make the behaviour suite slow.** Advancing one
   is a server-side job polled to completion. Mitigated by giving the suite its

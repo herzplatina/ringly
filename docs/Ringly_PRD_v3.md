@@ -1,23 +1,20 @@
 # Ringly — Product Requirements (v3.0)
 
-_Supersedes Part 1 of `Ringly_PRD_EDD_v2.md` (2026-07-01). Locked 2026-07-30,
-revised 2026-08-01._
-
 > **The design that serves these requirements is
-> [`Ringly_EDD_v3.md`](./Ringly_EDD_v3.md).** The two were one document until
-> 2026-08-01 and were split so each carries its own history: requirements change
-> when the product does, the design changes when the engineering does, and one
-> commit log could not carry both reasons without every entry needing to say
-> which half it was about.
-
-> **Status.** Locked. **Almost none of it is built** — what runs on `main` is the
-> v2 product. The delivery plan that replaces it is EDD [§2.16](Ringly_EDD_v3.md#216-delivery-plan).
+> [`Ringly_EDD_v3.md`](./Ringly_EDD_v3.md).** Requirements change when the product
+> does; the design changes when the engineering does. Each carries its own history
+> so a commit log entry never has to say which half it was about.
 
 > **Where to start.** **[§1.4](#14-scope)** draws the scope boundaries the rest of this
 > document assumes — most consequentially that there is no channel to the calling
 > customer, no healthcare business, one owner account per business, and no
-> recurring appointments. **[§1.8](#18-decisions-and-open-questions)** carries the questions still open ([Q1](#q1), [Q3](#q3), [Q6](#q6))
-> and the action items that are not phases.
+> recurring appointments. **[§1.8](#18-decisions-and-open-questions)** carries the questions still open and the action
+> items that are not phases.
+
+> **Edge cases are marked inline**, in the requirement they belong to, as
+> **⚠ Edge case** — a case the requirement does not settle, a recommendation, and
+> what else was considered. They are open questions with a proposed answer, not
+> decisions.
 
 > **Revision history is in `git log docs/Ringly_PRD_v3.md`** — one commit per
 > decision, each carrying the reasoning for that decision alone. Every decision is
@@ -138,12 +135,10 @@ _(Carried from v2; renumbered. v2 FR1–FR10 map to [F1.1](#f1-1)–F1.10.)_
   screen **before** the user is sent to Google, not only after they decline.
 - <a id="f1-8"></a>**F1.8** The user is told their Google login is now their Ringly login.
 - <a id="f1-9"></a>**F1.9** Number purchase and agent provisioning run in the background, and
-  **only once the whole checklist is green** ([F1.12](#f1-12)) — a verified email, calendar
+  **only once the whole checklist is green** ([F1.11](#f1-11)) — a verified email, calendar
   access, and a payment method that has been checked and works. Before that
   Ringly has bought nothing and owes nobody rent.
-- <a id="f1-10"></a>**F1.10 — Retired.** The number is left unused so references in earlier
-  documents and commits still resolve.
-- <a id="f1-11"></a>**F1.11** Onboarding collects and verifies a **business contact email**,
+- <a id="f1-10"></a>**F1.10** Onboarding collects and verifies a **business contact email**,
   defaulted from the Google identity and editable. It is the destination for all
   billing email, including the 48-hour warning before deletion ([F9.3a](#f9-3a)), so an
   unverified address is a silent single point of failure.
@@ -151,10 +146,10 @@ _(Carried from v2; renumbered. v2 FR1–FR10 map to [F1.1](#f1-1)–F1.10.)_
   receipts and decline notices ([F7.3a](#f7-3a)) reach the same inbox as everything
   Ringly sends. Two addresses would mean a business could be up to date on its
   service and unaware of its bill, or the reverse.
-- <a id="f1-12"></a>**F1.12** **Getting ready is a checklist of three tasks, presented
+- <a id="f1-11"></a>**F1.11** **Getting ready is a checklist of three tasks, presented
   together and completed in any order the business likes:**
 
-  1. **verify the contact email** ([F1.11](#f1-11));
+  1. **verify the contact email** ([F1.10](#f1-10));
   2. **grant calendar access** ([F1.7a](#f1-7a));
   3. **add a payment method, which Ringly checks actually works** ([F6.2](#f6-2)).
 
@@ -163,34 +158,34 @@ _(Carried from v2; renumbered. v2 FR1–FR10 map to [F1.1](#f1-1)–F1.10.)_
   screen shows all three with their state, and what remains.
 
   **Completing all three is what buys the number and starts the trial**
-  ([F1.12a](#f1-12a)), and nothing is provisioned before then. A number costs rent from
+  ([F1.11a](#f1-11a)), and nothing is provisioned before then. A number costs rent from
   the day it is bought and a calendar Ringly cannot read is a product that cannot
   book, so both gates exist to stop Ringly spending money on a business that has
   not yet shown it can be served. **The card is a gate for the same reason and no
   other** — it is not charged here ([F6.2](#f6-2)), only stored and verified.
 
   **The screen states the trial's two bounds before the business commits to
-  anything** ([F1.13](#f1-13)) — how many days and how many calls — because a trial whose
+  anything** ([F1.12](#f1-12)) — how many days and how many calls — because a trial whose
   ending is discovered by hitting it is not a trial, it is a surprise.
 
-- <a id="f1-12a"></a>**F1.12a** **The trial starts the moment the checklist is complete, and it
+- <a id="f1-11a"></a>**F1.11a** **The trial starts the moment the checklist is complete, and it
   starts by itself.** Ringly buys the number, binds the agent, opens a
-  payment-provider subscription with the trial length of [F1.13](#f1-13), and tells the
+  payment-provider subscription with the trial length of [F1.12](#f1-12), and tells the
   business its number is live and free until a stated date. **No further act is
   required of the business at any point** — not to go live, and not to start
   paying.
 
-  **The subscription is opened once the number is confirmed live** ([F1.12a-ii](#f1-12a-ii)),
+  **The subscription is opened once the number is confirmed live** ([F1.11c](#f1-11c)),
   not when the checklist goes green, so the provider's trial end and Ringly's own
   trial start are the same instant and neither has to be corrected afterwards
-  ([F1.12a-i](#f1-12a-i)).
+  ([F1.11b](#f1-11b)).
 
   **The business is told two dates at once**, in the same message: the day its
   trial ends and the day its first invoice is raised. They are the same day
-  ([F1.12b](#f1-12b)), and saying so once at the start is worth more than saying it twice
+  ([F1.11d](#f1-11d)), and saying so once at the start is worth more than saying it twice
   at the end.
 
-- <a id="f1-12a-i"></a>**F1.12a-i** **Provisioning touches two systems and can fail at the second,
+- <a id="f1-11b"></a>**F1.11b** **Provisioning touches two systems and can fail at the second,
   and the business is told the truth either way.** Opening the subscription and
   connecting a phone are separate acts.
 
@@ -200,17 +195,17 @@ _(Carried from v2; renumbered. v2 FR1–FR10 map to [F1.1](#f1-1)–F1.10.)_
   | **Connecting the number** | "Your trial has started. Your number is being connected — we will email you the moment it is live." **Plus that email when it is**              |
   - **The second row is the one that will be seen**, because connecting a number
     depends on a third party. **The trial clock does not start until the number
-    is live** ([F1.13](#f1-13)): a business must never lose trial days to Ringly's own
+    is live** ([F1.12](#f1-12)): a business must never lose trial days to Ringly's own
     provisioning, and the day count is meaningless before the phone can ring.
   - **It is raised to the operator** ([F8.6](#f8-6)), because a business sitting behind a
     number that never connected has no way to tell whether it is waiting on
     Ringly or on itself.
 
-- <a id="f1-12a-ii"></a>**F1.12a-ii** **Every bind and every unbind is verified by reading the
+- <a id="f1-11c"></a>**F1.11c** **Every bind and every unbind is verified by reading the
   telephony provider's own record back.** A write that returns success and does
   not take effect is otherwise invisible until it matters, and it matters in both
   directions:
-  - **A failed bind** — at provisioning ([F1.12a](#f1-12a)), or at any rebind after a
+  - **A failed bind** — at provisioning ([F1.11a](#f1-11a)), or at any rebind after a
     business settles what it owes ([F6.11c](#f6-11c)) — leaves a business paying for a
     number that rings nowhere. It is discovered by a customer.
   - **A failed unbind** — when retries are exhausted ([F6.11b](#f6-11b)), on cancellation
@@ -227,28 +222,25 @@ _(Carried from v2; renumbered. v2 FR1–FR10 map to [F1.1](#f1-1)–F1.10.)_
 
   **It is a check against provider state, never a placed call.** Ringly does not
   dial its own number: a synthetic call costs telephony minutes on every bind and
-  unbind, lands in `calls` where it corrupts the trial call count ([F1.13](#f1-13)) and
+  unbind, lands in `calls` where it corrupts the trial call count ([F1.12](#f1-12)) and
   the analytics ([F5.3](#f5-3)), and still proves only that something answered.
 
-- <a id="f1-12b"></a>**F1.12b** **Exactly two things end a trial and start billing, and nothing
-  else does.** Stated as a closed set because the old model's single deliberate
-  act has been replaced by an automatic one, and an automatic transition that
-  nobody can enumerate is a transition nobody trusts:
+- <a id="f1-11d"></a>**F1.11d** **Exactly two things end a trial and start billing, and nothing
+  else does.** Stated as a closed set because an automatic transition nobody can
+  enumerate is a transition nobody trusts:
 
-  1. **the trial's last day arrives** ([F1.13](#f1-13)); or
-  2. **the trial's call allowance is used up** ([F1.13a](#f1-13a)).
+  1. **the trial's last day arrives** ([F1.12](#f1-12)); or
+  2. **the trial's call allowance is used up** ([F1.12b](#f1-12b)).
 
   **Whichever happens first ends the trial**, and the other bound is discarded.
   There is no third trigger: not the operator, not a support action, not a
-  business asking to start early. **Confirming that the agent sounded right does
-  not start billing either** — that judgement is no longer collected, because it
-  no longer gates anything ([F1.13d](#f1-13d)).
+  business asking to start early.
 
   **Before that moment: no charge is possible, ever.** After it: usage is billed
   by outcome alone ([F6.6](#f6-6)) and the fixed fee runs monthly ([F6.1](#f6-1)). There is no
   third state and no gradual transition.
 
-- <a id="f1-13"></a>**F1.13** **The trial is the whole product, free, and the only thing that
+- <a id="f1-12"></a>**F1.12** **The trial is the whole product, free, and the only thing that
   makes it a trial is that it ends.** Every capability a paying business has, a
   trial business has, from the first minute its number is live:
   - **The number is live, public and answering** — real customers ring it, and
@@ -260,7 +252,7 @@ _(Carried from v2; renumbered. v2 FR1–FR10 map to [F1.1](#f1-1)–F1.10.)_
   - **The dashboard, the catalogue, the opening hours and the email are all the
     real ones** ([F5](#f5--business-dashboard), [F3](#f3--service-catalogue-and-opening-hours), [F7](#f7--email)). There is no reduced tier and no feature held back.
   - **Nothing is charged. Not usage, and not the $100 fixed fee**
-    ([F1.13c](#f1-13c)) — the fixed fee is charged for the first time when the trial ends
+    ([F1.12d](#f1-12d)) — the fixed fee is charged for the first time when the trial ends
     ([F6.1a](#f6-1a)), so the trial period itself carries no fee at all. **The business
     pays Ringly nothing until it has had the entire product working on its own
     calendar for its own customers**, which is the whole argument for offering
@@ -271,9 +263,9 @@ _(Carried from v2; renumbered. v2 FR1–FR10 map to [F1.1](#f1-1)–F1.10.)_
   the wrong evidence. This also decides what a trial is _not_: it is not a demo,
   not a sandbox, and not a limited plan.
 
-- <a id="f1-13-i"></a>**F1.13-i** **It is bounded twice — by days and by calls — and ends at
+- <a id="f1-12a"></a>**F1.12a** **It is bounded twice — by days and by calls — and ends at
   whichever bound is reached first.** Both are stated to the business before it
-  starts ([F1.12](#f1-12)) and both are configuration, not constants in code, changeable
+  starts ([F1.11](#f1-11)) and both are configuration, not constants in code, changeable
   without a deploy on the same principle as every other number in this document
   ([F6.15](#f6-15)).
   - **The day bound** gives a business time to see the agent handle real calls
@@ -285,9 +277,9 @@ _(Carried from v2; renumbered. v2 FR1–FR10 map to [F1.1](#f1-1)–F1.10.)_
     fee would cover. **The call bound is the one that makes the trial safe to
     offer**; the day bound is the one that makes it useful.
   - **The trial clock starts when the number goes live**, not when the checklist
-    completes ([F1.12a-i](#f1-12a-i)).
+    completes ([F1.11b](#f1-11b)).
 
-- <a id="f1-13a"></a>**F1.13a** **Reaching the call allowance ends the trial and starts billing.
+- <a id="f1-12b"></a>**F1.12b** **Reaching the call allowance ends the trial and starts billing.
   The number keeps answering.** Ringly counts the calls, and on the one that
   reaches the allowance it tells the payment provider to end the trial
   immediately; the first period opens that day and the first invoice is raised
@@ -295,17 +287,16 @@ _(Carried from v2; renumbered. v2 FR1–FR10 map to [F1.1](#f1-1)–F1.10.)_
   - **Service is never interrupted.** The business that has used its trial hardest
     is the one most likely to be relying on the number already, and taking its
     phone away at the moment it proved the product would be the worst-timed
-    outage in the system. **The old behaviour — unbind the agent and stop
-    answering — is withdrawn**, and with it the whole idea that running out of
-    free calls is a punishment.
+    outage in the system. **Running out of free calls is not a punishment**; it is
+    the moment the relationship becomes a paid one.
   - **The business is emailed by Ringly**, saying the trial has ended because the
     call allowance was used, that billing has begun, and on what terms
     ([F7.3a](#f7-3a)). The payment provider cannot send this: it was told only that the
     trial ended, never why.
   - **The invoice that follows is the ordinary first one** ([F6.1a](#f6-1a)) and carries
-    no usage, because trial calls are free ([F1.13c](#f1-13c)).
+    no usage, because trial calls are free ([F1.12d](#f1-12d)).
 
-- <a id="f1-13b"></a>**F1.13b** **Reaching the last day ends the trial the same way, without
+- <a id="f1-12c"></a>**F1.12c** **Reaching the last day ends the trial the same way, without
   Ringly doing anything.** The subscription's own trial end is the mechanism, so
   the transition happens at the payment provider whether or not Ringly is
   running that morning ([F6.1a](#f6-1a)).
@@ -318,11 +309,11 @@ _(Carried from v2; renumbered. v2 FR1–FR10 map to [F1.1](#f1-1)–F1.10.)_
     alongside it would be a second message about an event the business was
     already warned of and can already see.
 
-- <a id="f1-13c"></a>**F1.13c** **A call is a trial call if the trial had not yet ended when it
+- <a id="f1-12d"></a>**F1.12d** **A call is a trial call if the trial had not yet ended when it
   arrived. That is the whole rule; there is no detection.** Trial calls are
   **free** — they are not metered, not invoiced, and never appear on any invoice,
   including the first.
-  - **"Free" means both charges, not just usage** ([F1.13](#f1-13)). No fixed fee is
+  - **"Free" means both charges, not just usage** ([F1.12](#f1-12)). No fixed fee is
     raised for the trial period either: the subscription is in its trial and
     raises no invoice at all until it ends ([F6.1a](#f6-1a)). A business that used its
     whole trial and cancelled on the last day has paid Ringly **nothing**.
@@ -342,17 +333,16 @@ _(Carried from v2; renumbered. v2 FR1–FR10 map to [F1.1](#f1-1)–F1.10.)_
     taken real bookings is a business that has adopted the product, which is what
     the trial is for.
 
-- <a id="f1-13d"></a>**F1.13d** **Ringly no longer asks the business whether the agent sounded
-  right.** The old checklist collected that judgement to gate an Activate button;
-  with no button it gates nothing, and a checkbox that gates nothing is
-  decoration that the businesses most in trouble are least likely to tick.
-
-  **The signal it existed to produce is now derived instead**: a trial business
-  that has taken calls and booked nothing is surfaced to the operator as a
-  failing trial ([F8.12](#f8-12)). That is a stronger test than the old one — it catches
-  a business that never noticed the agent was mishandling calls, which
-  self-reporting never would — and it asks nothing of the person who is already
-  having a bad time.
+- <a id="f1-12e"></a>**F1.12e** **Ringly never asks the business whether the agent sounded right,
+  and works it out instead.** A trial business that has taken calls and booked
+  nothing is surfaced to the operator as a failing trial ([F8.6a](#f8-6a), [F8.12](#f8-12)).
+  - **Asking is the weaker test.** A self-reported "it worked" depends on the
+    business telling Ringly, and the business having the worst time is the least
+    likely to say anything. Calls taken with nothing booked catches the business
+    that never noticed the agent was mishandling callers, which no checkbox can.
+  - **It asks nothing of the person who is already having a bad time**, and it is
+    the last moment anything can be done: once the trial converts, the same
+    business is a paying customer with a grievance ([F9.1c](#f9-1c)).
 
 ### F2 — Call handling and booking
 
@@ -423,7 +413,6 @@ _(Carried from v2; renumbered. v2 FR1–FR10 map to [F1.1](#f1-1)–F1.10.)_
 - <a id="f2-7"></a>**F2.7** **If the business's calendar cannot be reached for any reason, no
   appointment is booked.** A booking Ringly cannot verify is worse than no
   booking — it double-books the business and the customer arrives to a clash.
-  _(This replaces the earlier fail-open position; see R1.)_
   - **To the caller: a quiet apology, not an explanation.** The agent apologises,
     says it cannot confirm a time right now, and asks them to call back shortly.
     No technical detail, no blame.
@@ -553,12 +542,9 @@ needs — the full list is F5.15.
 - <a id="f5-2"></a>**F5.2** **One filter: the range** — `current` · `past 3` · `past 6` ·
   `past 12` **billing periods**. These four and no others; an arbitrary date
   picker invites ranges that cross a period boundary and answer nothing.
-  - **The old unit filter is withdrawn**, because the two units it offered are now
-    the same thing. It let a business choose between a calendar month (how it
-    thinks) and a billing period (how it is charged), which was a real choice only
-    while a period was a rolling 30 days from an arbitrary anchor. A period is now
-    a month of the subscription ([F6](#f6--billing-and-payments)) — the 14th to the 14th — so a control
-    offering both would offer the same answer twice.
+  - **There is no choice of unit**, because a billing period _is_ a month
+    ([F6](#f6--billing-and-payments)) — the 14th to the 14th — and a control offering "calendar month" as
+    an alternative would offer the same answer twice.
   - **It is a month offset from the calendar's**, not identical to it, and the
     page says so: a business anchored on the 14th sees March 14 – April 14, not
     March. Labelling the range with its actual dates costs nothing and stops the
@@ -716,9 +702,9 @@ needs — the full list is F5.15.
     ([F9.3](#f9-3)) — and, when it is not, **why, and exactly what turns it back on**:
     settle what is owed, or resume the service ([F6.11c](#f6-11c));
   - **the number itself**, since it is the business's public identity;
-  - **where the business is in its trial, while one is running** ([F1.13](#f1-13)):
+  - **where the business is in its trial, while one is running** ([F1.12](#f1-12)):
     **days left and calls left, both**, because either can end it and a business
-    shown only one of them is being told half the truth ([F1.12b](#f1-12b)).
+    shown only one of them is being told half the truth ([F1.11d](#f1-11d)).
 
   **This is the one thing on the dashboard that is never stale**: it is read from
   current state, not from the rollup, and it is the first thing on the page. A
@@ -748,14 +734,13 @@ the 14th — not a rolling count of 30 days.
   ordinary meaning of "the same day each month" does not survive.
 
 **One invoice per period, raised on its first day**, carrying both charges
-([F6.1a](#f6-1a)). The old model's two separate charges a month apart is withdrawn: with a
-subscription there is one collection attempt per month, and a card that has gone
-bad fails one invoice rather than two.
+([F6.1a](#f6-1a)). **One collection attempt per month**, so a card that has gone bad
+fails one invoice rather than two.
 
 - <a id="f6-1"></a>**F6.1** A **$100 fixed fee** is charged **in advance** for every period,
   irrespective of usage. There is no separate activation fee; the first such
-  charge is the one raised when the trial ends ([F1.12b](#f1-12b)).
-  - **The trial is not a period and carries no fee** ([F1.13](#f1-13)). A business
+  charge is the one raised when the trial ends ([F1.11d](#f1-11d)).
+  - **The trial is not a period and carries no fee** ([F1.12](#f1-12)). A business
     receives full service for the length of its trial and is invoiced for none of
     it.
 - <a id="f6-1a"></a>**F6.1a** **Every invoice carries the coming month's fee and the past month's
@@ -771,10 +756,10 @@ bad fails one invoice rather than two.
     invoice-created notification. Ringly computes the figure; the provider
     collects it, taxes it ([F6.18](#f6-18)), sends it, and retries it.
   - **Period 1's invoice has no usage line**, because the only calls that preceded
-    it were trial calls and those are free ([F1.13c](#f1-13c)). A zero line is not printed.
+    it were trial calls and those are free ([F1.12d](#f1-12d)). A zero line is not printed.
   - **No invoice is raised during the trial at all.** The subscription is in its
     trial period, so the fee that would otherwise fall on the first of a month
-    simply does not arise ([F1.13](#f1-13)). Period 1's invoice — $100 and nothing else —
+    simply does not arise ([F1.12](#f1-12)). Period 1's invoice — $100 and nothing else —
     is the first the business ever receives.
   - **If Ringly fails to add the usage line before the invoice finalises**, the
     usage is not lost: it stays unbilled and lands on the next period's invoice,
@@ -783,7 +768,7 @@ bad fails one invoice rather than two.
     model was chosen to avoid.
 
 - <a id="f6-2"></a>**F6.2** **The card is stored and checked before anything is provisioned**
-  ([F1.12](#f1-12)), for later off-session use. The check is an authorisation, **not a
+  ([F1.11](#f1-11)), for later off-session use. The check is an authorisation, **not a
   charge**: it proves the card exists and will accept charges from Ringly, which
   is what makes it safe to buy a number and give away a trial.
   - **It is not a guarantee.** A card that authorises in January can decline in
@@ -829,7 +814,7 @@ bad fails one invoice rather than two.
   it is recorded in full, because Ringly needs the real number for cost and
   margin ([F8](#f8--operator-dashboard-ringly-internal)). The cap is applied when the invoice is drafted, not during the
   month.
-  - **Per invoice, not per period, and the two are no longer the same thing.**
+  - **Per invoice, not per period, and the two are not the same thing.**
     One invoice carries one month's fee and the previous month's usage
     ([F6.1a](#f6-1a)), so clamping the invoice is what bounds what a business can be asked
     for on any single day. It is also the only figure the business ever sees.
@@ -871,32 +856,22 @@ bad fails one invoice rather than two.
   charges the card, retries a failure, and sends the receipt. Ringly's only
   standing involvement is adding the usage line ([F6.1a](#f6-1a)) and deciding when
   service stops ([F6.11b](#f6-11b), [F6.12](#f6-12)).
-- <a id="f6-10a"></a>**F6.10a — Retired.** The number is left unused so references in earlier
-  documents and commits still resolve. It held the operator control for setting
-  and clearing a cancellation, which existed only because cancellation arrived by
-  email; cancellation is now self-serve ([F6.12](#f6-12), [F9.2](#f9-2)).
-- <a id="f6-10b"></a>**F6.10b — Retired.** Superseded by [F6.11c](#f6-11c), which states restoration once
-  rather than twice.
-- <a id="f6-10b-i"></a>**F6.10b-i — Retired.** Folded into [F6.11c-i](#f6-11c-i), which carries the daily
-  reconciliation unchanged. The number is left unused so references in earlier
-  documents and commits still resolve.
-- <a id="f6-10c"></a>**F6.10c** **A period never resumes; coming back always opens a new one, dated
+- <a id="f6-10a"></a>**F6.10a** **A period never resumes; coming back always opens a new one, dated
   from the day service resumes.** Whether the business left by cancelling or by
   not paying, the subscription was paused and the month it was in ended when
   service stopped ([F6.12a](#f6-12a)). On resume the anchor is reset to that day, $100 is
   charged for the new period, and the following months run from the new anchor.
-  - **The old anchor is not kept.** Restoring a business to a billing date it
-    chose months ago would charge it for days it spent dormant, or hand it a
+  - **The previous anchor is not kept.** Restoring a business to a billing date
+    it chose months ago would charge it for days it spent dormant, or hand it a
     part-month free depending only on which day it happened to return.
 
 - <a id="f6-11"></a>**F6.11** **A failed charge is retried by the payment provider, and service
   continues throughout.** The retry schedule — **up to three attempts across a
   configured window** ([F6.15](#f6-15)) — is the provider's to run; Ringly does not build a
   retry loop of its own and does not attempt the card alongside it.
-  - **The window is the grace period, and it is not a separate concept.** The old
-    model had a fixed seven days of service after a decline, counted by Ringly.
-    That clock is withdrawn: service now lasts exactly as long as the provider is
-    still trying, which is the same thing said once instead of twice.
+  - **The window is the grace period, and it is not a separate concept.** Service
+    lasts exactly as long as the provider is still trying. Ringly counts no clock
+    of its own alongside it, because two clocks for one thing is two answers.
   - **The window must be shorter than a billing period, and this is a hard
     constraint rather than a preference.** A subscription whose invoice is unpaid
     goes on raising the next month's invoice at the next cycle. If the retries for
@@ -930,7 +905,7 @@ bad fails one invoice rather than two.
 - <a id="f6-11b"></a>**F6.11b** **When the retries are exhausted, service stops and the
   subscription is paused.** The provider's last attempt failing is the trigger,
   and Ringly acts on it in one movement: **unbind the agent** and verify the
-  unbind ([F1.12a-ii](#f1-12a-ii)), **raise the final usage invoice** for the part-month
+  unbind ([F1.11c](#f1-11c)), **raise the final usage invoice** for the part-month
   just served ([F6.9a](#f6-9a)), **pause the subscription**, and **email the business**
   ([F7.3a](#f7-3a)).
   - **The final invoice is raised before the pause, not during it.** The service
@@ -954,23 +929,10 @@ bad fails one invoice rather than two.
     failed; it does not know the agent has been unbound, that the number is
     retained, that settling restores service the same day, or that everything is
     deleted in 60 days ([F6.21](#f6-21)).
-- <a id="f6-11b-i"></a>**F6.11b-i — Retired.** It divided suspension into "the meter pauses, the
-  collection does not", because Ringly ran both and the two settings fought each
-  other. Pausing the subscription now does exactly that split by itself
-  ([F6.11b](#f6-11b)): no new invoice, and the open one still pursued by the provider.
-- <a id="f6-11b-ii"></a>**F6.11b-ii — Retired.** It held the rule that Ringly wrote every suspension
-  email and the provider's dunning stayed off. The dunning is back on and the
-  provider writes the money half ([F6.21](#f6-21)).
-- <a id="f6-11b-iii"></a>**F6.11b-iii — Retired.** It decided whether a restored business landed back
-  inside its old period or opened a new one. A restored business always opens a
-  new one ([F6.10c](#f6-10c)), so there is no longer a question to answer.
-- <a id="f6-11b-iv"></a>**F6.11b-iv — Retired.** It gave a fresh grace clock to a business that failed
-  again immediately after being restored. There is no Ringly-run grace clock; the
-  provider's retry schedule starts over on its own ([F6.11](#f6-11)).
 - <a id="f6-11c"></a>**F6.11c** **A paused business comes back by owing nothing and asking, and
   those are two different acts for two different reasons.** In both cases Ringly
   resumes the subscription, rebinds the agent with a verified read-back, opens a
-  new period ([F6.10c](#f6-10c)), and emails to say the number is answering again.
+  new period ([F6.10a](#f6-10a)), and emails to say the number is answering again.
   - **A business that was paused for non-payment resumes automatically, the same
     day it settles.** The provider notifies Ringly that the invoice is paid, and
     Ringly restores it without being asked. **It is not made to ask**: it has
@@ -988,20 +950,12 @@ bad fails one invoice rather than two.
   - **Either way it works only inside the dormancy window.** After teardown there
     is no subscription to resume, no number to rebind, and no data to restore
     ([F6.12b](#f6-12b)).
-- <a id="f6-11c-i"></a>**F6.11c-i** **A business that has paid and is still not being answered is the
+- <a id="f6-11d"></a>**F6.11d** **A business that has paid and is still not being answered is the
   worst state in the system**, so recovery must not depend on a single message
   arriving. If the payment notification is lost, a **daily reconciliation** finds
   any paused business that owes nothing and restores it. A lost notification may
   cost such a business hours; it must never cost it days, and it must never cost
   it the account.
-- <a id="f6-11c-ii"></a>**F6.11c-ii — Retired.** The number is left unused so references in earlier
-  documents and commits still resolve. It held the rule for grace usage with no
-  open period to bill it to, which cannot arise now that a period's usage is
-  invoiced with the next period's fee ([F6.1a](#f6-1a)) rather than at its own end.
-- <a id="f6-11d"></a>**F6.11d — Retired.** The number is left unused so references in earlier
-  documents and commits still resolve. It held the two-case analysis of which
-  charge failed — the fee at period start or the settlement at period end — which
-  cannot arise now that a period has exactly one invoice ([F6.1a](#f6-1a)).
 - <a id="f6-11e"></a>**F6.11e** **The $100 is never prorated — not on a pause, not on cancellation,
   not on deletion.** A period that delivered nine days of service still owes its
   whole fee.
@@ -1018,7 +972,7 @@ bad fails one invoice rather than two.
     metered figure itself and lets the provider prorate nothing ([F6.12a](#f6-12a)).
 - <a id="f6-11f"></a>**F6.11f** **A business has at most one open period at any moment, and periods
   never overlap or stack.** A closed period is finished; a paused business opens
-  none ([F6.11b](#f6-11b)); a restored business gets exactly one new one ([F6.10c](#f6-10c)). **There
+  none ([F6.11b](#f6-11b)); a restored business gets exactly one new one ([F6.10a](#f6-10a)). **There
   is no state in which two periods are live**, which is what keeps the billing
   history a simple ordered list a business can read down ([F5.9](#f5-9)).
 
@@ -1032,7 +986,7 @@ bad fails one invoice rather than two.
     they come back ([F6.12b](#f6-12b)). A cancellation screen that hides the bill is how a
     business ends up disputing a charge it agreed to.
   - **On confirmation, in one movement**: the agent is unbound and verified
-    ([F1.12a-ii](#f1-12a-ii)), the subscription is paused, the final invoice is raised
+    ([F1.11c](#f1-11c)), the subscription is paused, the final invoice is raised
     ([F6.12a](#f6-12a)), and the dashboard says plainly that the service has stopped.
   - **Immediate, rather than at period end, because the alternative is worse for
     both sides.** Running to period end means Ringly serves a business that has
@@ -1057,7 +1011,7 @@ bad fails one invoice rather than two.
   cancelled ([F6.12](#f6-12)) or because its retries ran out ([F6.11b](#f6-11b)).
   - **A business that returns inside those 60 days resumes on its own number with
     its own history** — customers, appointments and past figures all intact — on a
-    new period starting that day, with $100 charged that day ([F6.10c](#f6-10c)).
+    new period starting that day, with $100 charged that day ([F6.10a](#f6-10a)).
   - **A business that owes money must settle before it can resume** ([F6.11c](#f6-11c)).
     Coming back is not a way to get the debt written off, and resuming a paused
     subscription is the one lever Ringly can hold against it.
@@ -1067,17 +1021,11 @@ bad fails one invoice rather than two.
     dormancy lengths is one that gets the short one wrong at the worst moment.
   - **Only after the 60 days is anything deleted** ([F9.8](#f9-8)), and a business
     returning after that is a wholly new account with a new number.
-- <a id="f6-12c"></a>**F6.12c — Retired.** The number is left unused so references in earlier
-  documents and commits still resolve. It held the closing statement sent when a
-  reconsideration window closed; there is no window, and the final invoice
-  ([F6.12a](#f6-12a)) is now the provider's to send.
-- <a id="f6-12d"></a>**F6.12d** The total on any invoice **never exceeds $500** ([F6.9](#f6-9)), cancellation
+- <a id="f6-12c"></a>**F6.12c** The total on any invoice **never exceeds $500** ([F6.9](#f6-9)), cancellation
   or not. Worked example: a business accrues $470 of usage in a month → the next
   invoice would be `$100 + $470 = $570` → clamped to **$500**, so $400 of usage is
   charged and $70 is absorbed by Ringly.
-- <a id="f6-12e"></a>**F6.12e — Retired.** Superseded by [F6.12b](#f6-12b), which now states dormancy once
-  for both exit paths rather than only for cancellation.
-- <a id="f6-12f"></a>**F6.12f** **If the final invoice is never paid, it is recorded and let go.**
+- <a id="f6-12d"></a>**F6.12d** **If the final invoice is never paid, it is recorded and let go.**
   The amount is written to the departure record ([F9.9](#f9-9)) as owed, read from the
   provider at teardown rather than at cancellation, because the provider may
   still collect during the 60 dormant days. Ringly does not pursue a business
@@ -1088,7 +1036,7 @@ bad fails one invoice rather than two.
   business for reconciliation.
 - <a id="f6-15"></a>**F6.15** **The commercial terms are expected to change** once real usage is
   observed. The fixed fee, the cap, the per-unit rates, **the trial's two bounds**
-  ([F1.13](#f1-13)), **the retry count and window** ([F6.11](#f6-11)), and **the definition of a
+  ([F1.12](#f1-12)), **the retry count and window** ([F6.11](#f6-11)), and **the definition of a
   billable call** must all be changeable without a schema migration or a redesign.
   What does **not** change: monthly billing periods, the rule that data lives as
   long as the relationship and is purged **60 days** after it ends ([F6.12b](#f6-12b),
@@ -1128,7 +1076,7 @@ bad fails one invoice rather than two.
   - **The totals are captured first** because they are read from the provider, and
     the steps that follow destroy the records they come from — including the
     amount still owed ([F9.9](#f9-9)), which is why that figure is read here and not at
-    the moment service stopped ([F6.12f](#f6-12f)).
+    the moment service stopped ([F6.12d](#f6-12d)).
   - **The subscription is cancelled here and nowhere else.** This is the single
     `cancel` call in the whole lifecycle ([F6.11b](#f6-11b)); everything earlier is a pause,
     because a pause can be undone and this cannot. **It raises no invoice** — the
@@ -1162,18 +1110,12 @@ bad fails one invoice rather than two.
   | Retrying failed payments                                      | **Stripe**, entirely ([F6.11](#f6-11))                                              |
   | Deciding that service stops, and stopping it                  | **Ringly** ([F6.11b](#f6-11b))                                                      |
   | Pausing and resuming the subscription                         | **Ringly** ([F6.11b](#f6-11b), [F6.11c](#f6-11c))                                   |
-  | Ending the trial early on the call bound                      | **Ringly** ([F1.13a](#f1-13a))                                                      |
+  | Ending the trial early on the call bound                      | **Ringly** ([F1.12b](#f1-12b))                                                      |
   | Every service statement (trial, stop, restore, deletion)      | **Ringly** ([F7.3a](#f7-3a))                                                        |
   | Cancelling the subscription                                   | **Ringly**, once, at teardown ([F6.19](#f6-19))                                     |
   | Refunds                                                       | **Neither, automatically** — goodwill only, by hand ([F5.9](#f5-9))                 |
   | Billing thresholds                                            | **Neither** — deliberately not configured                                           |
 
-- <a id="f6-20a"></a>**F6.20a — Retired.** The number is left unused so references in earlier
-  documents and commits still resolve. It held Ringly's own retry loop for the
-  tail of suspension, which existed because Ringly needed one invoice pursued for
-  sixty days and the provider's automatic window ran out first. A paused
-  subscription's invoice is now pursued by the provider on its own schedule and
-  Ringly never attempts a card ([F6.11](#f6-11)).
 - <a id="f6-21"></a>**F6.21** **The provider sends the bill; Ringly says what it means for the
   service.** Both are needed and neither can write the other's message.
   - **The provider knows the money and nothing else.** It can say an invoice is
@@ -1194,20 +1136,20 @@ bad fails one invoice rather than two.
 ### F6a — The billing model, end to end
 
 **The trial.** A business signs up, verifies its email, connects its calendar and
-gives a card that Ringly checks works ([F1.12](#f1-12)). Only then is a number bought and
+gives a card that Ringly checks works ([F1.11](#f1-11)). Only then is a number bought and
 an agent bound, and the trial starts. It runs for **a configured number of days
-or a configured number of calls, whichever comes first** ([F1.13-i](#f1-13-i)).
+or a configured number of calls, whichever comes first** ([F1.12a](#f1-12a)).
 
-**It is the full product and it is entirely free** ([F1.13](#f1-13)). The number is live
+**It is the full product and it is entirely free** ([F1.12](#f1-12)). The number is live
 and public, real customers ring it, and the agent books, reschedules and cancels
 **in the business's own Google Calendar** — the same bookings a paying business
 gets, which stand after the trial ends. **No invoice is raised during it at all:
-no usage, and no $100 fixed fee** ([F1.13c](#f1-13c)). The fee is charged for the first
+no usage, and no $100 fixed fee** ([F1.12d](#f1-12d)). The fee is charged for the first
 time on the day the trial ends, for the month ahead.
 
 **The end of the trial is the start of billing, and nothing else is.** Whichever
 bound is reached first, the subscription's first period opens that day and the
-first invoice is raised ([F1.12b](#f1-12b)). There is no button and no separate activation
+first invoice is raised ([F1.11d](#f1-11d)). There is no button and no separate activation
 fee.
 
 **A period.** A month of the subscription, anchored on the day the trial ended.
@@ -1271,16 +1213,16 @@ a card. Ringly authorises the card to prove it works, **charging nothing**
 
 **3 March — the trial starts by itself.** Ringly buys the number, binds the agent,
 opens the subscription with a 14-day trial, and emails: your number is live, it
-is free until 17 March, and your first invoice is raised that day ([F1.12a](#f1-12a)). The
+is free until 17 March, and your first invoice is raised that day ([F1.11a](#f1-11a)). The
 salon takes 11 calls over the fortnight, books 4 appointments, and is charged
-nothing for any of it ([F1.13c](#f1-13c)). Two of those bookings are in April and they
+nothing for any of it ([F1.12d](#f1-12d)). Two of those bookings are in April and they
 stand.
 
 **17 March — billing begins, with no act by anyone.** The trial's last day
 arrives, the subscription's first period opens (17 March – 17 April), and
 **invoice 1 is raised: $100, no usage line** ([F6.1a](#f6-1a)). The provider sends it; it
 is paid. Ringly sends nothing — the invoice said everything there was to say
-([F1.13b](#f1-13b)).
+([F1.12c](#f1-12c)).
 
 **Period 1 runs.** 40 productive calls, 96 connected minutes. Nothing is invoiced
 during the month; the meter simply runs.
@@ -1304,15 +1246,15 @@ $88 of April–May usage; $188 outstanding.
 **They pay on 20 June.** Both invoices clear. The provider notifies Ringly,
 nothing is outstanding, and Ringly **resumes the subscription, rebinds the agent
 and verifies it** — the number answers again that day ([F6.11c](#f6-11c)). A new period
-opens 20 June, anchored there, and its **$100 is charged that day** ([F6.10c](#f6-10c)).
-The old 17th-of-the-month anchor is gone.
+opens 20 June, anchored there, and its **$100 is charged that day** ([F6.10a](#f6-10a)).
+Billing now runs from the 20th; the old anchor does not return.
 
 **They never pay.** At **30 July** — 60 days from the day service stopped — the
 salon is emailed, the **subscription is cancelled** ([F6.19](#f6-19)), both invoices are
 marked uncollectible, the number is released to the telephony provider, and every
 Ringly row is deleted in the same transaction that writes a departure record
 showing **$229** owed and never collected ([F9.9](#f9-9)). The customer records,
-appointments and call history go with it ([F9.1a-ii](#f9-1a-ii)).
+appointments and call history go with it ([F9.1a-i](#f9-1a-i)).
 
 **What the salon paid across the whole story:** nothing for the trial, $100 for
 period 1, $100 + 96 minutes for period 2, and — on the paying ending — the $229 it
@@ -1364,10 +1306,6 @@ change that breaks one is a change to the commercial model, not a detail._
     cap in two consecutive months whose card fails between them. The second
     invoice is bounded by the retry window rather than by a month, so a business
     with a two-week window and ordinary volume owes a few hundred, not $900.
-  - **It is higher than the old model's $500**, and knowingly so. That ceiling
-    held only because a suspended business was cut off on day 7 and billed nothing
-    after. Keeping service running through the retries buys a much better recovery
-    rate and costs exactly this: one extra, smaller invoice.
   - **What holds it at two invoices is the retry window being shorter than a
     billing period** ([F6.11](#f6-11)). Let the retries run past a cycle boundary and the
     subscription raises another $100 invoice behind them, and a third, and there
@@ -1388,7 +1326,7 @@ should be:
   unactivated, 60 from a failed charge, 60 after a cancellation window closed —
   are all gone.
 - **"Free service never exceeds the trial."** The trial is bounded twice
-  ([F1.13](#f1-13)), and the retry window is bounded by configuration ([F6.11](#f6-11)) — but **the
+  ([F1.12](#f1-12)), and the retry window is bounded by configuration ([F6.11](#f6-11)) — but **the
   $500 cap is deliberately unbounded within a month** ([F6.9b](#f6-9b)). A business that
   reaches the cap on day 6 is served free for the rest of the month, and Ringly
   absorbs it on purpose. That is the single largest giveaway in the model and the
@@ -1401,7 +1339,7 @@ should be:
 ### F7 — Email
 
 - <a id="f7-1"></a>**F7.1** Business email goes to the contact address collected at onboarding
-  ([F1.11](#f1-11)). Operator email goes to Ringly's own alert address.
+  ([F1.10](#f1-10)). Operator email goes to Ringly's own alert address.
 - <a id="f7-2"></a>**F7.2** **Every email Ringly can send is declared in one place** —
   `src/emails/registry.ts`. If a message is not in that table it is not sent.
   The table fixes, per email: audience, sending identity, subject line,
@@ -1488,12 +1426,12 @@ messages from what looks like one company ([F6.21](#f6-21)).
 
 | Email                        | When                                                  | Tone default                                                                                                                                                                                                             |
 | ---------------------------- | ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Email verification           | Contact email entered ([F1.11](#f1-11))               | Functional; one link, nothing else                                                                                                                                                                                       |
-| **Trial started / now live** | Number goes live ([F1.12a](#f1-12a))                  | Welcoming; **the number itself**, that it is taking customer calls, and **both trial bounds with the end date** ([F1.13](#f1-13))                                                                                        |
-| **Trial ending soon**        | Approaching either bound ([F1.13b](#f1-13b))          | Neutral; **states whichever bound is closer**, and what happens on the day. Ringly's alone — the provider knows only the day count ([F7.3a](#f7-3a))                                                                     |
-| **Trial ended — calls used** | Call allowance reached ([F1.13a](#f1-13a))            | Matter-of-fact; **the number keeps answering**, billing has begun, and on what terms. The provider cannot say _why_ the trial ended                                                                                      |
+| Email verification           | Contact email entered ([F1.10](#f1-10))               | Functional; one link, nothing else                                                                                                                                                                                       |
+| **Trial started / now live** | Number goes live ([F1.11a](#f1-11a))                  | Welcoming; **the number itself**, that it is taking customer calls, and **both trial bounds with the end date** ([F1.12](#f1-12))                                                                                        |
+| **Trial ending soon**        | Approaching either bound ([F1.12c](#f1-12c))          | Neutral; **states whichever bound is closer**, and what happens on the day. Ringly's alone — the provider knows only the day count ([F7.3a](#f7-3a))                                                                     |
+| **Trial ended — calls used** | Call allowance reached ([F1.12b](#f1-12b))            | Matter-of-fact; **the number keeps answering**, billing has begun, and on what terms. The provider cannot say _why_ the trial ended                                                                                      |
 | **Service stopped**          | Retries exhausted ([F6.11b](#f6-11b))                 | Direct; **leads with "your number has stopped answering"**, then that nothing has been deleted, what is owed, and that settling restores it the same day                                                                 |
-| **Service restored**         | Nothing outstanding after a pause ([F6.11c](#f6-11c)) | **Leads with "your number is answering again"**; states the new period's dates, since the anchor has moved ([F6.10c](#f6-10c))                                                                                           |
+| **Service restored**         | Nothing outstanding after a pause ([F6.11c](#f6-11c)) | **Leads with "your number is answering again"**; states the new period's dates, since the anchor has moved ([F6.10a](#f6-10a))                                                                                           |
 | **Cancellation confirmed**   | Business cancels from the dashboard ([F6.12](#f6-12)) | Matter-of-fact; service has stopped, the fee is not refunded, a final invoice follows, and the date the account is deleted if they do not return                                                                         |
 | **Sorry to see you go**      | Cancellation with nothing owed ([F6.12a](#f6-12a))    | Warm and short; **replaces the $0 invoice that is not raised**, and asks for feedback. The only email in the registry that asks the reader for anything                                                                  |
 | Deletion warning             | 48 hours before deletion ([F9.3a](#f9-3a))            | Unambiguous; itemises exactly what is destroyed, **and that the subscription can no longer be resumed afterwards** ([F6.12b](#f6-12b))                                                                                   |
@@ -1502,26 +1440,18 @@ messages from what looks like one company ([F6.21](#f6-21)).
 | **Account deleted**          | Teardown completes, on every path ([F9.3c](#f9-3c))   | Final and factual: what was deleted, that the number is gone for good, and any amount recorded as owed. **Sent before anything irreversible — the number release and the row deletion both follow it** ([F9.3d](#f9-3d)) |
 | Stats digest                 | Each billing period ([F7.4](#f7-4))                   | Light; the only unsubscribable email                                                                                                                                                                                     |
 
-**Four emails are gone, and each for the same reason** — the event it described
-no longer exists. The **upcoming-charge notice** (the invoice arrives on the day
-and says it better), the **payment-failed and follow-up notices** (the provider
-sends these now, and Ringly has nothing to add while service is running —
-[F6.21](#f6-21)), the **cancellation countdown** (there is no reconsideration window —
-[F6.12](#f6-12)), and the **closing statement** (the final invoice is the provider's —
-[F6.12a](#f6-12a)).
-
 **Who raises the money and who writes the words — every scenario**
 
 One rule underneath the table: **the provider invoices, charges, retries and
 chases; Ringly decides the amounts and reports what happened to the service**
-([F7.3a](#f7-3a)). Unlike the old model, **the provider's dunning stays on** — it is the
-thing that actually collects, and Ringly no longer competes with it ([F6.21](#f6-21)).
+([F7.3a](#f7-3a)). **The provider's dunning is on** — it is the thing that actually
+collects, and Ringly does not compete with it ([F6.21](#f6-21)).
 
 | Scenario                          | Invoice + charge                                                               | Email to the business                                               |
 | --------------------------------- | ------------------------------------------------------------------------------ | ------------------------------------------------------------------- |
 | Checklist complete, number live   | — nothing charged; the card is authorised only ([F6.2](#f6-2))                 | **Ringly** — trial started                                          |
 | Trial running                     | — nothing charged                                                              | **Ringly** — trial ending soon                                      |
-| Trial ends on the day bound       | First invoice: **Stripe**                                                      | **Stripe** only — the invoice says it all ([F1.13b](#f1-13b))       |
+| Trial ends on the day bound       | First invoice: **Stripe**                                                      | **Stripe** only — the invoice says it all ([F1.12c](#f1-12c))       |
 | Trial ends on the call bound      | First invoice: **Stripe**                                                      | **Ringly** — why it ended · Invoice: **Stripe**                     |
 | Each period's invoice             | **Stripe** — Ringly adds the usage line ([F6.1a](#f6-1a))                      | Invoice + receipt: **Stripe**                                       |
 | Cap crossed                       | — nothing extra charged                                                        | **Ringly**                                                          |
@@ -1536,10 +1466,9 @@ thing that actually collects, and Ringly no longer competes with it ([F6.21](#f6
 | Calendar unreachable              | —                                                                              | **Ringly**                                                          |
 | Stats digest                      | —                                                                              | **Ringly**                                                          |
 
-**The provider now sends more than it used to and Ringly sends less**, which is
-the point of the change. Everything left to Ringly depends on something the
-provider does not know: what the number is doing, why a trial ended early, and
-what is destroyed in forty-eight hours.
+**Everything left to Ringly depends on something the provider does not know**:
+what the number is doing, why a trial ended early, and what is destroyed in
+forty-eight hours.
 
 **Operator-facing email**
 
@@ -1550,7 +1479,7 @@ what is destroyed in forty-eight hours.
 - <a id="f7-13"></a>**F7.13** The set: business hit its cap (with cost-to-serve and margin, so an
   unprofitable tenant is visible immediately), **service stopped for non-payment**
   ([F6.11b](#f6-11b)), calendar unreachable, **a failing trial** ([F8.6a](#f8-6a)), **provisioning
-  stuck** ([F1.12a-i](#f1-12a-i)), **a number that would not release** ([F7.13a](#f7-13a)), and
+  stuck** ([F1.11b](#f1-11b)), **a number that would not release** ([F7.13a](#f7-13a)), and
   **business deleted** — the last carrying lifetime net revenue and the amount
   left owing, since deletion is the only moment those totals are final
   ([F9.3c](#f9-3c)).
@@ -1560,7 +1489,7 @@ what is destroyed in forty-eight hours.
     **The alert fires when service stops**, which is the moment a business is
     actually losing something.
 - <a id="f7-13a"></a>**F7.13a** **A failed unbind is raised to the operator**, naming the business,
-  the number still answering, and the reason Ringly tried to release it. [F1.12a-ii](#f1-12a-ii)
+  the number still answering, and the reason Ringly tried to release it. [F1.11c](#f1-11c)
   establishes that a failed unbind leaves a number **answering calls Ringly has
   decided to stop serving and stopped metering** — a revenue leak and a
   correctness failure at once — and that _nothing else in the system would ever
@@ -1665,13 +1594,13 @@ what is destroyed in forty-eight hours.
   reaching its cap ([F6.9b](#f6-9b), with cost-to-serve and margin), a payment failure,
   a calendar unreachable ([F2.7](#f2-7)), **service stopped for non-payment**
   ([F6.11b](#f6-11b)), **a failing trial** ([F8.6a](#f8-6a)), **provisioning stuck**
-  ([F1.12a-i](#f1-12a-i)), **a number that would not release** ([F7.13a](#f7-13a), [F1.12a-ii](#f1-12a-ii)),
+  ([F1.11b](#f1-11b)), **a number that would not release** ([F7.13a](#f7-13a), [F1.11c](#f1-11c)),
   and a business deleted ([F9.3c](#f9-3c)).
   Delivered by **email** initially. _Moving operator alerting to Slack is
   deferred ([§1.9](#19-deferred))._
 - <a id="f8-6a"></a>**F8.6a** **A trial that is going badly is raised to the operator, and the
   test is derived rather than self-reported**: a business inside its trial that
-  has taken calls and booked nothing ([F1.13d](#f1-13d)).
+  has taken calls and booked nothing ([F1.12e](#f1-12e)).
   - **It replaces the old "activation stuck" alert**, which fired when a business
     used its five test calls without ticking a box saying one of them worked.
     That depended on the business telling Ringly, and the business least likely
@@ -1722,9 +1651,9 @@ what is destroyed in forty-eight hours.
     corrections: neither changes what a business was charged.
   - **The cap-cycling worry the old control existed to answer is answered
     differently.** A business that cancels and returns opens a new period at full
-    price on the day it returns ([F6.10c](#f6-10c)), so cycling buys a fresh $500 ceiling
-    at the cost of a fresh $100 fee and a gap in service. It is no longer a way to
-    get something for nothing, which is what made a human in the loop necessary.
+    price on the day it returns ([F6.10a](#f6-10a)), so cycling buys a fresh $500 ceiling
+    at the cost of a fresh $100 fee and a gap in service — which is not a way to
+    get something for nothing, and is why no human needs to be in the loop.
 - <a id="f8-11"></a>**F8.11** Shows the same **outcome definitions** the business sees ([F5.7](#f5-7)), so
   both sides of a conversation about the numbers are reading the same
   definitions.
@@ -1734,10 +1663,10 @@ what is destroyed in forty-eight hours.
 
   **Broken now — a customer is being turned away as you read this**
 
-  | Condition              | Trigger                                                                         | Operator action                                                                                                       |
-  | ---------------------- | ------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
-  | **Bookings failing**   | An open calendar incident ([F2.7](#f2-7))                                       | Get them to reconnect the calendar; every caller meanwhile is refused                                                 |
-  | **Provisioning stuck** | The number never came up after the checklist went green ([F1.12a-i](#f1-12a-i)) | The business is waiting on Ringly and its trial clock has not started ([F1.13](#f1-13)). Nothing else will surface it |
+  | Condition              | Trigger                                                                     | Operator action                                                                                                       |
+  | ---------------------- | --------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+  | **Bookings failing**   | An open calendar incident ([F2.7](#f2-7))                                   | Get them to reconnect the calendar; every caller meanwhile is refused                                                 |
+  | **Provisioning stuck** | The number never came up after the checklist went green ([F1.11b](#f1-11b)) | The business is waiting on Ringly and its trial clock has not started ([F1.12](#f1-12)). Nothing else will surface it |
 
   **About to lose the business**
 
@@ -1750,11 +1679,11 @@ what is destroyed in forty-eight hours.
 
   **Costing Ringly money**
 
-  | Condition               | Trigger                                                                     | Operator action                                                                                         |
-  | ----------------------- | --------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
-  | **At cap**              | Reached the cap for the month ([F6.9b](#f6-9b))                             | Everything further is absorbed; check the pricing fits them                                             |
-  | **Negative margin**     | Cost exceeded revenue for the range ([R8](Ringly_EDD_v3.md#r8))             | The unbooked-call economics are not working for this business                                           |
-  | **Number not released** | An unbind failed its read-back ([F1.12a-ii](#f1-12a-ii), [F7.13a](#f7-13a)) | Release it by hand. It is still answering calls nobody is metering, and no other signal will surface it |
+  | Condition               | Trigger                                                               | Operator action                                                                                         |
+  | ----------------------- | --------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+  | **At cap**              | Reached the cap for the month ([F6.9b](#f6-9b))                       | Everything further is absorbed; check the pricing fits them                                             |
+  | **Negative margin**     | Cost exceeded revenue for the range ([R8](Ringly_EDD_v3.md#r8))       | The unbooked-call economics are not working for this business                                           |
+  | **Number not released** | An unbind failed its read-back ([F1.11c](#f1-11c), [F7.13a](#f7-13a)) | Release it by hand. It is still answering calls nobody is metering, and no other signal will surface it |
 
   **Needs a human, or nothing will happen**
 
@@ -1762,7 +1691,7 @@ what is destroyed in forty-eight hours.
   | ----------------------- | ---------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
   | **Clock paused**        | An operator paused a dormancy clock ([F9.1b](#f9-1b))                                    | Resolve and unpause — a paused clock never resumes itself                                                  |
   | **Dispute open**        | A chargeback was filed ([F6.17](#f6-17))                                                 | Contest or concede by hand in Stripe; may outlast the account                                              |
-  | **Debt on departure**   | A final invoice was never paid ([F6.12f](#f6-12f))                                       | Informational — recorded as owed, not pursued                                                              |
+  | **Debt on departure**   | A final invoice was never paid ([F6.12d](#f6-12d))                                       | Informational — recorded as owed, not pursued                                                              |
   | **Email undeliverable** | A message exhausted its retries, or the recipient's server rejected it ([F7.15](#f7-15)) | Reach the business another way and correct the address. **Assume they know none of what the message said** |
 
   **Two conditions are deliberately absent.** **"Payment failed"** is not here:
@@ -1783,10 +1712,10 @@ what is destroyed in forty-eight hours.
 ### F9 — Account lifecycle, dormancy and data retention
 
 - <a id="f9-1"></a>**F9.1** **A business is never deleted for failing to become a customer.**
-  The trial converts by itself ([F1.12b](#f1-12b)), so there is no state in which a
+  The trial converts by itself ([F1.11d](#f1-11d)), so there is no state in which a
   business sits provisioned, unbilled and going nowhere — the state the old
   ten-day clock existed to clear up.
-  - **What bounds Ringly's exposure now is the trial** ([F1.13](#f1-13)): a configured
+  - **What bounds Ringly's exposure now is the trial** ([F1.12](#f1-12)): a configured
     number of days and a configured number of calls, both stated up front, after
     which the business is either paying or has cancelled.
   - **A business is deleted for exactly one reason: sixty days with its phone not
@@ -1794,8 +1723,8 @@ what is destroyed in forty-eight hours.
     payments failed makes no difference to the clock, the warnings, or what is
     destroyed.
   - **Nothing is provisioned before a working card** ([F1.9](#f1-9)), which is what makes
-    a single clock affordable. The old model rented numbers to businesses that had
-    given Ringly nothing and needed a short fuse to limit the damage.
+    a single clock affordable: every number Ringly holds belongs to a business
+    that has already proved it can be served and can pay.
 
 - <a id="f9-1a"></a>**F9.1a** **A consumer has no direct route to Ringly**, and does not need
   one. A caller wanting their data removed asks the **business**, which is who
@@ -1807,9 +1736,8 @@ what is destroyed in forty-eight hours.
   can do it, the business cannot do it from its dashboard, and no support action
   reaches it.
 
-  **There is deliberately no way to delete a single customer.** An earlier
-  version of this document gave the business a self-serve control for it; that
-  requirement is **withdrawn**, and its absence is the design:
+  **There is deliberately no way to delete a single customer**, and its absence
+  is the design:
   - **A per-customer delete is a per-customer lookup**, and Ringly does not have
     one. Every figure in this product is aggregate precisely because a customer
     cannot be reliably identified ([F5.3](#f5-3), [F5.11](#f5-11)) — the same person rings from two
@@ -1830,11 +1758,7 @@ what is destroyed in forty-eight hours.
   controller ([N6.5](#n6-5)), so the obligation is the business's — but Ringly's ability
   to assist with it is, deliberately, all-or-nothing.
 
-- <a id="f9-1a-i"></a>**F9.1a-i — Retired.** The number is left unused so references in earlier
-  documents and commits still resolve. It held the withdrawn per-customer
-  deletion path.
-
-- <a id="f9-1a-ii"></a>**F9.1a-ii** **Every customer goes when the business does, automatically, and
+- <a id="f9-1a-i"></a>**F9.1a-i** **Every customer goes when the business does, automatically, and
   only then.** When the dormancy clock runs out — 60 days after service stopped,
   by either route and with no other deadline in the product ([F9.3](#f9-3)) — the sweeper
   deletes the tenant, and **customers, appointments and calls are ordinary tenant
@@ -1860,16 +1784,15 @@ what is destroyed in forty-eight hours.
   - **It is the only lifecycle clock there is** ([F9.3](#f9-3)), so this is the only
     pause control in the product.
 - <a id="f9-1c"></a>**F9.1c** **The operator can extend a trial** — more days, more calls, or both
-  ([F1.13](#f1-13)) — for a business whose trial was spent on a fault of Ringly's.
+  ([F1.12](#f1-12)) — for a business whose trial was spent on a fault of Ringly's.
   - **A trial that went badly is not the same as a trial that ran out.** A
     business whose agent misheard every caller has used its allowance and learned
     nothing, and converting it to paying on that basis is how a refund request
     starts. The operator sees these as failing trials ([F8.12](#f8-12)) and can hand back
     what the fault consumed.
   - **It does not rebind anything**, because nothing was unbound: reaching the
-    call allowance no longer stops the phone answering ([F1.13a](#f1-13a)). The old
-    paired action — reset the allowance _and_ rebind — had two halves only
-    because the old model took the number away.
+    call allowance does not stop the phone answering ([F1.12b](#f1-12b)), so there is
+    nothing to restore but the allowance itself.
   - **Extending a trial moves the subscription's trial end at the provider**, so
     the two never disagree about when billing starts ([F6.20](#f6-20)).
 - <a id="f9-2"></a>**F9.2** **Cancellation is self-serve, from the business's own dashboard**
@@ -1889,9 +1812,9 @@ what is destroyed in forty-eight hours.
     its own at day 60 and cannot be brought forward; reactivation is the business
     signing back in and resuming ([F6.11c](#f6-11c)). Neither needs a channel to Ringly.
   - **Ringly's contact address remains published** ([Q3](#q3)) for everything else a
-    business might need a human for. It is no longer load-bearing for any
-    lifecycle transition, which is the point: **no account action now depends on
-    Ringly reading an inbox.**
+    business might need a human for. It is **not load-bearing for any lifecycle
+    transition**, which is the point: no account action depends on Ringly reading
+    an inbox.
 - <a id="f9-3"></a>**F9.3** **There is one lifecycle path out, and both exits join it at the
   same point: the day service stops.** Cancellation and non-payment differ only
   in how they get there.
@@ -1909,15 +1832,13 @@ what is destroyed in forty-eight hours.
   | ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
   | 0                 | Agent unbound and verified. **Final invoice raised** for the part-month served ([F6.9a](#f6-9a)). **Subscription paused, never cancelled** ([F6.11b](#f6-11b)). Ringly emails |
   | 0–60              | **Dormant.** Number, subscription and every record retained. **Nothing new is charged and nothing accrues** ([I5](#i5)). Any open invoice is still chased by the provider     |
-  | Any day inside it | **Fully recoverable.** Settle anything owed and service resumes that day, on the same number with the same history, on a new period ([F6.11c](#f6-11c), [F6.10c](#f6-10c))    |
+  | Any day inside it | **Fully recoverable.** Settle anything owed and service resumes that day, on the same number with the same history, on a new period ([F6.11c](#f6-11c), [F6.10a](#f6-10a))    |
   | ~58               | **48-hour final warning by email**, itemising exactly what will be deleted **and that the subscription can no longer be resumed afterwards**                                  |
   | 60                | **Full stop.** Subscription cancelled, number released, Ringly-held data deleted, amount owed recorded permanently ([F9.9](#f9-9))                                            |
 
-  **One clock replaces three**, and that is the largest simplification in this
-  version of the document. There is no longer a 10-day clock for a business that
-  never activated, a 60-day clock from a failed charge, and a third 60-day clock
-  from a cancellation window closing. **There is one, it starts when the phone
-  stops answering, and it runs 60 days.**
+  **There is exactly one deletion clock in the product. It starts when the phone
+  stops answering and it runs 60 days** — the same clock, the same warnings and
+  the same teardown whichever route a business took to get there.
 
   Those 60 days cost Ringly almost nothing — service has already stopped, and only
   the number rental continues — so the window is long, because the business's
@@ -1951,7 +1872,7 @@ what is destroyed in forty-eight hours.
     and the amount left owing — because deletion is the moment a customer
     relationship ends and the only moment those totals are final ([F7.13](#f7-13)).
   - **It is sent even when the address has stopped working** ([F7.15](#f7-15)). Every
-    provisioned business verified its contact address once ([F1.11](#f1-11), [F1.12](#f1-12)),
+    provisioned business verified its contact address once ([F1.10](#f1-10), [F1.11](#f1-11)),
     but an address that worked in March can bounce in September, and the operator
     queue may already be carrying it as undeliverable. **Best effort to the
     address on file is better than deleting in silence**, and the queue entry is
@@ -2018,11 +1939,9 @@ what is destroyed in forty-eight hours.
     after service stopped ([F9.3](#f9-3)) and the last call a business can have taken was
     on the day service stopped, so provider-held content has expired at least 30
     days before Ringly's own rows go.
-  - **The earlier exception is withdrawn with the clock that created it.** A
-    ten-day unactivated path meant a call on day 1 was still held by the provider
-    on day 31, three weeks after the business was gone, and Ringly had to issue an
-    explicit provider-side deletion for that case alone ([F9.1](#f9-1)). One clock
-    removes the special case rather than handling it.
+  - **There is no path on which it is false**, which is what makes "Ringly chases
+    none of it" a rule rather than a rule with an exception. A single deletion
+    clock is what buys that ([F9.3](#f9-3)).
 - <a id="f9-6"></a>**F9.6** **Ringly stores neither transcripts nor recordings.** Both remain
   with the telephony provider and are fetched on demand when needed. Retention is
   configured **on every provisioned agent**, never inherited from a default:
@@ -2045,7 +1964,7 @@ what is destroyed in forty-eight hours.
     single clock that governs every ending ([F9.3](#f9-3), [F9.4](#f9-4)): **60 days after
     service stops**, whatever stopped it.
   - **It all goes at once, in the transaction that writes the departure record**
-    ([F9.1a-ii](#f9-1a-ii), [F9.10](#f9-10)) — customers, appointments, calls, usage and costs together.
+    ([F9.1a-i](#f9-1a-i), [F9.10](#f9-10)) — customers, appointments, calls, usage and costs together.
   - There is no partial or rolling deletion, no field-level expiry, and **no way
     to delete any part of it early** ([F9.1a](#f9-1a)).
 - <a id="f9-9"></a>**F9.9** **A departed business leaves a permanent financial record.** When a
@@ -2055,7 +1974,7 @@ what is destroyed in forty-eight hours.
   - the **amount it still owed** at departure — **read from the payment provider
     at teardown, not at the moment service stopped**, because the provider goes
     on collecting throughout the 60 dormant days and a business that settled on
-    day 50 must not be recorded as a debtor forever ([F6.12f](#f6-12f));
+    day 50 must not be recorded as a debtor forever ([F6.12d](#f6-12d));
   - the **lifetime net revenue** Ringly earned from it, **after payment-processor
     fees**.
 
@@ -2196,7 +2115,7 @@ is a provider failing its p95, and that is an operational problem to raise
   of PCI-DSS scope beyond SAQ-A.
 - <a id="n6-3"></a>**N6.3** All inbound webhooks verify provider signatures before acting.
 - <a id="n6-4"></a>**N6.4** Customer PII (name, phone) is per-tenant and is destroyed **wholesale
-  and automatically when the tenant leaves** ([N1.3](#n1-3), [F9.1a-ii](#f9-1a-ii)), in the transaction
+  and automatically when the tenant leaves** ([N1.3](#n1-3), [F9.1a-i](#f9-1a-i)), in the transaction
   that writes the departure record. **That is the only deletion path, and it
   needs no human in the loop** — it neither waits on anyone at Ringly nor offers
   anyone a control to press. **There is deliberately no per-customer deletion**
@@ -2326,15 +2245,15 @@ totals, or the usage they were derived from.
 ## 1.7 Success metrics
 
 **v3 measures two transitions, not one**, because the business's commitment and
-its first payment are no longer the same event. It commits when it gives a
-working card and its number goes live ([F1.12](#f1-12)); it starts paying when the trial
-ends by itself, days or calls later ([F1.12b](#f1-12b)). Measuring only the second would
+its first payment are different events. It commits when it gives a
+working card and its number goes live ([F1.11](#f1-11)); it starts paying when the trial
+ends by itself, days or calls later ([F1.11d](#f1-11d)). Measuring only the second would
 attribute to the product a delay that is the trial length by design.
 
 | Metric                                                    | Target                 | Measured from → to                                                   |
 | --------------------------------------------------------- | ---------------------- | -------------------------------------------------------------------- |
-| **Time to live** — land → own number answering            | p50 < 15 min           | First keystroke → number bound and trial started ([F1.12a](#f1-12a)) |
-| **Checklist completion** — land → all three green         | > 70%                  | Of businesses reaching the checklist ([F1.12](#f1-12))               |
+| **Time to live** — land → own number answering            | p50 < 15 min           | First keystroke → number bound and trial started ([F1.11a](#f1-11a)) |
+| **Checklist completion** — land → all three green         | > 70%                  | Of businesses reaching the checklist ([F1.11](#f1-11))               |
 | **Trial conversion** — trial started → first invoice paid | > 75%                  | Of businesses whose number went live                                 |
 | **Trial engagement** — a booking taken during the trial   | > 60%                  | Of trials; the leading indicator for conversion ([F8.6a](#f8-6a))    |
 | Caller-perceived silence per turn                         | p95 ≈ 0, no gap > 1.5s |                                                                      |
@@ -2344,7 +2263,7 @@ attribute to the product a delay that is the trial length by design.
 
 **Time to live is minutes, not hours**, where the old time-to-activated was under
 a day. The inbox round-trip is still there — the contact email must be verified
-([F1.11](#f1-11)) — but nothing waits on a business deciding whether to pay, because that
+([F1.10](#f1-10)) — but nothing waits on a business deciding whether to pay, because that
 decision has moved to the end of the trial and is made by not cancelling.
 
 **Trial engagement is the metric worth watching.** Conversion is decided during
@@ -2369,10 +2288,10 @@ that the product worked, and it is the same signal the operator alert uses
   customer, because moving a live phone system is not a thing to do casually.
   The decision turns on how scheduled work is run ([N8.3](#n8-3)) and on whether the
   Next.js-native deployment is worth more than the container control.
-- <a id="q7"></a>**Q7 — The trial's two bounds** ([F1.13](#f1-13)): how many days and how many calls.
+- <a id="q7"></a>**Q7 — The trial's two bounds** ([F1.12](#f1-12)): how many days and how many calls.
   Both are configuration and neither blocks building the trial, but they cannot
   be left unset at launch — they are stated to the business on the checklist
-  screen before it commits ([F1.12](#f1-12)), so a placeholder is visible to a customer in
+  screen before it commits ([F1.11](#f1-11)), so a placeholder is visible to a customer in
   a way a placeholder rate is not.
 - <a id="q8"></a>**Q8 — The retry count and window** ([F6.11](#f6-11)). Three attempts is the working
   assumption; the window they span decides how long a business with a failed card
@@ -2409,15 +2328,12 @@ that the product worked, and it is the same signal the operator alert uses
   2. **A paused subscription raises no new invoice and its open one is still
      pursued** ([F6.11b](#f6-11b)) — the pair the whole dormancy design rests on.
   3. **A paused subscription resumes with its anchor reset to the resume date**
-     ([F6.10c](#f6-10c)), and the business keeps its customer, its card and its history.
+     ([F6.10a](#f6-10a)), and the business keeps its customer, its card and its history.
   4. **Ending a trial early on the call bound raises the first invoice that day**
-     ([F1.13a](#f1-13a)).
+     ([F1.12b](#f1-12b)).
 
   **Blocks charging a real customer**; blocks nothing about building the billing
-  path, which can be written and tested against the answer either way. _(This
-  replaces the earlier A4, which asked whether one open invoice was still retried
-  on day 59 — a question created by Ringly running its own 60-day suspension
-  window, and removed with it.)_
+  path, which can be written and tested against the answer either way.
 
 ---
 
