@@ -1635,17 +1635,20 @@ what is destroyed in forty-eight hours.
 
 ### F9 — Account lifecycle, suspension and data retention
 
-- <a id="f9-1"></a>**F9.1** **An unactivated business is bounded twice, because it is pure
-  cost** — a rented number and live call minutes against no revenue, with no
-  relationship to protect:
-  - **five test calls**, after which the number stops answering ([F1.13](#f1-13), [F1.13a](#f1-13a));
-  - **ten days**, after which the business is removed entirely — number released,
-    everything deleted.
-
-  **The two limits are independent and bite in either order.** A business can
-  exhaust its calls on day one and sit unbound for nine more, or never call at
-  all and be deleted on day ten with its allowance untouched. Only the operator
-  changes either ([F9.1b](#f9-1b), [F9.1c](#f9-1c)).
+- <a id="f9-1"></a>**F9.1** **A business is never deleted for failing to become a customer.**
+  The trial converts by itself ([F1.12b](#f1-12b)), so there is no state in which a
+  business sits provisioned, unbilled and going nowhere — the state the old
+  ten-day clock existed to clear up.
+  - **What bounds Ringly's exposure now is the trial** ([F1.13](#f1-13)): a configured
+    number of days and a configured number of calls, both stated up front, after
+    which the business is either paying or has cancelled.
+  - **A business is deleted for exactly one reason: sixty days with its phone not
+    answering** ([F9.3](#f9-3)). Whether that happened because it cancelled or because its
+    payments failed makes no difference to the clock, the warnings, or what is
+    destroyed.
+  - **Nothing is provisioned before a working card** ([F1.9](#f1-9)), which is what makes
+    a single clock affordable. The old model rented numbers to businesses that had
+    given Ringly nothing and needed a short fuse to limit the damage.
 
 - <a id="f9-1a"></a>**F9.1a** **A consumer has no direct route to Ringly**, and does not need
   one. A caller wanting their data removed asks the **business**, which is who
@@ -1685,10 +1688,10 @@ what is destroyed in forty-eight hours.
   deletion path.
 
 - <a id="f9-1a-ii"></a>**F9.1a-ii** **Every customer goes when the business does, automatically, and
-  only then.** When a lifecycle deadline expires — day 10 unactivated, day 60
-  suspended, or 60 days dormant after cancellation — the sweeper deletes the
-  tenant, and **customers, appointments and calls are ordinary tenant rows caught
-  by that** ([F9.3](#f9-3), [F9.8](#f9-8)). **Nobody requests it and nobody performs it.**
+  only then.** When the dormancy clock runs out — 60 days after service stopped,
+  by either route and with no other deadline in the product ([F9.3](#f9-3)) — the sweeper
+  deletes the tenant, and **customers, appointments and calls are ordinary tenant
+  rows caught by that** ([F9.8](#f9-8)). **Nobody requests it and nobody performs it.**
 
   **They are deleted in the same transaction that writes the departure record**
   ([F9.10](#f9-10)). Not before it and not after it: the business ceasing to exist and its
@@ -1702,77 +1705,96 @@ what is destroyed in forty-eight hours.
   preserve, not a coincidence: the departure record must never become a way for
   customer data to outlive the deletion that was supposed to remove it.
 
-- <a id="f9-1b"></a>**F9.1b** **The operator can pause the 10-day clock on any individual
-  business**, from the operator dashboard ([F8.13](#f8-13)). A business whose test calls
-  all failed ([F1.13](#f1-13)) is waiting on Ringly, not the other way round, and would
-  otherwise be deleted while the problem is being investigated. **Silence is not
-  a pause:** absent an explicit operator action the default stands and an
-  unactivated business is removed at day 10.
-- <a id="f9-1c"></a>**F9.1c** **Resetting the allowance and rebinding the agent are one operator
-  action**, taken once the fault is fixed. A business whose five calls all failed
-  has an unbound number ([F1.13a](#f1-13a)) **and** an exhausted allowance, so restoring one
-  without the other leaves it exactly as stuck as before — a phone that rings
-  nowhere, or an answering phone with no calls left to prove itself with. The
-  operator normally does this alongside pausing the clock ([F9.1b](#f9-1b)).
-- <a id="f9-2"></a>**F9.2** **Cancellation is not self-serve in v3.** All business-initiated
-  account actions — cancellation, **revoking a cancellation**, deletion and
-  reactivation — go through Ringly's **official contact email address**, which is
-  the single supported channel.
-  - **It is the same address in both directions.** A business that emailed to
-    cancel emails that same address to undo it, and the address is stated in
-    every cancellation-countdown email so it is in front of them at the moment
-    they might change their mind. Asking someone to find a different route to
-    reverse a decision than the one they used to make it is how a reconsideration
-    window goes unused.
-  - **A revocation is judged by when the business sent it, not by when Ringly
-    read it.** The window is short ([F6.12](#f6-12)) and the channel is asynchronous, so a
-    request sent inside it stands even if it is actioned after it has closed.
-    Otherwise a business that changed its mind in good time loses its account to
-    Ringly's own inbox latency.
-    _(Self-serve cancellation and self-serve revocation are both deferred to soon
-    after v3 — [§1.9](#19-deferred).)_
-- <a id="f9-3"></a>**F9.3** The two paths differ sharply. **Non-payment withdraws service after
-  a week. Cancellation never withdraws it at all** — it runs out the period the
-  business already paid for.
+- <a id="f9-1b"></a>**F9.1b** **The operator can pause the 60-day dormancy clock on any individual
+  business**, from the operator dashboard ([F8.13](#f8-13)). A business disputing a charge,
+  waiting on a bank, or caught by a Ringly fault would otherwise be deleted while
+  the problem is being worked. **Silence is not a pause:** absent an explicit
+  operator action the default stands and the business is deleted at day 60.
+  - **It is the only lifecycle clock there is** ([F9.3](#f9-3)), so this is the only
+    pause control in the product.
+- <a id="f9-1c"></a>**F9.1c** **The operator can extend a trial** — more days, more calls, or both
+  ([F1.13](#f1-13)) — for a business whose trial was spent on a fault of Ringly's.
+  - **A trial that went badly is not the same as a trial that ran out.** A
+    business whose agent misheard every caller has used its allowance and learned
+    nothing, and converting it to paying on that basis is how a refund request
+    starts. The operator sees these as failing trials ([F8.12](#f8-12)) and can hand back
+    what the fault consumed.
+  - **It does not rebind anything**, because nothing was unbound: reaching the
+    call allowance no longer stops the phone answering ([F1.13a](#f1-13a)). The old
+    paired action — reset the allowance _and_ rebind — had two halves only
+    because the old model took the number away.
+  - **Extending a trial moves the subscription's trial end at the provider**, so
+    the two never disagree about when billing starts ([F6.20](#f6-20)).
+- <a id="f9-2"></a>**F9.2** **Cancellation is self-serve, from the business's own dashboard**
+  ([F5.15](#f5-15), [F6.12](#f6-12)). It is the one account action a business takes itself, and it
+  takes effect the moment it is confirmed.
+  - **There is nothing to revoke, so there is no revocation route.** The old
+    email-based flow existed to serve a reconsideration window, and needed a way
+    back through the same channel because a window nobody can reverse is a
+    window nobody uses. **The window is gone** ([F6.12](#f6-12)): a business changes its
+    mind by coming back, which it can do any day inside the 60 ([F6.12b](#f6-12b)) and
+    which restores its number, its history and its subscription.
+  - **The screen carries the whole consequence before the button does anything**
+    ([F6.12](#f6-12)). An immediate, self-serve, irreversible-today action is only
+    defensible if the person taking it has been told what it costs, and the one
+    thing it must not do is bury the final invoice.
+  - **Deletion and reactivation are not separate requests.** Deletion happens on
+    its own at day 60 and cannot be brought forward; reactivation is the business
+    signing back in and resuming ([F6.11c](#f6-11c)). Neither needs a channel to Ringly.
+  - **Ringly's contact address remains published** ([Q3](#q3)) for everything else a
+    business might need a human for. It is no longer load-bearing for any
+    lifecycle transition, which is the point: **no account action now depends on
+    Ringly reading an inbox.**
+- <a id="f9-3"></a>**F9.3** **There is one lifecycle path out, and both exits join it at the
+  same point: the day service stops.** Cancellation and non-payment differ only
+  in how they get there.
 
-  **On payment failure** — the clock starts the day the _first_ charge fails,
-  whether that was a fixed fee or a usage settlement:
+  **Getting there — two routes:**
 
-  | Day  | What happens                                                                                                                                                                                   |
-  | ---- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-  | 0    | Charge fails. Service continues, usage keeps accruing, business emailed.                                                                                                                       |
-  | 0–7  | **Grace period.** Calls answered as normal. Payment follow-up emails sent. This usage **is billable** — service given is service billed.                                                       |
-  | 7    | **Suspended.** Calls stop being answered; **the number and all data are retained**. Any open period keeps running and is not extended ([F6.11b](#f6-11b)); **none opens** ([F6.11c](#f6-11c)). |
-  | 7–60 | Suspended and **charged nothing whatsoever** — no fee, no usage, no new period. Fully recoverable: paying what is owed restores service and resumes the period that day ([F6.10b](#f6-10b)).   |
-  | ~58  | **48-hour final warning by email**, itemising exactly what will be deleted.                                                                                                                    |
-  | 60   | **Full stop.** Number released, Ringly-held data deleted, the paused period settled for what was served, amount owed recorded permanently ([F9.9](#f9-9)).                                     |
+  | Route                | What happens                                                                                                                                                                                             |
+  | -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+  | **Payment fails**    | Service continues while the provider retries ([F6.11](#f6-11)). Usage accrues and stays billable. The provider emails; Ringly does not. When the last retry fails, **service stops** ([F6.11b](#f6-11b)) |
+  | **Business cancels** | Self-serve, from its own dashboard ([F6.12](#f6-12)). **Service stops the same day**, with the consequences stated on screen before it confirms                                                          |
 
-  Days 7–60 cost Ringly almost nothing — service has already stopped, and only
+  **From there — one path, identical either way:**
+
+  | Day               | What happens                                                                                                                                                                  |
+  | ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+  | 0                 | Agent unbound and verified. **Final invoice raised** for the part-month served ([F6.9a](#f6-9a)). **Subscription paused, never cancelled** ([F6.11b](#f6-11b)). Ringly emails |
+  | 0–60              | **Dormant.** Number, subscription and every record retained. **Nothing new is charged and nothing accrues** ([I5](#i5)). Any open invoice is still chased by the provider     |
+  | Any day inside it | **Fully recoverable.** Settle anything owed and service resumes that day, on the same number with the same history, on a new period ([F6.11c](#f6-11c), [F6.10c](#f6-10c))    |
+  | ~58               | **48-hour final warning by email**, itemising exactly what will be deleted **and that the subscription can no longer be resumed afterwards**                                  |
+  | 60                | **Full stop.** Subscription cancelled, number released, Ringly-held data deleted, amount owed recorded permanently ([F9.9](#f9-9))                                            |
+
+  **One clock replaces three**, and that is the largest simplification in this
+  version of the document. There is no longer a 10-day clock for a business that
+  never activated, a 60-day clock from a failed charge, and a third 60-day clock
+  from a cancellation window closing. **There is one, it starts when the phone
+  stops answering, and it runs 60 days.**
+
+  Those 60 days cost Ringly almost nothing — service has already stopped, and only
   the number rental continues — so the window is long, because the business's
   number is worth far more to them than the rental is to Ringly. **It costs the
   business nothing at all**, which is the point: Ringly does not charge for a
   phone it is not answering.
 
-  **On a cancellation request** — a short window, then dormancy:
-
-  | Point               | What happens                                                                                                                                              |
-  | ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-  | Request             | Operator marks it cancelled ([F6.10a](#f6-10a)). **Service continues. Usage stops being billed. Nothing settled** ([F6.12](#f6-12)).                      |
-  | Until window closes | Reconsideration window — **7 days, or period end, whichever is sooner**. Service runs free. Countdown emails explain what is coming.                      |
-  | Any time inside it  | Revoking erases the request; the period continues to its original end and billing resumes ([F6.12a](#f6-12a)).                                            |
-  | **Window closes**   | Period settled early. Usage to the request date charged; **no refund of the fixed fee**. Service stops. **Closing statement sent** ([F6.12b](#f6-12b)–c). |
-  | + 0 to 60 days      | **Dormant.** Number and all data retained. Returning resumes the same number and history on a new period ([F6.12e](#f6-12e)).                             |
-  | + 58 days           | **48-hour final warning** before deletion.                                                                                                                |
-  | + 60 days           | Number released, Ringly-held data deleted ([F9.8](#f9-8)). A later return is a wholly new account.                                                        |
+  **A business still in its trial takes the same path.** Cancelling during a trial
+  stops service that day, raises no invoice ([F6.12a](#f6-12a)), and begins the same 60
+  days. It has paid Ringly nothing and is held on exactly the same terms as a
+  business that paid for a year ([F6.12b](#f6-12b)).
 
 - <a id="f9-3a"></a>**F9.3a** **Nothing is ever deleted without a 48-hour warning email first.**
   This applies to both paths and is not conditional on the business having read
   earlier emails.
-- <a id="f9-3b"></a>**F9.3b** A business that has asked to cancel is **not** retried for payment
-  ([F6.10](#f6-10)); the retry loop applies only to the non-payment path.
+- <a id="f9-3b"></a>**F9.3b** **A business that has cancelled is still pursued for what it owes.**
+  Cancelling pauses the subscription but does not close the invoices already
+  raised against it, and the provider keeps chasing them on its own schedule
+  ([F6.11a](#f6-11a)). What stops is billing for service, not collection of a debt — the
+  two are different things and conflating them is how a business cancels its way
+  out of a bill.
 - <a id="f9-3c"></a>**F9.3c** **Deletion is confirmed by email to the business and to the
-  operator, on every path** — day 10 unactivated, day 60 non-payment, 60 days
-  after service stops for a cancellation.
+  operator** — always 60 days after service stopped ([F9.3](#f9-3)), whichever route took
+  it there.
   - **To the business:** what has been deleted, that **the number is gone
     permanently and cannot be recovered** ([F9.4b](#f9-4b)), and any amount recorded as
     owed ([F9.9](#f9-9)). The 48-hour warning said this was coming ([F9.3a](#f9-3a)); this says it
@@ -1804,21 +1826,20 @@ what is destroyed in forty-eight hours.
   [§2.13.4](Ringly_EDD_v3.md#2134-teardown-in-order)) — it is not a step that can be moved to the end for tidiness.
 
 - <a id="f9-4"></a>**F9.4** A business's telephone number is its public identity, printed on
-  signage and listings, and losing it is not recoverable. **How long it is held
-  after service ends depends on why service ended:**
-  - **Never activated** — removed at **day 10** ([F9.1](#f9-1)). No relationship to
-    protect.
-  - **Non-payment or chargeback** — held to **day 60** ([F9.3](#f9-3)), recoverable
-    throughout by paying what is owed. Holding it costs Ringly only the rental;
-    releasing it early costs the business its identity.
-  - **The business's own cancellation** — held a further **60 days** after
-    service stops ([F6.12e](#f6-12e)), fully recoverable, because a business that left in
-    good standing may come back and should find itself intact.
+  signage and listings, and losing it is not recoverable. **It is held for 60
+  days after service stops, and the reason service stopped makes no difference**
+  ([F9.3](#f9-3)) — non-payment, chargeback and the business's own cancellation all get
+  the same 60 days, fully recoverable throughout ([F6.12b](#f6-12b)).
+  - **Holding it costs Ringly only the rental; releasing it early costs the
+    business its identity.** That asymmetry is the whole argument, and it does not
+    change with the reason for leaving.
+  - **A business still in its trial is held on the same terms**, having paid
+    nothing. Two dormancy lengths would mean getting the short one wrong at the
+    worst possible moment ([F6.12b](#f6-12b)).
 - <a id="f9-4a"></a>**F9.4a** **A number is never reassigned while any business still holds it.**
-  Suspension and dormancy stop the number being answered, which makes it look
-  unused; it is not. A number leaves a business **only at deletion** — day 10
-  unactivated, day 60 otherwise — and never during a suspension or dormancy
-  period, however idle it appears.
+  Dormancy stops the number being answered, which makes it look unused; it is
+  not. A number leaves a business **only at deletion**, 60 days after service
+  stopped, and never during dormancy however idle it appears.
 - <a id="f9-4b"></a>**F9.4b** **At deletion the number is handed back to the telephony provider,
   not retained in a Ringly pool for the next business.** Recorded with its
   reasoning so the question is settled:
@@ -1872,9 +1893,8 @@ what is destroyed in forty-eight hours.
   - The **only** thing on a 30-day clock is what Ringly does **not** store:
     transcripts and recordings, held by the telephony provider ([F9.6](#f9-6)).
   - Everything Ringly holds is destroyed when the relationship is over, on the
-    clock the ending sets ([F9.3](#f9-3), [F9.4](#f9-4)): **day 60** for non-payment, **60 days
-    after service stops** for a business that cancelled, **day 10** for one that
-    never activated.
+    single clock that governs every ending ([F9.3](#f9-3), [F9.4](#f9-4)): **60 days after
+    service stops**, whatever stopped it.
   - **It all goes at once, in the transaction that writes the departure record**
     ([F9.1a-ii](#f9-1a-ii), [F9.10](#f9-10)) — customers, appointments, calls, usage and costs together.
   - There is no partial or rolling deletion, no field-level expiry, and **no way
@@ -1883,7 +1903,10 @@ what is destroyed in forty-eight hours.
   business is deleted, Ringly retains, indefinitely and outside the purge:
   - the business's **id and name**;
   - the **date it joined and the date it left**, and how it ended;
-  - the **amount it still owed** at departure;
+  - the **amount it still owed** at departure — **read from the payment provider
+    at teardown, not at the moment service stopped**, because the provider goes
+    on collecting throughout the 60 dormant days and a business that settled on
+    day 50 must not be recorded as a debtor forever ([F6.12f](#f6-12f));
   - the **lifetime net revenue** Ringly earned from it, **after payment-processor
     fees**.
 
@@ -1895,11 +1918,18 @@ what is destroyed in forty-eight hours.
 - <a id="f9-10"></a>**F9.10** **The financial record is captured before teardown begins, and
   written by the same transaction that removes the business.** Net revenue is
   derived from payment-processor records that the teardown deletes, so the order
-  is fixed: **capture the totals → tear down the payment provider ([F6.19](#f6-19)) → send
-  the deletion emails ([F9.3d](#f9-3d)) → release the number → delete Ringly's rows and
-  write the departure record, together, in one transaction.** Each step destroys
-  something the one before it needed: the totals come from Stripe, and the emails
-  need an address on the tenant row.
+  is fixed: **capture the totals → tear down the payment provider, cancelling the
+  subscription and marking unpaid invoices uncollectible ([F6.19](#f6-19)) → send the
+  deletion emails ([F9.3d](#f9-3d)) → release the number → delete Ringly's rows and write
+  the departure record, together, in one transaction.** Each step destroys
+  something the one before it needed: the totals — including the amount still
+  owed ([F9.9](#f9-9)) — come from Stripe, and the emails need an address on the tenant
+  row.
+  - **Cancelling the subscription is a teardown step and appears nowhere else.**
+    Every earlier stop is a pause ([F6.11b](#f6-11b)), because a paused subscription can be
+    resumed and a cancelled one cannot. **It raises no invoice**: the business was
+    paused, nothing has accrued since, and billing a customer who is being
+    deleted in the same minute is a receivable nobody can collect.
   - **The last two are one transaction because they are the only two that can
     be.** Every other step is a call to an external provider and cannot join a
     database transaction; these two are both local to Ringly's own database.
