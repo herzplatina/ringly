@@ -681,42 +681,83 @@ needs — the full list is F5.15.
 
 ### F6 — Billing and payments
 
-**Billing period.** A business's period is a **rolling 30 days from activation**,
-not a calendar month. Period 1 begins the day the business activates ([F1.12](#f1-12));
-period _n+1_ begins the day after period _n_ ends.
+**Billing period.** A business's period is a **month of the payment provider's
+subscription**, anchored on the day its trial ended and recurring on that day of
+each following month. It is a calendar month in the ordinary sense — the 14th to
+the 14th — not a rolling count of 30 days.
 
-**The two charges never fall on the same day.** The fixed fee is taken on the
-**first** day of a period; that period's usage is settled on its **last** day.
-For a business activating on day 1: $100 on day 1, period-1 usage on day 30,
-$100 for period 2 on day 31. A card that has gone bad therefore fails one charge
-at a time, and there is only ever **one grace clock**, started by whichever
-charge failed first ([F6.11](#f6-11)).
+- **The provider owns the boundary, not Ringly.** The anchor is one instant held
+  by the provider; Ringly reads it and never computes it ([N5.2](#n5-2)). Two systems
+  deciding when a month ends is two systems that will eventually disagree about
+  which month a call belongs to.
+- **A period anchored after the 28th falls back to the last day of shorter
+  months** — the provider's own rule, inherited whole. A business anchored on the
+  31st bills on 28 February. This is stated because it is the one place the
+  ordinary meaning of "the same day each month" does not survive.
 
-- <a id="f6-1"></a>**F6.1** A **$100 fixed fee** is charged **in advance** at the start of every
-  30-day period, irrespective of usage. The first such charge is the activation
-  payment — there is no separate one-off activation fee.
-- <a id="f6-2"></a>**F6.2** At activation the business's **card is stored for future off-session
-  use**, so later charges need no customer presence.
+**One invoice per period, raised on its first day**, carrying both charges
+([F6.1a](#f6-1a)). The old model's two separate charges a month apart is withdrawn: with a
+subscription there is one collection attempt per month, and a card that has gone
+bad fails one invoice rather than two.
+
+- <a id="f6-1"></a>**F6.1** A **$100 fixed fee** is charged **in advance** for every period,
+  irrespective of usage. There is no separate activation fee; the first such
+  charge is the one raised when the trial ends ([F1.12b](#f1-12b)).
+- <a id="f6-1a"></a>**F6.1a** **Every invoice carries the coming month's fee and the past month's
+  usage, and nothing else.** Period _N_'s invoice, raised on its first day, is:
+
+  | Line      | For          | Basis                                         |
+  | --------- | ------------ | --------------------------------------------- |
+  | Fixed fee | Period _N_   | In advance ([F6.1](#f6-1))                    |
+  | Usage     | Period _N−1_ | In arrears, metered by Ringly ([F6.4](#f6-4)) |
+  - **The provider raises the invoice; Ringly adds the usage line before it is
+    sent.** The subscription generates the fee automatically, and Ringly appends
+    the metered amount to the draft in response to the provider's own
+    invoice-created notification. Ringly computes the figure; the provider
+    collects it, taxes it ([F6.18](#f6-18)), sends it, and retries it.
+  - **Period 1's invoice has no usage line**, because the only calls that preceded
+    it were trial calls and those are free ([F1.13c](#f1-13c)). A zero line is not printed.
+  - **If Ringly fails to add the usage line before the invoice finalises**, the
+    usage is not lost: it stays unbilled and lands on the next period's invoice,
+    which is late but never wrong. **Ringly never issues a second invoice to
+    correct a first** — two invoices for one month is the failure this whole
+    model was chosen to avoid.
+
+- <a id="f6-2"></a>**F6.2** **The card is stored and checked before anything is provisioned**
+  ([F1.12](#f1-12)), for later off-session use. The check is an authorisation, **not a
+  charge**: it proves the card exists and will accept charges from Ringly, which
+  is what makes it safe to buy a number and give away a trial.
+  - **It is not a guarantee.** A card that authorises in January can decline in
+    March, so the failure path ([F6.11](#f6-11)) exists regardless and the trial's first
+    invoice is not a special case of it.
 - <a id="f6-3"></a>**F6.3** Ringly never stores, transmits, or logs raw card details. Card data is
   handled entirely by the payment provider; Ringly stores only provider
   identifiers. _(Hard requirement, not a preference.)_
-- <a id="f6-4"></a>**F6.4** **Usage** accrues through the period and is charged **in arrears** at
-  period end, once the total is known.
+- <a id="f6-4"></a>**F6.4** **Usage** accrues through a period and is charged **in arrears on the
+  next period's invoice** ([F6.1a](#f6-1a)), once the total is known and the period is
+  closed.
 - <a id="f6-5"></a>**F6.5** **There is exactly one billable usage unit: connected minutes on
   productive calls** ([F6.6](#f6-6)), whole call duration ([F6.7](#f6-7)). No other unit is
   metered, and the pricing policy carries no dormant ones — a rate nothing
   produces is scaffolding that misleads whoever reads it next.
+- <a id="f6-5a"></a>**F6.5a** **Ringly meters; the provider bills what Ringly says.** Usage is
+  counted in Ringly's own database, from Ringly's own call records, and reaches
+  the provider as an amount on an invoice — never as a metered price the provider
+  computes. The outcome test in [F6.6](#f6-6) is a judgement about what happened on a call
+  and there is no way to express it as a quantity the provider could total up.
+  This also keeps the clamp ([F6.9](#f6-9)) a Ringly decision applied before the invoice
+  exists, rather than a correction after it.
 - <a id="f6-6"></a>**F6.6** A call is **productive** — and therefore billable — if it resulted in
   any of: a new booking; a reschedule that produced a booked appointment; or a
   cancellation of a real existing appointment. **Not billable:** general enquiry
-  calls, wrong numbers, dropped calls, pre-activation test calls, and any call
-  that changed nothing for the business. **Who is calling is irrelevant** — the
-  owner, a customer, or Ringly's own developer are billed identically. The
-  outcome is the only test.
+  calls, wrong numbers, dropped calls, trial calls, and any call that changed
+  nothing for the business. **Who is calling is irrelevant** — the owner, a
+  customer, or Ringly's own developer are billed identically. The outcome is the
+  only test.
 - <a id="f6-7"></a>**F6.7** The **whole call** is billable, not only the minutes up to the
-  booking. Once a business is activated, **no caller is exempt** — Ringly does
-  not try to decide whether a call came from a genuine customer, the owner, or
-  the developer. The only filter is the outcome test in F6.6.
+  booking. Once the trial has ended, **no caller is exempt** — Ringly does not try
+  to decide whether a call came from a genuine customer, the owner, or the
+  developer. The only filter is the outcome test in [F6.6](#f6-6).
 - <a id="f6-7a"></a>**F6.7a** Connected seconds are summed across the **whole billing period** and
   **rounded up to a whole minute once**, at period close — not per call. A
   business making many short calls is not charged a full minute for each.
@@ -724,557 +765,460 @@ charge failed first ([F6.11](#f6-11)).
   per-connected-minute rate is **TBD** ([Q1](#q1)) and must be settable without a
   deploy. Adding a future unit of usage means adding a column to the pricing
   policy at that time, not carrying an unused one now.
-- <a id="f6-9"></a>**F6.9** A **$500 cap per period, inclusive of the $100 fixed fee.** Usage
-  **keeps accruing past the cap** — it is recorded in full, because Ringly needs
-  the real number for cost and margin ([F8](#f8--operator-dashboard-ringly-internal)). The cap is applied **at settlement**,
-  not during the period: whatever was accrued, the business is charged at most
-  $500 for the period.
-- <a id="f6-9a"></a>**F6.9a** **Settlement happens at exactly three moments**, and the clamp is
-  applied at each:
-  1. **Normal period end** — the usual case.
-  2. **A cancellation window closing** ([F6.12](#f6-12)) — 7 days after the request or at
-     period end, whichever comes first, which settles the period early.
-  3. **Final deletion for non-payment** ([F9.3](#f9-3)), where the clamped figure is what
-     the business is recorded as owing ([F9.9](#f9-9)) even though it is never collected.
-- <a id="f6-9b"></a>**F6.9b** On first crossing the cap Ringly **continues to serve the business
-  and absorbs the excess**, **alerts the operator** ([F8.6](#f8-6)), and **emails the
-  business** to say it has used enough to reach $500 and that everything for the
-  rest of the period is on Ringly. Hitting the cap is good news for the business
-  and should read that way.
-- <a id="f6-10"></a>**F6.10** Billing repeats every 30 days with no action from the business —
-  **unless the business has asked to cancel**. A business marked cancelled is
-  **never charged again**, and resumes billing only if it explicitly withdraws
-  the cancellation.
-- <a id="f6-10a"></a>**F6.10a** Because cancellation arrives by email ([F9.2](#f9-2)), **the operator sets,
-  clears, and marks revoked a business's cancelled status from the operator
-  dashboard** ([F8.10](#f8-10)). It is the single control that stops future charges.
-  **Marking a cancellation revoked is its own act, distinct from clearing it**
-  ([F6.12a](#f6-12a)): clearing is for a cancellation that should never have been recorded,
-  while revoking is a business changing its mind inside the window — and revoking
-  has a consequence clearing does not, since the usage served during the window
-  becomes billable again. One control doing both would make a billing outcome
-  depend on which of the two the operator had in mind.
-- <a id="f6-10b"></a>**F6.10b** **Payment clearing is the trigger; restoration is the consequence.**
-  Ringly does not charge a suspended business to bring it back — it is already
-  being charged, continuously, by the retries that never stopped ([F6.11b-i](#f6-11b-i)).
-  **The moment nothing is outstanding, service resumes that same day**: the
-  number is rebound and the business is emailed to say its phone is answering
-  again.
-  - **"Nothing outstanding" is the test, not "a payment arrived".** A business can
-    owe a failed fixed fee and an unsettled usage bill at once; clearing one of
-    two leaves it suspended, and the email says what remains.
-  - **It does not matter how the payment cleared** — an automatic retry, a new
-    card, or the business paying the invoice by hand. All three reach Ringly the
-    same way (EDD [§2.10.6](Ringly_EDD_v3.md#2106-coming-back)).
-  - **Which period they land in follows [F6.11b-iii](#f6-11b-iii)**: the original one if it is
-    still running, otherwise a new one opened that day. **The original is never
-    extended** — the days lost to suspension are lost ([F6.11b](#f6-11b)).
-  - Usage served during the 7-day grace before suspension **is billable and
-    settles with its period** — service given is service billed.
-- <a id="f6-10b-i"></a>**F6.10b-i** **A business that has paid and is still not being answered is the
+- <a id="f6-9"></a>**F6.9** **A $500 cap per invoice, inclusive of the $100 fixed fee** — so a
+  month's usage is charged at most $400. Usage **keeps accruing past the cap**;
+  it is recorded in full, because Ringly needs the real number for cost and
+  margin ([F8](#f8--operator-dashboard-ringly-internal)). The cap is applied when the invoice is drafted, not during the
+  month.
+  - **Per invoice, not per period, and the two are no longer the same thing.**
+    One invoice carries one month's fee and the previous month's usage
+    ([F6.1a](#f6-1a)), so clamping the invoice is what bounds what a business can be asked
+    for on any single day. It is also the only figure the business ever sees.
+  - **Two ceilings, because there are two shapes of invoice.** A periodic invoice
+    is clamped at **$500** including its fee; a final usage invoice ([F6.9a](#f6-9a))
+    carries no fee and is clamped at **$400**. Stated as two numbers rather than
+    one so that an invoice without a fixed fee cannot quietly carry $500 of usage
+    when no ordinary month ever could.
+- <a id="f6-9a"></a>**F6.9a** **Usage is totalled and clamped at exactly two moments**, and never
+  in between:
+  1. **A period rolling over** — the ordinary case, where the closed period's
+     usage becomes a line on the new period's invoice ([F6.1a](#f6-1a)).
+  2. **Service stopping, for any reason** — which closes the current period there
+     and raises a **final invoice for the usage it had accrued**, immediately.
+
+  **The second moment is one rule covering both exits**, and it is stated that way
+  deliberately. A business that cancels ([F6.12](#f6-12)) and a business whose retries run
+  out ([F6.11b](#f6-11b)) have both been served for part of a month that will never roll
+  over, and the usage in it would otherwise fall through the gap between "not yet
+  invoiced" and "no next invoice coming". **Service given is service billed**,
+  and the route by which service ended does not change that.
+  - **It carries no fixed fee.** The month's $100 was charged on its first day and
+    is not refunded ([F6.11e](#f6-11e)); charging it again, or crediting part of it, are
+    both things this model refuses.
+  - **It is clamped at $400** — the same ceiling any single month's usage faces
+    ([F6.9](#f6-9)) — because it is a month's usage, merely a short one.
+
+- <a id="f6-9b"></a>**F6.9b** On crossing the cap Ringly **continues to serve the business and
+  absorbs the excess**, **alerts the operator** ([F8.6](#f8-6)), and **emails the
+  business** to say it has used enough to reach the cap and that everything for
+  the rest of the month is on Ringly. Hitting the cap is good news for the
+  business and should read that way.
+  - **The business is told when it crosses, not when it is invoiced.** Ringly's
+    own meter knows on the day; the invoice is up to a month later, and a
+    concession the business learns about after the fact is not a concession it
+    can enjoy.
+- <a id="f6-10"></a>**F6.10** **Billing repeats every month with no action from the business and
+  none from Ringly.** The subscription is the mechanism: it raises the invoice,
+  charges the card, retries a failure, and sends the receipt. Ringly's only
+  standing involvement is adding the usage line ([F6.1a](#f6-1a)) and deciding when
+  service stops ([F6.11b](#f6-11b), [F6.12](#f6-12)).
+- <a id="f6-10a"></a>**F6.10a — Retired.** The number is left unused so references in earlier
+  documents and commits still resolve. It held the operator control for setting
+  and clearing a cancellation, which existed only because cancellation arrived by
+  email; cancellation is now self-serve ([F6.12](#f6-12), [F9.2](#f9-2)).
+- <a id="f6-10b"></a>**F6.10b — Retired.** Superseded by [F6.11c](#f6-11c), which states restoration once
+  rather than twice.
+- <a id="f6-10c"></a>**F6.10c** **A period never resumes; coming back always opens a new one, dated
+  from the day service resumes.** Whether the business left by cancelling or by
+  not paying, the subscription was paused and the month it was in ended when
+  service stopped ([F6.12a](#f6-12a)). On resume the anchor is reset to that day, $100 is
+  charged for the new period, and the following months run from the new anchor.
+  - **The old anchor is not kept.** Restoring a business to a billing date it
+    chose months ago would charge it for days it spent dormant, or hand it a
+    part-month free depending only on which day it happened to return.
+
+- <a id="f6-11"></a>**F6.11** **A failed charge is retried by the payment provider, and service
+  continues throughout.** The retry schedule — **up to three attempts across a
+  configured window** ([F6.15](#f6-15)) — is the provider's to run; Ringly does not build a
+  retry loop of its own and does not attempt the card alongside it.
+  - **The window is the grace period, and it is not a separate concept.** The old
+    model had a fixed seven days of service after a decline, counted by Ringly.
+    That clock is withdrawn: service now lasts exactly as long as the provider is
+    still trying, which is the same thing said once instead of twice.
+  - **Usage accrued during it is billable**, and settles with its period in the
+    ordinary way. Service given is service billed.
+  - **The provider emails about the decline and each retry** ([F6.21](#f6-21)); Ringly
+    stays silent while service is running, because there is nothing true it could
+    add that the provider is not already saying.
+- <a id="f6-11a"></a>**F6.11a** **A business already behind on payment can still cancel, and it does
+  not cancel its way out of the debt.** Cancellation stops service immediately on
+  the ordinary terms ([F6.12](#f6-12)) and a final invoice is raised for the usage served
+  since the period began. **The earlier unpaid invoice stays open, exactly as it
+  was.**
+  - **The two are not merged and cannot be.** A finalised invoice is immutable at
+    the provider, so a business that leaves owing money has two open invoices
+    rather than one. Both are chased by the provider, both are visible on the
+    business's billing history ([F5.9](#f5-9)), and both are summed into the departure
+    record if neither is ever paid ([F9.9](#f9-9)).
+  - **Cancelling is not a route out of a debt**, and it is not treated as an
+    attempt at one either. There is nothing left to withhold from a business
+    whose service has already stopped.
+- <a id="f6-11b"></a>**F6.11b** **When the retries are exhausted, service stops and the
+  subscription is paused.** The provider's last attempt failing is the trigger,
+  and Ringly acts on it in one movement: **unbind the agent** and verify the
+  unbind ([F1.12a-ii](#f1-12a-ii)), **raise the final usage invoice** for the part-month
+  just served ([F6.9a](#f6-9a)), **pause the subscription**, and **email the business**
+  ([F7.3a](#f7-3a)).
+  - **The final invoice is raised before the pause, not during it.** The service
+    it bills for was given before service stopped, so it belongs to the state
+    being left rather than the one being entered ([I5](#i5)). It is also the last
+    invoice that will exist until the business comes back.
+  - **Paused, never cancelled.** A cancelled subscription cannot be reactivated at
+    the provider, and the whole of dormancy ([F6.12b](#f6-12b)) depends on being able to
+    resume this one. The single `cancel` call happens once, at teardown, and
+    nowhere else ([F6.19](#f6-19)).
+  - **Pausing stops new invoices, not collection of the old one.** The unpaid
+    invoice stays open and the provider keeps pursuing it; what stops is the
+    monthly fee for a service the business is no longer receiving.
+  - **No new period opens while a business is paused**, and none opens while it
+    owes anything ([I2](#i2)). This is the rule that stops a failing account
+    accumulating $100 a month for a phone nobody is answering, and it is what the
+    pause exists to enforce.
+  - **The 60-day dormancy clock starts the day service stops** ([F6.12b](#f6-12b)) — the
+    same clock, from the same event, whichever way the business left.
+  - **Ringly writes this email, not the provider.** The provider knows a payment
+    failed; it does not know the agent has been unbound, that the number is
+    retained, that settling restores service the same day, or that everything is
+    deleted in 60 days ([F6.21](#f6-21)).
+- <a id="f6-11c"></a>**F6.11c** **Settling what is owed restores service, automatically and the
+  same day.** The provider notifies Ringly that the invoice is paid, and Ringly
+  resumes the subscription, rebinds the agent with a verified read-back, opens a
+  new period ([F6.10c](#f6-10c)), and emails to say the number is answering again.
+  - **"Nothing outstanding" is the test, not "a payment arrived."** A business can
+    have two open invoices ([F6.11a](#f6-11a)); clearing one of two leaves it paused, and
+    the email says what remains.
+  - **It does not matter how the payment cleared** — a provider retry, a new card,
+    or the business paying the hosted invoice by hand all reach Ringly the same
+    way.
+  - **It works only inside the dormancy window.** After teardown there is no
+    subscription to resume, no number to rebind, and no data to restore
+    ([F6.12b](#f6-12b)).
+- <a id="f6-11c-i"></a>**F6.11c-i** **A business that has paid and is still not being answered is the
   worst state in the system**, so recovery must not depend on a single message
-  arriving. If the notification of payment is lost, a **daily reconciliation**
-  finds any suspended business that owes nothing and restores it (EDD [§2.10.6](Ringly_EDD_v3.md#2106-coming-back)).
-  A lost notification may cost such a business hours; it must never cost it days,
-  and it must never cost it the account.
-- <a id="f6-10c"></a>**F6.10c** **A new billing period opens, charged $100 that day, whenever
-  service resumes and no period is running.** Two routes reach it:
-  - **Returning from dormancy after cancellation** ([F6.12e](#f6-12e)) — that path settled
-    its period on the way out ([F6.12b](#f6-12b)), so there is never one to resume.
-  - **Returning from suspension after the original period already ended**
-    ([F6.11b-iii](#f6-11b-iii)).
-
-  Whether they keep their number and history depends only on whether their data
-  still exists — inside the recoverable window they resume as themselves, after
-  it they are a stranger.
-
-- <a id="f6-11"></a>**F6.11** A failed charge starts a **7-day grace period**. Through it Ringly
-  **keeps answering calls and keeps accruing usage**, and emails the business
-  about the failure. If payment has not cleared by day 7, the account is
-  **suspended** ([F9.3](#f9-3)).
-- <a id="f6-11a"></a>**F6.11a** **A business already behind on payment cannot cancel into free
-  service.** If a cancellation arrives while a payment failure is unresolved, the
-  business is treated as **non-paying**: the suspension clock keeps running
-  ([F9.3](#f9-3)), no free window opens, and no usage is forgiven. Cancelling is not a
-  route out of a debt.
-- <a id="f6-11b"></a>**F6.11b** **A billing period is 30 calendar days and is never extended.
-  Suspension does not extend it, and a suspended business is charged nothing
-  new.** (The one thing that can make a period _shorter_ is cancellation, which
-  settles the final one early — F6.12b. Nothing ever makes one longer.) Two rules
-  that sound like they conflict and do not:
-  - **The period clock never stops.** `starts_at` and `ends_at` are set when the
-    period opens and **never move**. A period that begins on the 3rd ends on the
-    2nd of the following month whether the business was served for thirty of
-    those days or seven.
-  - **No new charge of any kind arises during suspension** — no fixed fee, no
-    usage, no new period. Calls are not being answered ([F9.3](#f9-3)), so there is
-    nothing to bill for.
-
-  **A suspended business therefore loses service days it has already paid for,
-  and that is the intended outcome.** The days were lost by not paying on time.
-  Extending the period to give them back would mean a business that pays late
-  ends up no worse off than one that pays on time, which is not a rule Ringly
-  should be operating.
-
-  - **Usage does not accrue during suspension**, because no calls are served.
-  - **The $100 already invoiced for that period stands, whole and unprorated**
-    ([F6.11e](#f6-11e)). It was charged in advance for a period Ringly held open and stood
-    ready to serve.
-  - **A period _can_ end while suspended**, and this is the case the rule has to
-    answer ([F6.11d](#f6-11d)): it **settles on its original last day** for whatever usage
-    accrued before suspension, clamped — and **no successor opens** while the
-    business is still suspended.
-
-- <a id="f6-11b-i"></a>**F6.11b-i** **What pauses is the meter, not the collection of what is already
-  owed.** These are two different things and conflating them breaks the recovery
-  path, because the unpaid charge is the entire reason the business is suspended
-  and paying it is the only way out.
-
-  | During suspension                              | Continues? | Whose job  |
-  | ---------------------------------------------- | ---------- | ---------- |
-  | The **outstanding invoice** stays open and due | **Yes**    | Stripe     |
-  | **Automatic retries** against the card on file | **Yes**    | Stripe     |
-  | **Payment follow-up emails** to the business   | **Yes**    | **Ringly** |
-  | The 48-hour deletion warning at ~day 58        | **Yes**    | **Ringly** |
-  | New fixed fees                                 | **No**     | —          |
-  | New usage charges                              | **No**     | —          |
-  | New billing periods                            | **No**     | —          |
-
-  A suspended business must be **chased as hard as any other debtor** — it is
-  being asked to settle what it already owes, which is not a charge for the
-  suspension. What it must never receive is a **new** charge for a service it is
-  not getting.
-
-- <a id="f6-11b-ii"></a>**F6.11b-ii** **Ringly writes and sends every one of those emails; Stripe
-  retries the card in silence** ([F6.20](#f6-20), [F6.21](#f6-21)). Suspension is a Ringly
-  concept and Stripe knows nothing about it — not that the agent has been
-  unbound, not that no new period will open, not that the number goes in 48
-  hours.
-  An email from Stripe during suspension could only say a card was declined,
-  which is the least useful true thing available and would arrive alongside
-  Ringly's saying something different. **Stripe's dunning stays off throughout**,
-  including here.
-
-  **The failure this guards against is the opposite of the one [F6.11b](#f6-11b) guards
-  against.** [F6.11b](#f6-11b) stops Ringly billing for a phone nobody answers; [F6.11b-i](#f6-11b-i)
-  stops Ringly going quiet on a debt and letting a recoverable business drift to
-  day 60 in silence. The implementation detail that makes the pair work is at
-  EDD [§2.10.8](Ringly_EDD_v3.md#2108-the-division-with-the-payment-provider), and it is settled by **not using a payment-provider subscription
-  at all** ([D1](Ringly_EDD_v3.md#d1)): with no recurring-invoice generator there is nothing to pause,
-  so "no new invoice" and "the open one keeps being retried" stop being two
-  settings that fight each other and become one design in which neither failure
-  is reachable.
-
-- <a id="f6-11b-iii"></a>**F6.11b-iii** **On restore, where the business lands depends on one question:
-  is the period it was suspended in still running?**
-  - **Still running** → service simply resumes inside it. **Nothing new is
-    charged**, and it ends on its original date with however many days are left.
-  - **Already ended** → **a new period opens on the day service is restored**,
-    with $100 charged that day ([F6.10c](#f6-10c)). The ended period stays settled on its
-    own terms; there is no reaching back into it.
-
-  **At most one period boundary can ever be crossed while suspended**, because no
-  successor opens during suspension and the whole suspension is bounded at 60
-  days ([F9.3](#f9-3)). There is no case of a business returning to find three periods
-  stacked up behind it.
-
-  **The debt clears first; the new period's fee is charged after.** These are two
-  separate movements on the same day and the order is not cosmetic: restoration
-  is triggered by owing nothing ([F6.10b](#f6-10b)), so the new period cannot exist until
-  the old debt is settled. A business paying its way out of suspension on a day
-  when a new period opens is therefore charged **twice that day** — what it owed,
-  then $100 — and both appear separately in its billing history ([F5.9](#f5-9)).
-
-- <a id="f6-11b-iv"></a>**F6.11b-iv** **If the new period's $100 fails, that is a fresh failure with a
-  fresh clock.** The old grace clock ended the moment the debt cleared; a decline
-  on the new period starts a new 7-day grace from that day ([F6.11](#f6-11)), not a
-  continuation of the one just closed. A business is never carried straight from
-  suspension back into suspension without the full grace it is owed — and the
-  60-day deletion clock restarts with it, because the previous one expired when
-  the account was restored.
-
-- <a id="f6-11c"></a>**F6.11c** **No new billing period ever opens while the business owes
-  anything.** Not during grace, not during suspension. This is the single rule
-  that keeps a failing account from accumulating fees, and it holds from the
-  moment the first charge declines until the moment the debt clears.
-  - **A business in trouble is therefore only ever dealing with one period** —
-    the one that was open when the trouble started, if any — and one debt.
-  - **The period that was already open runs to its own end and settles there**
-    ([F6.11b](#f6-11b)), because it was opened and paid for, or invoiced, before any of this
-    began. Its successor simply never arrives.
-  - **A second decline does not start a second clock.** There is one, started by
-    whichever charge failed first ([F6.11](#f6-11)), and outstanding amounts add up.
-
-  **Without this rule a business is billed $100 for periods it never asked for
-  and mostly did not receive**, discovering the total at the exact moment it is
-  deciding whether to come back. With it, the debt a business must clear is
-  bounded by what it actually used before Ringly stopped serving it.
-
-- <a id="f6-11c-i"></a>**F6.11c-i** **Grace service is a one-time concession per failure, not a
-  recurring benefit.** The seven days are given once, when a payment first
-  declines. They are not re-granted at what would have been the next period
-  boundary, because there is no next period while the debt stands ([F6.11c](#f6-11c)) — a
-  business cannot collect a fresh week of free service every thirty days by
-  continuing not to pay.
-
-- <a id="f6-11c-ii"></a>**F6.11c-ii** **Grace usage is billed only if there is an open period to bill
-  it to.**
-  - **Usually there is**, and it settles with that period as ordinary usage —
-    service given is service billed.
-  - **In one case there is not**: when the failed charge _was_ the settlement of
-    a period, that period closes on the same day ([F6.16](#f6-16)), and the grace that
-    follows runs with no period open. **That usage is not billed.** There is
-    nothing to bill it to, no successor opens ([F6.11c](#f6-11c)), and inventing a period to
-    hold it would be manufacturing exactly the $100 charge this design refuses.
-  - **The cost is still recorded.** `cost_records` do not belong to a period, so
-    Ringly keeps its true cost of serving those days ([F8.5](#f8-5), [R8](Ringly_EDD_v3.md#r8)) even though it
-    charges nothing for them. **What Ringly absorbs, Ringly measures.**
-  - It is bounded at seven days, once ([F6.11c-i](#f6-11c-i)).
-
-  **This makes grace mean two slightly different things, and that is accepted.**
-  Where the fee declined, grace is _service continues and you still owe for it_;
-  where the settlement declined, grace is _service continues and it is free_. The
-  difference is not a policy choice about which failure deserves more sympathy —
-  it falls out of whether a period happened to be open. **Recorded rather than
-  smoothed over**, because the two ways to remove it are both worse: opening a
-  period to bill against would manufacture a $100 charge on an already-failing
-  account, and withholding service during the second kind of grace would punish
-  the business that failed the _smaller_ of the two charges.
-
-- <a id="f6-11d"></a>**F6.11d** **Which period suspension lands in depends on which charge failed,
-  and the two cases are not symmetric.** There are only two ways to fail a payment
-  ([F6.11](#f6-11)) and they sit at opposite ends of a period, so both are worked through
-  here in full. In each, day numbers are days of period _N_, grace runs 7 days
-  from the failure, and **no period is ever extended** ([F6.11b](#f6-11b)).
-
-  **Case (a) — the $100 fixed fee fails.** Charged on **day 1** of period _N_, so
-  the failure is at the very start of a period nobody has paid for.
-
-  |                                                   |                                                                                                                                                                            |
-  | ------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-  | Day 1                                             | $100 invoiced, declined. Grace starts                                                                                                                                      |
-  | Days 1–8                                          | Served. Period _N_ runs normally, usage accrues to it and is billable ([F6.11c-ii](#f6-11c-ii))                                                                            |
-  | Day 8                                             | **Suspended.** Period _N_ keeps running; the business is simply not being served                                                                                           |
-  | **Pay on day 20** — owes **$100**                 | That is the only invoice raised so far; _N_'s usage is not settled until day 30. Service resumes **inside _N_**, which still ends day 30. **Nothing else is charged then** |
-  | └ then day 30                                     | _N_ settles as normal, for **days 1–8 _and_ 20–30** of usage — everything served, whenever it was served                                                                   |
-  | **Day 30 while still suspended**                  | _N_ **settles on time** for its 7 days of usage (days 1–8), clamped, and that invoice joins the debt. **No _N+1_ opens** ([F6.11b](#f6-11b))                               |
-  | **Pay on day 45** — owes **$100 + 7 days' usage** | Both invoices must clear. _N_ is over, so **a new period opens day 45** and **its own $100 is charged then**, after the debt clears ([F6.10c](#f6-10c))                    |
-  | Never pay                                         | Deleted at day 60 from the failure. Debt = the $100 **plus** the 7 days of usage, clamped ([F6.9a](#f6-9a))                                                                |
-
-  **Case (b) — the usage settlement fails.** Charged on the **last day** of period
-  _N_, so _N_ closes that same day and **no successor ever opens** ([F6.11c](#f6-11c)). The
-  whole episode belongs to _N_.
-
-  |                                          |                                                                                                                                                                         |
-  | ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-  | Day 30 of _N_                            | Usage settled and invoiced; declined. Grace starts. **_N_ is closed** — `usage_settled_at` is set and it never reopens ([F6.16](#f6-16))                                |
-  | Days 30–37                               | **Served, under grace — and not billed.** There is no open period to bill it to and none opens ([F6.11c-ii](#f6-11c-ii)). Ringly absorbs it; the cost is still recorded |
-  | Day 31                                   | **Nothing happens.** No period opens, no $100 is invoiced. The debt does not grow                                                                                       |
-  | Day 37                                   | **Suspended.** Service stops                                                                                                                                            |
-  | Outstanding, throughout                  | **One invoice: _N_'s usage settlement.** It never grows, however long the suspension lasts                                                                              |
-  | **Pay on day 45** — owes **_N_'s usage** | Nothing outstanding → restored that day. **No period is open, so a new one opens on day 45** with its own $100, charged then ([F6.10c](#f6-10c)). It runs to day 74     |
-  | **Pay on day 70** — owes **_N_'s usage** | **Identical.** A new period opens day 70, $100 charged then, running to day 99                                                                                          |
-  | Never pay                                | Deleted at day 90 (60 days from the day-30 failure). Debt = **_N_'s usage settlement and nothing else**, clamped                                                        |
-
-  **Case (b) has no second period in it at all**, and that is the whole point of
-  F6.11c. Paying on day 45 and paying on day 70 are the same transaction: clear
-  one invoice, start fresh at full price. The only thing later costs the business
-  is the days its phone was not answered.
-
-  **The seven grace days in case (b) are free**, and deliberately so
-  ([F6.11c-ii](#f6-11c-ii)) — the period they would have belonged to closed the day the charge
-  failed, and Ringly will not open a period to have something to bill them
-  against. **They are given once** ([F6.11c-i](#f6-11c-i)): a business that stays unpaid does
-  not receive another week at what would have been the next boundary, because no
-  boundary arrives.
-
-  **The shape both cases share.** At most one period is ever open during a failure
-  episode, and at most one debt accumulates. Paying while that period is still
-  running resumes it with no new charge and no days given back; paying after it
-  has ended — or when there was never one open — starts a fresh period at full
-  price. **Late payment costs service days. That is the whole penalty, and it is
-  enough of one.**
-
-  **The debt never grows while a business is unpaid.** It is fixed by what was
-  served before Ringly stopped serving, and a business deciding on day 55 whether
-  to come back owes exactly what it owed on day 8. That is the property [F6.11c](#f6-11c)
-  exists to guarantee, and it is what makes the recovery path something a
-  struggling business can actually take.
-
-- <a id="f6-11e"></a>**F6.11e** **The $100 is never prorated — not on suspension, not on
-  cancellation, not on deletion.** A period that delivered 7 days of service still
-  owes its whole fee.
-  - **The fee buys the period, not the days consumed.** The same principle
-    already governs cancellation, where it is not refunded for a period cut short
-    ([F6.12b](#f6-12b)). A business that was suspended could have had the rest of its days by
-    paying; it chose the timing.
-  - **Nothing is collected either way on the deletion path** ([F6.12f](#f6-12f)) — this only
-    fixes the figure on the departure record ([F9.9](#f9-9)). Prorating it would be
-    arithmetic in service of a number nobody will ever be paid.
+  arriving. If the payment notification is lost, a **daily reconciliation** finds
+  any paused business that owes nothing and restores it. A lost notification may
+  cost such a business hours; it must never cost it days, and it must never cost
+  it the account.
+- <a id="f6-11c-ii"></a>**F6.11c-ii — Retired.** The number is left unused so references in earlier
+  documents and commits still resolve. It held the rule for grace usage with no
+  open period to bill it to, which cannot arise now that a period's usage is
+  invoiced with the next period's fee ([F6.1a](#f6-1a)) rather than at its own end.
+- <a id="f6-11d"></a>**F6.11d — Retired.** The number is left unused so references in earlier
+  documents and commits still resolve. It held the two-case analysis of which
+  charge failed — the fee at period start or the settlement at period end — which
+  cannot arise now that a period has exactly one invoice ([F6.1a](#f6-1a)).
+- <a id="f6-11e"></a>**F6.11e** **The $100 is never prorated — not on a pause, not on cancellation,
+  not on deletion.** A period that delivered nine days of service still owes its
+  whole fee.
+  - **The fee buys the period, not the days consumed.** A business that stopped
+    being served part-way through could have had the rest of its days by paying,
+    or by not cancelling; it chose the timing.
+  - **Usage is not prorated either — it is metered.** There is no fraction to
+    take: a business is charged for the calls it actually had, up to the day it
+    stopped. The two words are not interchangeable and only one of them describes
+    something Ringly does.
+  - **The provider's own cancel-time proration is not used**, in either
+    direction. Prorating would credit the unused fee, which this requirement
+    forbids; declining to prorate would discard the usage. Ringly invoices the
+    metered figure itself and lets the provider prorate nothing ([F6.12a](#f6-12a)).
 - <a id="f6-11f"></a>**F6.11f** **A business has at most one open period at any moment, and periods
-  never overlap or stack.** A settled period is finished; a suspended business
-  opens none ([F6.11b](#f6-11b)); a restored business either lands in the one still running
-  or gets exactly one new one ([F6.11b-iii](#f6-11b-iii)). **There is no state in which two
-  periods are live**, which is what keeps the billing history a simple ordered
-  list a business can read down ([F5.9](#f5-9)).
+  never overlap or stack.** A closed period is finished; a paused business opens
+  none ([F6.11b](#f6-11b)); a restored business gets exactly one new one ([F6.10c](#f6-10c)). **There
+  is no state in which two periods are live**, which is what keeps the billing
+  history a simple ordered list a business can read down ([F5.9](#f5-9)).
 
-- <a id="f6-12"></a>**F6.12** **Cancellation opens a short reconsideration window, then settles.**
-  The window runs from the request until **whichever comes first: 7 days later,
-  or the end of the current billing period**. During it:
-  - **Service continues unchanged.** Calls answered, bookings taken, number
-    untouched. A business that changes its mind finds everything as it was.
-  - **Usage stops being billed.** Nothing accrued from the request onward is ever
-    charged, though the service is still given. Ringly absorbs it.
-  - **Countdown emails run through the window**, saying what happens, when, and
-    what the business will and will not be charged.
-- <a id="f6-12a"></a>**F6.12a** **Revoking inside the window erases it, retroactively.** The
-  business asks by emailing the same address it cancelled through ([F9.2](#f9-2)) and the
-  operator marks the cancellation revoked ([F6.10a](#f6-10a)). The period
-  continues to its original end as though the request never happened — and the
-  usage served during the window, which would have been free had they left,
-  **becomes billable after all**. The free window is a concession for leaving,
-  not a way to take a week of free service and stay.
-- <a id="f6-12b"></a>**F6.12b** **When the window closes, the period is settled early and service
-  stops.** The business is charged the usage it accrued **up to the request**,
-  clamped so the period total never exceeds $500 ([F6.9a](#f6-9a)).
-
-  **The $100 fixed fee is not refunded, in whole or in part.** It buys the
-  period, and a business that leaves part-way through has still had the service
-  it paid for — with free service on top for the length of the window. The
-  earlier prorated-refund rule is withdrawn.
-
-- <a id="f6-12c"></a>**F6.12c** Settlement sends a **closing statement**: appointments booked in the
-  final period, the usage charged, confirmation that the fixed fee is not
-  refunded, and the date the account and its data will be deleted if they do not
-  return.
-- <a id="f6-12d"></a>**F6.12d** The total charged for a period **never exceeds $500**, cancellation
-  or not. Worked example: a business accrues $470 of usage in a period →
-  `$100 + $470 = $570` → clamped to **$500**, so $400 of usage is charged and $70
-  is absorbed by Ringly.
-- <a id="f6-12e"></a>**F6.12e** **The account then lies dormant for 60 days, fully recoverable.**
-  Service has stopped, but **the phone number and every database record are
-  retained**. A business that returns inside those 60 days resumes on **its own
-  number with its own history** — customers, appointments and past figures all
-  intact — on a **new billing period starting that day, with $100 charged that
-  day**. Only after the 60 days is anything deleted, and a business returning
-  after that is a wholly new account with a new number. Sixty days costs Ringly
-  only the number rental, and far less than losing a business to a number it can
-  no longer have.
-- <a id="f6-12f"></a>**F6.12f** **If the settlement charge fails, it is recorded and let go.** The
-  amount is written to the departure record ([F9.9](#f9-9)) as owed. Ringly does not
-  suspend, retry, or pursue a business whose service has already stopped —
-  there is nothing left to withhold.
+- <a id="f6-12"></a>**F6.12** **Cancellation is self-serve, and it takes effect immediately.** The
+  business cancels from its own dashboard ([F5.15](#f5-15)); there is no window, no
+  countdown, and no operator in the path.
+  - **Before it confirms, the screen states exactly what will happen**: service
+    stops today, the number stops answering today, a final invoice for this
+    month's usage to date follows, **the $100 already paid for this month is not
+    refunded** ([F6.11e](#f6-11e)), and the account and number are held for 60 days in case
+    they come back ([F6.12b](#f6-12b)). A cancellation screen that hides the bill is how a
+    business ends up disputing a charge it agreed to.
+  - **On confirmation, in one movement**: the agent is unbound and verified
+    ([F1.12a-ii](#f1-12a-ii)), the subscription is paused, the final invoice is raised
+    ([F6.12a](#f6-12a)), and the dashboard says plainly that the service has stopped.
+  - **Immediate, rather than at period end, because the alternative is worse for
+    both sides.** Running to period end means Ringly serves a business that has
+    said it does not want the service and meters it for calls it did not expect to
+    pay for. The fee is not refunded either way ([F6.11e](#f6-11e)), so the business loses
+    nothing it would otherwise have kept except days it has chosen not to use.
+- <a id="f6-12a"></a>**F6.12a** **The final invoice is the metered usage of the current period, up
+  to the moment service stopped, and nothing else** ([F6.9a](#f6-9a)). It carries no
+  fixed fee — the month's fee was charged on the first day and is not refunded
+  ([F6.11e](#f6-11e)) — and no usage from any earlier period, because that was invoiced at
+  the start of this one ([F6.1a](#f6-1a)).
+  - **It is clamped at $400** ([F6.9](#f6-9)).
+  - **A final invoice of zero is not raised.** A business that cancels during its
+    trial, or on the first day of a period before any productive call, owes
+    nothing; an invoice for nothing is a confusing way to say so. **It is sent a
+    plain message instead** — sorry to see you go, and what happens to its number
+    and data — which is the only thing there was to say ([F7.3a](#f7-3a)).
+- <a id="f6-12b"></a>**F6.12b** **The account then lies dormant for 60 days, fully recoverable, and
+  every business gets the same 60.** Service has stopped, but **the phone number,
+  the subscription and every database record are retained**, and the clock runs
+  from the day service stopped — whether it stopped because the business
+  cancelled ([F6.12](#f6-12)) or because its retries ran out ([F6.11b](#f6-11b)).
+  - **A business that returns inside those 60 days resumes on its own number with
+    its own history** — customers, appointments and past figures all intact — on a
+    new period starting that day, with $100 charged that day ([F6.10c](#f6-10c)).
+  - **A business that owes money must settle before it can resume** ([F6.11c](#f6-11c)).
+    Coming back is not a way to get the debt written off, and resuming a paused
+    subscription is the one lever Ringly can hold against it.
+  - **The same 60 days for everybody**, including a business that cancelled during
+    its trial and has never paid Ringly a penny. Deliberately uniform: the cost is
+    one number rental, the rule fits in a sentence, and a lifecycle with two
+    dormancy lengths is one that gets the short one wrong at the worst moment.
+  - **Only after the 60 days is anything deleted** ([F9.8](#f9-8)), and a business
+    returning after that is a wholly new account with a new number.
+- <a id="f6-12c"></a>**F6.12c — Retired.** The number is left unused so references in earlier
+  documents and commits still resolve. It held the closing statement sent when a
+  reconsideration window closed; there is no window, and the final invoice
+  ([F6.12a](#f6-12a)) is now the provider's to send.
+- <a id="f6-12d"></a>**F6.12d** The total on any invoice **never exceeds $500** ([F6.9](#f6-9)), cancellation
+  or not. Worked example: a business accrues $470 of usage in a month → the next
+  invoice would be `$100 + $470 = $570` → clamped to **$500**, so $400 of usage is
+  charged and $70 is absorbed by Ringly.
+- <a id="f6-12e"></a>**F6.12e — Retired.** Superseded by [F6.12b](#f6-12b), which now states dormancy once
+  for both exit paths rather than only for cancellation.
+- <a id="f6-12f"></a>**F6.12f** **If the final invoice is never paid, it is recorded and let go.**
+  The amount is written to the departure record ([F9.9](#f9-9)) as owed, read from the
+  provider at teardown rather than at cancellation, because the provider may
+  still collect during the 60 dormant days. Ringly does not pursue a business
+  whose service has already stopped — there is nothing left to withhold.
 - <a id="f6-13"></a>**F6.13** The business dashboard shows current-period usage, amount accrued,
-  the cap, and the next charge date.
+  the cap, and the date and expected amount of the next invoice.
 - <a id="f6-14"></a>**F6.14** Every charge, refund, and failure is recorded immutably against the
   business for reconciliation.
 - <a id="f6-15"></a>**F6.15** **The commercial terms are expected to change** once real usage is
-  observed. The fixed fee, the cap, the per-unit rates, and **the definition of a
-  billable call** must all be changeable without a schema migration or a
-  redesign. What does **not** change: 30-day billing periods, the rule that data
-  lives as long as the relationship and is purged **60 days** after it ends
-  ([F9.3](#f9-3), [F9.8](#f9-8)), and the two-phase shape of the lifecycle — a grace period, then
-  suspension, then removal after a final warning ([F9.3](#f9-3)) — though the lengths of
-  those phases may be tuned.
+  observed. The fixed fee, the cap, the per-unit rates, **the trial's two bounds**
+  ([F1.13](#f1-13)), **the retry count and window** ([F6.11](#f6-11)), and **the definition of a
+  billable call** must all be changeable without a schema migration or a redesign.
+  What does **not** change: monthly billing periods, the rule that data lives as
+  long as the relationship and is purged **60 days** after it ends ([F6.12b](#f6-12b),
+  [F9.8](#f9-8)), and the shape of the lifecycle — trial, then service, then a pause that
+  is recoverable, then removal after a final warning.
 - <a id="f6-16"></a>**F6.16** A change to commercial terms **never rewrites history**. Each billing
   period is settled under the terms in force when it ran, so past invoices remain
   reproducible.
 
 > **Architectural consequence.** Pricing is **policy data, not code**: rates, the
-> cap, the fixed fee, and the set of outcomes that count as billable all live in
-> a versioned `pricing_policy` record with an effective date, and each
-> `billing_periods` row records which version it was settled under (EDD [§2.4](Ringly_EDD_v3.md#24-data-model)/007).
-> Widening billing to all connected minutes — the expected next model — becomes a
-> new policy row, not a deploy.
+> cap, the fixed fee, the trial bounds, and the set of outcomes that count as
+> billable all live in a versioned `pricing_policy` record with an effective date,
+> and each `billing_periods` row records which version it was settled under (EDD
+> [§2.4](Ringly_EDD_v3.md#24-data-model)/007). Widening billing to all connected minutes — the expected next
+> model — becomes a new policy row, not a deploy.
 
-- <a id="f6-17"></a>**F6.17** A **chargeback is treated exactly as non-payment** ([F9.3](#f9-3)): the
-  7-day grace and suspension, then full revocation at day 60, with follow-up
-  emails throughout so the business can resolve it and recover. **No special
-  handling** — Ringly does not pause the deletion clock while a dispute is open,
-  does not build a dispute workflow, and contests or concedes disputes by hand in
-  the Stripe dashboard. A dispute running longer than 60 days therefore resolves
-  after the business is gone; accepted, because they are rare and the alternative
-  is machinery for an event that may never happen.
+- <a id="f6-17"></a>**F6.17** A **chargeback is treated exactly as non-payment**: the disputed
+  invoice is outstanding, and when the provider's retries are exhausted the
+  business is paused like any other ([F6.11b](#f6-11b)). **No special handling** — Ringly
+  does not pause the dormancy clock while a dispute is open, does not build a
+  dispute workflow, and contests or concedes disputes by hand in the provider's
+  dashboard. A dispute running longer than 60 days therefore resolves after the
+  business is gone; accepted, because they are rare and the alternative is
+  machinery for an event that may never happen.
 - <a id="f6-18"></a>**F6.18** **Sales tax is collected through Stripe Tax**, configured per US
-  state. Tax is Stripe's calculation, not Ringly's; Ringly stores the resulting
-  amounts for reconciliation only.
+  state. Tax is the provider's calculation, not Ringly's; Ringly stores the
+  resulting amounts for reconciliation only, and the cap ([F6.9](#f6-9)) clamps Ringly's
+  own charges with tax added on top.
 - <a id="f6-19"></a>**F6.19** **Deleting a business tears down its external state before its own,
-  in order**: capture the lifetime totals ([F9.10](#f9-10)) → **assert that no
-  payment-provider subscription exists** (EDD [D1](Ringly_EDD_v3.md#d1), [§2.10.8](Ringly_EDD_v3.md#2108-the-division-with-the-payment-provider)) → void any open
-  invoices → detach the payment method → delete the payment-provider customer → **email the business and the operator** ([F9.3c](#f9-3c)) → **release the phone
-  number to the telephony provider** ([F9.4b](#f9-4b)) → **delete Ringly's rows and write the
-  departure record, together in a single transaction** ([F9.10](#f9-10)). Deleting Ringly's
-  rows first
-  destroys the identifier every one of those steps needs, leaving a saved card on
-  file belonging to nobody and a rented number belonging to nobody. The email goes
-  before the number because releasing the number cannot be undone ([F9.3d](#f9-3d)). The full
-  reasoning for each position in that order is at EDD [§2.13.4](Ringly_EDD_v3.md#2134-teardown-in-order).
+  in order**: capture the lifetime totals ([F9.10](#f9-10)) → **cancel the subscription**
+  → **mark any unpaid invoices uncollectible** → detach the payment method →
+  delete the payment-provider customer → **email the business and the operator**
+  ([F9.3c](#f9-3c)) → **release the phone number to the telephony provider** ([F9.4b](#f9-4b)) →
+  **delete Ringly's rows and write the departure record, together in a single
+  transaction** ([F9.10](#f9-10)). Every position in that order is forced by the one before
+  it:
+  - **The totals are captured first** because they are read from the provider, and
+    the steps that follow destroy the records they come from — including the
+    amount still owed ([F9.9](#f9-9)), which is why that figure is read here and not at
+    the moment service stopped ([F6.12f](#f6-12f)).
+  - **The subscription is cancelled here and nowhere else.** This is the single
+    `cancel` call in the whole lifecycle ([F6.11b](#f6-11b)); everything earlier is a pause,
+    because a pause can be undone and this cannot. **It raises no invoice** — the
+    business was paused, nothing has accrued, and an invoice against a customer
+    about to be deleted is a receivable nobody can collect.
+  - **Unpaid invoices are marked uncollectible, not voided.** Voiding says the
+    invoice was issued in error and erases it from the provider's revenue
+    reporting; uncollectible says Ringly gave up collecting a real debt. The
+    departure record says the business owed money, and the provider's books
+    should agree with it ([N10.6](#n10-6)).
+  - **Deleting Ringly's rows first would destroy the identifier every one of those
+    steps needs**, leaving a saved card on file belonging to nobody and a rented
+    number belonging to nobody.
+  - **The email goes before the number is released** because that step cannot be
+    undone ([F9.3d](#f9-3d)).
+
+  The full reasoning for each position is at EDD [§2.13.4](Ringly_EDD_v3.md#2134-teardown-in-order).
+
 - <a id="f6-20"></a>**F6.20** **The division of responsibility with the payment provider is
-  explicit, and nothing is done twice.** Where both could act, exactly one does:
+  explicit, and nothing is done twice.** The line is **the provider owns money
+  documents; Ringly owns service statements** — what is working, what stopped,
+  why, and what happens next ([F6.21](#f6-21)). Where both could act, exactly one does:
 
-  | Function                                                                     | Owner                                                                                                                                             |
-  | ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-  | Tax calculation                                                              | **Stripe** — Ringly stores the amounts                                                                                                            |
-  | Invoices, receipts, payment-succeeded email                                  | **Stripe**, carrying Ringly branding                                                                                                              |
-  | Retrying failed payments                                                     | **Stripe** while its automatic window lasts; **Ringly** for whatever remains of suspension after it ends ([R27](Ringly_EDD_v3.md#r27), [A4](#a4)) |
-  | Every failure-path email (failure, follow-ups, suspension, deletion warning) | **Ringly**                                                                                                                                        |
-  | The $500 cap and the clamp at settlement                                     | **Ringly** computes, Stripe executes                                                                                                              |
-  | Refunds                                                                      | **Neither, automatically** — goodwill only, by hand in Stripe ([F5.9](#f5-9))                                                                     |
-  | End-of-dunning behaviour and teardown                                        | **Ringly** ([F6.19](#f6-19))                                                                                                                      |
-  | Billing thresholds                                                           | **Neither** — deliberately not configured                                                                                                         |
-  | Self-service cancellation portal                                             | **Disabled** ([§1.9](#19-deferred))                                                                                                               |
+  | Function                                                      | Owner                                                                               |
+  | ------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+  | The billing cycle, its anchor and its rollover                | **Stripe** — Ringly reads the boundary, never computes it                           |
+  | Raising and sending each invoice                              | **Stripe**, carrying Ringly branding                                                |
+  | The usage amount on that invoice                              | **Ringly** computes and clamps ([F6.1a](#f6-1a), [F6.9](#f6-9)); Stripe collects it |
+  | Tax calculation                                               | **Stripe** — Ringly stores the amounts                                              |
+  | Invoices, receipts, payment-succeeded and payment-failed mail | **Stripe**                                                                          |
+  | Retrying failed payments                                      | **Stripe**, entirely ([F6.11](#f6-11))                                              |
+  | Deciding that service stops, and stopping it                  | **Ringly** ([F6.11b](#f6-11b))                                                      |
+  | Pausing and resuming the subscription                         | **Ringly** ([F6.11b](#f6-11b), [F6.11c](#f6-11c))                                   |
+  | Ending the trial early on the call bound                      | **Ringly** ([F1.13a](#f1-13a))                                                      |
+  | Every service statement (trial, stop, restore, deletion)      | **Ringly** ([F7.3a](#f7-3a))                                                        |
+  | Cancelling the subscription                                   | **Ringly**, once, at teardown ([F6.19](#f6-19))                                     |
+  | Refunds                                                       | **Neither, automatically** — goodwill only, by hand ([F5.9](#f5-9))                 |
+  | Billing thresholds                                            | **Neither** — deliberately not configured                                           |
 
-- <a id="f6-20a"></a>**F6.20a** **The one exception to "Ringly builds no retry loop" is the tail of
-  suspension.** Stripe's automatic retries stop after roughly two months from the
-  invoice; [F6.11d](#f6-11d) case (a) needs the charge attempted from a day-1 decline to a
-  day-60 deletion. **Ringly retries only after Stripe has stopped**, never
-  alongside it — two systems charging one card is a double charge, which is worse
-  than the gap it would close.
-  - **The test is the provider's own state, not a date Ringly computes**: an
-    invoice still open, still unpaid, with no further attempt scheduled, on a
-    business still inside its suspension window.
-  - **It changes who presses the button and nothing else.** The amount, the
-    invoice and the card are unchanged; [F6.11c](#f6-11c) still forbids a new period, and no
-    new charge of any kind arises ([F6.11b](#f6-11b)).
-  - **If [A4](#a4) shows the window already covers day 59, this never fires** and the
-    row above reads as it always did.
-
-- <a id="f6-21"></a>**F6.21** **The failure path is Ringly's because only Ringly knows the
-  consequence.** Stripe's dunning email can say a card was declined; it cannot
-  say service continues for seven days, that nothing has been deleted yet, or
-  what exactly is destroyed in 48 hours — those are Ringly's timelines and
-  Ringly's data. Stripe's own dunning and receipt-on-failure emails are therefore
-  **switched off**, or a business receives two differently-worded messages from
-  what appears to be one company.
+- <a id="f6-20a"></a>**F6.20a — Retired.** The number is left unused so references in earlier
+  documents and commits still resolve. It held Ringly's own retry loop for the
+  tail of suspension, which existed because Ringly needed one invoice pursued for
+  sixty days and the provider's automatic window ran out first. A paused
+  subscription's invoice is now pursued by the provider on its own schedule and
+  Ringly never attempts a card ([F6.11](#f6-11)).
+- <a id="f6-21"></a>**F6.21** **The provider sends the bill; Ringly says what it means for the
+  service.** Both are needed and neither can write the other's message.
+  - **The provider knows the money and nothing else.** It can say an invoice is
+    due, a card was declined, a retry is scheduled, a payment succeeded — and it
+    says all of those better than Ringly would, with a hosted payment page, a PDF
+    and correct tax. **Its dunning stays on**, because it is the thing that
+    actually collects.
+  - **Ringly knows the consequence.** That the number is still answering, or has
+    stopped; that settling restores it the same day; that the data goes in 60
+    days. None of that is visible to the provider, and a business told only that
+    its card failed does not know whether its phone is still being answered —
+    which is the only question it actually has.
+  - **The two never describe the same event twice.** Ringly sends nothing when a
+    payment fails and service continues ([F6.11](#f6-11)), because there is no service
+    change to report; the provider sends nothing when service stops, because it
+    does not know it has.
 
 ### F6a — The billing model, end to end
 
-**Activation.** A business signs up, gets a number, and places up to **five** test
-calls. To go live it must do three things — verify its email, confirm on its
-dashboard that a test call worked, and add a card — and then **press Activate**.
-That press charges the $100 and starts period 1; **nothing else does** ([F1.12b](#f1-12b)).
-At five test calls without activating, **the number stops answering** ([F1.13a](#f1-13a)).
-A business that never activates is removed entirely at day 10.
+**The trial.** A business signs up, verifies its email, connects its calendar and
+gives a card that Ringly checks works ([F1.12](#f1-12)). Only then is a number bought and
+an agent bound, and the trial starts. It runs for **a configured number of days
+or a configured number of calls, whichever comes first** ([F1.13](#f1-13)). Trial calls
+are free and the number is live and public throughout, so real bookings taken
+during it are real ([F1.13c](#f1-13c)).
 
-**A period.** Thirty calendar days from activation, **never extended for any
-reason** ([F6.11b](#f6-11b)). **$100 on the first day.** Usage
-accrues across the period on **productive calls only** — a booking, a reschedule
-that booked, or a cancellation of a real appointment. Enquiries, wrong numbers
-and dropped calls cost the business nothing, and who is calling never matters.
-**Usage is settled on the last day**, seconds summed across the whole period and
-rounded up to a minute once. The next period begins the following day with its
-own $100 — so the two charges never share a date, and a failing card fails one at
-a time.
+**The end of the trial is the start of billing, and nothing else is.** Whichever
+bound is reached first, the subscription's first period opens that day and the
+first invoice is raised ([F1.12b](#f1-12b)). There is no button and no separate activation
+fee.
 
-**The cap.** $500 per period including the fixed fee. Usage past it is still
-recorded, because Ringly needs its true cost, but the charge is clamped at
-settlement. The business is told it has hit the cap and that the rest of the
-period is on Ringly.
+**A period.** A month of the subscription, anchored on the day the trial ended.
+**One invoice, raised on the first day**, carrying **$100 for the month ahead and
+the metered usage of the month just gone** ([F6.1a](#f6-1a)). Usage accrues on
+**productive calls only** — a booking, a reschedule that booked, or a
+cancellation of a real appointment. Enquiries, wrong numbers and dropped calls
+cost the business nothing, and who is calling never matters. Seconds are summed
+across the whole month and rounded up to a minute once.
 
-**Settlement happens at exactly three moments:** a period ending normally, a
-cancellation window closing, or final removal for non-payment — where the
-clamped figure becomes the debt on the departure record, uncollected.
+**The cap.** $500 per invoice including the fixed fee, so **a month's usage is
+charged at most $400**. Usage past it is still recorded, because Ringly needs its
+true cost, but the charge is clamped when the invoice is drafted. The business is
+told on the day it crosses, not when it is billed ([F6.9b](#f6-9b)).
 
-**If payment fails.** One clock, started by whichever charge failed first.
+**Usage is totalled at exactly two moments** ([F6.9a](#f6-9a)): a period rolling over, and
+service stopping for any reason — which raises a final invoice for whatever the
+current period had accrued.
 
-| Day  |                                                                                                                                                                                                                 |
-| ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 0–7  | Service continues and **this usage is billable**. The period runs normally. Payment follow-up emails.                                                                                                           |
-| 7    | Suspended. Calls stop. **Number and all data retained.** The period keeps running — it is simply not being served                                                                                               |
-| 7–60 | **Nothing new is charged and nothing accrues.** Recoverable at any point; paying restores service that day, inside the same period if it is still running, otherwise on a fresh one ([F6.11b-iii](#f6-11b-iii)) |
-| ~58  | 48-hour final warning.                                                                                                                                                                                          |
-| 60   | Number released, data deleted, the paused period settled for what was served and the debt recorded permanently.                                                                                                 |
+**If payment fails.** The provider retries; Ringly does nothing.
 
-**Nothing new is billed for a suspended day, and no period is ever extended**
-([F6.11b](#f6-11b)). A business suspended for ten days of its period simply gets twenty days
-of service for its $100. **The lost days are the penalty for paying late**, and
-they are the only penalty — Ringly adds no fee, no interest, and no charge for
-the time it was not answering the phone.
+| Stage             |                                                                                                                                                                                          |
+| ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Decline           | **Service continues.** The provider emails and schedules a retry ([F6.11](#f6-11)). Usage keeps accruing and stays billable. Ringly says nothing — nothing about the service has changed |
+| Retries run       | Up to three attempts across a configured window. **This window is the grace period**; there is no second clock                                                                           |
+| Last retry fails  | **Service stops.** Agent unbound, subscription **paused**, final usage invoice raised, and **Ringly** emails to say what happened and what turns it back on ([F6.11b](#f6-11b))          |
+| Paused, days 0–60 | **No new fixed fee, no new period, no new usage.** Number and all data retained. Settling what is owed restores service that day ([F6.11c](#f6-11c))                                     |
+| ~58               | 48-hour final warning by email, itemising exactly what will be deleted                                                                                                                   |
+| 60                | **Full stop.** Subscription cancelled, number released, data deleted, amount owed recorded permanently ([F9.9](#f9-9))                                                                   |
 
-**If the business cancels.** The window is **7 days or the end of the period,
-whichever comes first**. Through it service continues untouched and usage stops
-being billed.
+**If the business cancels.** Self-serve, from its own dashboard, **effective
+immediately** ([F6.12](#f6-12)). The screen states the consequences before it confirms.
+Service stops that day, the subscription is paused, and a final invoice for this
+month's usage to date follows. **The $100 already paid for the month is not
+refunded**, and the same 60 days of dormancy begin.
 
-- **Revoke inside the window** and the period runs to its original end — and the
-  usage served during the window **becomes billable after all**. The concession
-  was for leaving.
-- **Let it close** and the period settles early: usage up to the request is
-  charged, **the $100 is not refunded**, service stops, and a closing statement
-  goes out. There is **no refund on this path at all** — the fee is never
-  returned and usage is only ever charged in arrears.
-- **Then 60 days dormant.** Number and every record retained. Come back inside it
-  and you resume on your own number with your own history, on a new period
-  charged $100 that day. After it, everything is deleted and a return is a
-  stranger.
+**The two exits converge.** Cancelling and running out of retries reach the same
+place by different routes: service stopped, subscription paused, final usage
+invoiced, 60 days to change your mind. **There is one dormancy clock and it
+starts the day service stops** ([F6.12b](#f6-12b)). Coming back inside it means the same
+number and the same history on a new period; a business that owes money must
+settle first ([F6.11c](#f6-11c)).
 
-**A business already behind on payment cannot cancel into free service** — it is
-treated as non-paying, and the suspension clock keeps running. **If a departing
-business's settlement charge fails**, it is recorded as owed and let go; there is
-nothing left to withhold.
-
-**Chargebacks** follow the non-payment path exactly.
+**Chargebacks** follow the non-payment path exactly ([F6.17](#f6-17)).
 
 ### F6b — One business, end to end
 
-_Illustrative, not normative. Where this and [F6](#f6--billing-and-payments) differ, [F6](#f6--billing-and-payments) wins._ A single
-worked life, because the rules above are individually simple and only get hard
-where they meet.
+_Illustrative, not normative. The trial bounds and retry window used here are
+example values; the real ones are configuration ([F6.15](#f6-15)). Where this and
+[F6](#f6--billing-and-payments) differ, [F6](#f6--billing-and-payments) wins._ A single worked life, because the rules above
+are individually simple and only get hard where they meet.
 
-**Signing up — no money moves.** A salon lands on the site, types its name and
+**Signing up — nothing is bought.** A salon lands on the site, types its name and
 address, and Ringly enriches it from Places and builds a service menu from its
-website. It signs in with Google, grants calendar access, and a number is bought
-and an agent bound behind the value screen. **The account is `unbilled`. It has
-been charged nothing and could walk away costing Ringly one number rental.**
+website. It signs in with Google and grants calendar access. **No number has been
+purchased**: the checklist is not yet green ([F1.9](#f1-9)).
 
-**Getting ready — still no money.** The checklist shows three tasks. The owner
-rings the number, hears the agent, books a test appointment, and ticks "it
-worked". They verify the email that arrived. They add a card, **which is stored,
-not charged** ([F6.2](#f6-2)). Three test calls used, two remaining ([F1.13](#f1-13)).
+**The checklist — still no money.** The owner verifies the contact email and adds
+a card. Ringly authorises the card to prove it works, **charging nothing**
+([F6.2](#f6-2)). All three items green.
 
-**Activation — the only thing that starts billing.** They press **Activate**.
-$100 is charged, `billing_status` becomes `active`, and **period 1 opens: day 1
-to day 30** ([F1.12a](#f1-12a)). The agent is already bound, so the number is live. From the
-next call onward, usage accrues on productive calls ([F6.6](#f6-6)).
+**3 March — the trial starts by itself.** Ringly buys the number, binds the agent,
+opens the subscription with a 14-day trial, and emails: your number is live, it
+is free until 17 March, and your first invoice is raised that day ([F1.12a](#f1-12a)). The
+salon takes 11 calls over the fortnight, books 4 appointments, and is charged
+nothing for any of it ([F1.13c](#f1-13c)). Two of those bookings are in April and they
+stand.
 
-**Period 1 runs.** 40 productive calls, 96 connected minutes. On **day 30**,
-usage settles: the seconds are summed across the period, rounded up once to 96
-minutes, priced at the rate pinned to this period, and charged. **Day 31: period
-2 opens and its $100 is charged.** Two charges, one day apart, never the same day
-([F6](#f6--billing-and-payments)).
+**17 March — billing begins, with no act by anyone.** The trial's last day
+arrives, the subscription's first period opens (17 March – 17 April), and
+**invoice 1 is raised: $100, no usage line** ([F6.1a](#f6-1a)). The provider sends it; it
+is paid. Ringly sends nothing — the invoice said everything there was to say
+([F1.13b](#f1-13b)).
 
-**Period 2, and the card expires.** On **day 31** — day 1 of period 2 — the $100
-declines.
+**Period 1 runs.** 40 productive calls, 96 connected minutes. Nothing is invoiced
+during the month; the meter simply runs.
 
-| Day   |                                                                                                                                                                             |                        |
-| ----- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------- |
-| 31    | Charge fails. **Grace starts.** Email: _your service is still running_                                                                                                      | Owes **$100**          |
-| 31–38 | **Served normally.** Usage accrues to period 2 and is billable. Follow-up emails count down                                                                                 | Owes $100              |
-| 38    | **Suspended.** Agent unbound, verified ([F1.12a-ii](#f1-12a-ii)). The number stops answering. **Period 2 keeps running to day 60** — it is not extended ([F6.11b](#f6-11b)) | Owes $100              |
-| 38–60 | Nothing accrues, nothing new is charged. Stripe keeps retrying; Ringly keeps emailing ([F6.11b-i](#f6-11b-i), -ii)                                                          | Owes $100              |
-| 60    | **Period 2 ends on time and settles** for the 8 days of usage it did serve, clamped. That invoice joins the debt. **No period 3 opens** ([F6.11c](#f6-11c))                 | Owes **$100 + 8 days** |
-| 60–91 | Suspended, debt **frozen**. It does not grow by a cent however long this lasts                                                                                              | Owes $100 + 8 days     |
-| ~89   | 48-hour deletion warning                                                                                                                                                    |                        |
+**17 April — invoice 2: $100 + 96 minutes of March–April usage.** One invoice,
+two lines, one collection attempt. Paid.
+
+**17 May — invoice 3 declines.** The card expired. $100 for the coming month plus
+$88 of April–May usage; $188 outstanding.
+
+| Date          |                                                                                                                                                              | Owes     |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------- |
+| 17 May        | Charge fails. **Service continues, untouched.** The provider emails and schedules a retry. **Ringly sends nothing** ([F6.21](#f6-21))                        | $188     |
+| 17–31 May     | **Served normally.** Usage accrues to period 3 and is billable. Two more retries fail; the provider emails each time                                         | $188     |
+| 31 May        | Last retry fails. **Agent unbound and verified, subscription paused, final invoice raised for 17–31 May usage ($41).** **Ringly** emails ([F6.11b](#f6-11b)) | **$229** |
+| 31 May–30 Jul | **Dormant.** Nothing new is charged and nothing accrues. Number and every record retained. The debt does not move                                            | $229     |
+| ~28 Jul       | 48-hour deletion warning — **and that the subscription can no longer be resumed after it** ([F9.3a](#f9-3a))                                                 | $229     |
 
 **Two endings.**
 
-**They pay on day 75.** The retry succeeds; the webhook arrives; nothing is
-outstanding (EDD [§2.10.6](Ringly_EDD_v3.md#2106-coming-back)). Ringly rebinds the agent and verifies it, and **the number
-answers again that day**. No period is open, so **period 3 opens on day 75 and
-its $100 is charged then** ([F6.10c](#f6-10c)) — two movements on the same day, both in the
-billing history. Period 3 runs to day 104. If _that_ $100 had declined, it would
-be a **fresh** failure with a fresh 7-day grace ([F6.11b-iv](#f6-11b-iv)), not a continuation.
+**They pay on 20 June.** Both invoices clear. The provider notifies Ringly,
+nothing is outstanding, and Ringly **resumes the subscription, rebinds the agent
+and verifies it** — the number answers again that day ([F6.11c](#f6-11c)). A new period
+opens 20 June, anchored there, and its **$100 is charged that day** ([F6.10c](#f6-10c)).
+The old 17th-of-the-month anchor is gone.
 
-**They never pay.** At **day 91** — 60 days from the day-31 decline — the salon
-is emailed, the number is released to Retell, and every Ringly row is deleted in
-the same transaction that writes a departure record showing **$100 + 8 days of
-usage** owed and never collected ([F9.9](#f9-9)). The customer records, appointments and
-call history go with it ([F9.1a-ii](#f9-1a-ii)).
+**They never pay.** At **30 July** — 60 days from the day service stopped — the
+salon is emailed, the **subscription is cancelled** ([F6.19](#f6-19)), both invoices are
+marked uncollectible, the number is released to the telephony provider, and every
+Ringly row is deleted in the same transaction that writes a departure record
+showing **$229** owed and never collected ([F9.9](#f9-9)). The customer records,
+appointments and call history go with it ([F9.1a-ii](#f9-1a-ii)).
 
-**What the salon paid across the whole story:** $100 for period 1, plus period
-1's usage, plus — on the paying ending — the $100 and 8 days it owed for period
-2, plus $100 for period 3. **It was never charged for a single day the phone was
-not being answered, and the debt it had to clear on day 75 was exactly the debt
-it had on day 60.**
+**What the salon paid across the whole story:** nothing for the trial, $100 for
+period 1, $100 + 96 minutes for period 2, and — on the paying ending — the $229 it
+owed plus $100 for the period opened on 20 June. **It was never charged for a
+single day its phone was not being answered**, and the debt it had to clear on 20
+June was exactly the debt it had on 31 May.
 
 **Who does what** is one table, in [F7](#f7--email) — every scenario, who invoices and who
 writes the words. **The teardown order** is [F6.19](#f6-19), with the reasoning for each
@@ -1285,52 +1229,51 @@ position at EDD [§2.13.4](Ringly_EDD_v3.md#2134-teardown-in-order).
 _Normative. Every one of these should hold for every business in every state; a
 change that breaks one is a change to the commercial model, not a detail._
 
-| #                     | Invariant                                                                                                                                                                                                                                                                          | Exceptions                                                                                                                                            |
-| --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| <a id="i1"></a>**I1** | **A billing period is 30 calendar days and is never extended** — not by suspension, not by grace, not by anything ([F6.11b](#f6-11b))                                                                                                                                              | **One:** cancellation settles the final period **early** ([F6.12b](#f6-12b)). Periods can be cut short; none is ever lengthened                       |
-| <a id="i2"></a>**I2** | **At most one period is open at a time, and none opens while the business owes anything** ([F6.11c](#f6-11c), [F6.11f](#f6-11f))                                                                                                                                                   | None                                                                                                                                                  |
-| <a id="i3"></a>**I3** | **A period's total is clamped to $500 inclusive of the fee ([F6.9](#f6-9)), and what is owed is that total less anything already collected.** Because only one period can ever be outstanding ([I2](#i2)), **$500 is the ceiling on what any business can owe** — exclusive of tax | None                                                                                                                                                  |
-| <a id="i4"></a>**I4** | **Nothing is deleted without a 48-hour warning email** ([F9.3a](#f9-3a))                                                                                                                                                                                                           | None                                                                                                                                                  |
-| <a id="i5"></a>**I5** | **No _new_ charge ever arises while a business is suspended** — no fee, no usage, no period ([F6.11b](#f6-11b), [F6.11c](#f6-11c)). Its debt is frozen at what it owed when service stopped                                                                                        | **Not the same as "pays only for days served":** the fee already taken for the current period covers days it will not now receive ([F6.11b](#f6-11b)) |
-| <a id="i6"></a>**I6** | **The $100 is never prorated or refunded** ([F6.11e](#f6-11e), [F6.12b](#f6-12b))                                                                                                                                                                                                  | Goodwill refunds, by hand, which no rule produces ([F5.9](#f5-9))                                                                                     |
+| #                     | Invariant                                                                                                                                                                   | Exceptions                                                                                                                                               |
+| --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| <a id="i1"></a>**I1** | **A billing period is a month of the subscription and is never extended** ([F6](#f6--billing-and-payments)). Its boundary is the provider's, never Ringly's ([N5.2](#n5-2)) | **One:** service stopping ends the current period **early** ([F6.9a](#f6-9a)). Periods can be cut short; none is ever lengthened                         |
+| <a id="i2"></a>**I2** | **At most one period is open at a time, and none opens while the business owes anything or is paused** ([F6.11b](#f6-11b), [F6.11f](#f6-11f))                               | None                                                                                                                                                     |
+| <a id="i3"></a>**I3** | **No invoice ever exceeds $500, and no single month's usage is ever charged above $400** ([F6.9](#f6-9))                                                                    | None — but a business can hold **two** unpaid invoices at once ([I3a](#i3a))                                                                             |
+| <a id="i4"></a>**I4** | **Nothing is deleted without a 48-hour warning email** ([F9.3a](#f9-3a))                                                                                                    | None                                                                                                                                                     |
+| <a id="i5"></a>**I5** | **No new charge arises while a business is paused** — no fee, no usage, no period ([F6.11b](#f6-11b)). Its debt is frozen at what it owed when service stopped              | The final usage invoice is raised **as service stops**, not during the pause ([F6.9a](#f6-9a)) — the last act of the old state, not the first of the new |
+| <a id="i6"></a>**I6** | **The $100 is never prorated or refunded** ([F6.11e](#f6-11e))                                                                                                              | Goodwill refunds, by hand, which no rule produces ([F5.9](#f5-9))                                                                                        |
 
-**The two failure cases reach different ceilings**, because they differ on
-whether the fixed fee was ever collected:
-
-|                                        | Owed if they never pay                                                                                                              | Ceiling  |
-| -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- | -------- |
-| **Case (a)** — the fee declined        | `min($100 + usage, $500)`. The fee was invoiced and never collected, so the whole clamped total is owed                             | **$500** |
-| **Case (b)** — the settlement declined | `min($100 + usage, $500) − $100` = `min(usage, $400)`. The fee was collected at period start, so only the usage half is outstanding | **$400** |
-
-**$500 is therefore the ceiling across every scenario**, and only case (a)
-reaches it. **Tax sits outside it** ([F6.18](#f6-18)): the cap clamps Ringly's own charges,
-and Stripe Tax is added on top at invoice time.
-
-**The departure record holds the figure exclusive of tax** ([F9.9](#f9-9)). Tax was never
-Ringly's money and, on a debt that is never collected, was never remitted either;
-including it would overstate what the business owes Ringly by an amount Ringly
-would never have kept.
+- <a id="i3a"></a>**I3a — The ceiling on what any business can owe is $900, and it takes a
+  specific sequence to reach.** A business holds at most two unpaid invoices
+  ([F6.11a](#f6-11a)): the periodic one that declined, clamped at **$500**, and the final
+  usage invoice raised when service stopped, clamped at **$400**. Both are needed
+  and neither is avoidable — the first is the debt that stopped the service, the
+  second is the service given while the provider was still retrying.
+  - **It is higher than the old model's $500**, and knowingly so. The old ceiling
+    held because only one period could ever be outstanding; a retry window during
+    which service continues necessarily produces a second, smaller bill.
+  - **Reaching it requires a heavy user whose card fails and who keeps taking
+    calls right through the retry window.** The second invoice is bounded by that
+    window, not by a month, so in practice it is a fraction of $400.
+  - **Tax sits outside it** ([F6.18](#f6-18)), and the departure record holds the figure
+    exclusive of tax ([F9.9](#f9-9)) — tax was never Ringly's money and, on a debt never
+    collected, was never remitted either.
 
 **Three things that are _not_ invariants**, listed because they read like they
 should be:
 
-- **"Everything is deleted at 60 days."** There are **three** deletion clocks and
-  they start from different events: **10 days** for a business that never
-  activated ([F9.1](#f9-1), and the operator can pause it — [F9.1b](#f9-1b)); **60 days from the
-  first failed charge** for non-payment and chargebacks ([F9.3](#f9-3)); **60 days after
-  service stops** for a business that cancelled, which is itself up to 7 days
-  after the request ([F6.12e](#f6-12e)) — so up to 67 days from that request.
-- **"Free service never exceeds 7 days."** It is bounded at 7 in the two places
-  that look like concessions — the grace period ([F6.11](#f6-11)) and the cancellation
-  window ([F6.12](#f6-12)) — but **the $500 cap is deliberately unbounded within a period**
-  ([F6.9b](#f6-9b)). A business that reaches the cap on day 6 is served free for the
-  remaining 24 days, and Ringly absorbs it on purpose. That is the single largest
-  giveaway in the model and the one worth watching ([R8](Ringly_EDD_v3.md#r8)).
-- **"Grace always costs the business nothing."** Grace usage **is billed** when a
-  period is open to bill it to, which is the ordinary case; it is free only when
-  the failed charge was itself a settlement, because that period closed the same
-  day ([F6.11c-ii](#f6-11c-ii)). **The asymmetry is known and accepted** — see [F6.11c-ii](#f6-11c-ii) for
-  why the two ways of removing it are both worse than living with it.
+- **"A business always gets 60 days."** It does — but the clock starts **when
+  service stops**, not when a payment fails or a cancellation is requested
+  ([F6.12b](#f6-12b)). A business whose retries run for two weeks is deleted roughly 74 days
+  after its first decline. **There is now exactly one deletion clock**, which is
+  the single largest simplification in this model: the old three — 10 days
+  unactivated, 60 from a failed charge, 60 after a cancellation window closed —
+  are all gone.
+- **"Free service never exceeds the trial."** The trial is bounded twice
+  ([F1.13](#f1-13)), and the retry window is bounded by configuration ([F6.11](#f6-11)) — but **the
+  $500 cap is deliberately unbounded within a month** ([F6.9b](#f6-9b)). A business that
+  reaches the cap on day 6 is served free for the rest of the month, and Ringly
+  absorbs it on purpose. That is the single largest giveaway in the model and the
+  one worth watching ([R8](Ringly_EDD_v3.md#r8)).
+- **"Nothing is billed once payment fails."** Usage served while the provider is
+  still retrying **is billed**, on the final invoice ([F6.9a](#f6-9a)). Service given is
+  service billed, and the retry window is service. What stops at the pause is the
+  fixed fee, not the meter's honesty about what already happened.
 
 ### F7 — Email
 
