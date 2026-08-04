@@ -292,7 +292,8 @@ businesses(id pk, name, address, timezone, website, business_type,
            test_calls_used, created_at)
 
 billing_events(id pk, business_id fk, kind, amount_cents null,
-               provider_ref null, period_id fk null, occurred_at)
+               provider_ref null, idempotency_key null,
+               period_id fk null, occurred_at)
 
 services(id pk, business_id fk, name, description, position, active,
          deleted_at, created_at)
@@ -505,18 +506,29 @@ T2): `fixed_fee_invoiced`, `usage_invoiced`. The webhook handler
 | The `service_restored` email's reason key ([§2.11.4](#2114-reason-keys-constructed-so-two-workers-agree))        | The id of the payment that cleared the debt                                                                                                            |
 | Repairing a crash between charge and record ([§2.5.2.3](#2523-what-a-crash-between-any-two-steps-leaves-behind)) | The `activation_charge_attempted` row, which is what makes the window repairable from Ringly's own data                                                |
 
-**And two things enforced by its indexes rather than queried** — which is the part
-that would be lost if the table were only history:
+**And three things enforced by its indexes rather than queried** — which is the
+part that would be lost if the table were only history:
 
 ```sql
 CREATE UNIQUE INDEX billing_events_provider_ref_unique
-    ON billing_events (provider_ref) WHERE provider_ref IS NOT NULL;
+    ON billing_events (provider_ref)    WHERE provider_ref    IS NOT NULL;
+
+CREATE UNIQUE INDEX billing_events_idempotency_key_unique
+    ON billing_events (idempotency_key) WHERE idempotency_key IS NOT NULL;
 ```
 
-**One row per Stripe object, ever**, so a retried charge cannot become a second
-charge ([§2.10.9](#2109-the-stripe-object-lifecycle-end-to-end)) — plus the
-per-period partial indexes that make one fixed fee and one settlement per period
-structurally impossible to exceed ([§2.10.13](#21013-what-24-must-gain)).
+**One row per payment-provider object, ever**, so a retried charge cannot become a
+second charge ([§2.10.9](#2109-the-stripe-object-lifecycle-end-to-end)). **One row
+per idempotency key**, so a repeated Activate press cannot become a second attempt
+([§2.5.2.2a](#2522a-the-three-rows-an-activation-can-produce)). And the per-period
+partial indexes that make one fixed fee and one settlement per period structurally
+impossible to exceed ([§2.10.13](#21013-what-24-must-gain)).
+
+**The two columns are two namespaces and are never mixed.** `provider_ref` is an
+id Stripe minted; `idempotency_key` is a string Ringly minted, and it is the only
+identifier that exists before Stripe has been called at all — which is exactly the
+window [§2.5.2.3](#2523-what-a-crash-between-any-two-steps-leaves-behind) has to
+repair.
 
 **Why Stripe is not enough on its own** — [N10.7](Ringly_PRD_v3.md#n10-7) states
 it: Stripe holds every payment, and holds none of the reasoning. It does not know
@@ -1144,14 +1156,18 @@ needs to know whether its request arrived.
 
 ```
 1  (sync, local)   INSERT INTO billing_events                              ← the intent
-                     (business_id, kind, amount_cents, provider_ref, occurred_at)
+                     (business_id, kind, amount_cents, idempotency_key, occurred_at)
                    VALUES ($1, 'activation_charge_attempted',
                            $policy.fixed_fee_cents, $idem, now())
-                   ON CONFLICT (provider_ref) DO NOTHING
+                   ON CONFLICT (idempotency_key) DO NOTHING
 2  (sync, remote)  PaymentIntent: off_session, confirm, Idempotency-Key: $idem,
                    metadata { business_id, purpose: 'activation' }
-   ├─ declined        → INSERT billing_events 'activation_charge_failed'  → respond
-   ├─ key in use      → respond 'in_progress'
+   ├─ declined        → INSERT billing_events 'activation_charge_failed'
+   │                       (provider_ref = payment_intent.id,
+   │                        amount_cents = policy.fixed_fee_cents,
+   │                        occurred_at  = payment_intent.created)
+   │                     ON CONFLICT (provider_ref) DO NOTHING       → respond
+   ├─ key in use      → respond 'in_progress'                        (no row)
    └─ succeeded       ↓
 3  (sync, local)   ── ONE TRANSACTION ────────────────────────────────────
                    INSERT INTO billing_periods (business_id, policy_id,
@@ -1201,11 +1217,22 @@ not in the application** — the same choice as [§2.6.4](#264-fail-closed-concr
 
 ```sql
 CREATE UNIQUE INDEX billing_events_provider_ref_unique
-    ON billing_events (provider_ref) WHERE provider_ref IS NOT NULL;
+    ON billing_events (provider_ref)     WHERE provider_ref     IS NOT NULL;
+
+CREATE UNIQUE INDEX billing_events_idempotency_key_unique
+    ON billing_events (idempotency_key)  WHERE idempotency_key  IS NOT NULL;
 
 ALTER TABLE billing_periods ADD CONSTRAINT one_period_per_start
     UNIQUE (business_id, starts_on);
 ```
+
+**Two columns rather than one, because they are two different namespaces.**
+`provider_ref` holds an id the payment provider minted; `idempotency_key` holds a
+string Ringly minted. An earlier revision put the key in `provider_ref` and relied
+on `activate:v1:…` never colliding with `pi_…` — true, and true by luck rather
+than by construction. Separating them makes each unique index mean one thing, and
+makes the attempt row addressable by the only identifier that exists before the
+provider has been called at all.
 
 **`starts_on` is the charge's date rendered in the business's timezone ([N5.2](Ringly_PRD_v3.md#n5-2)),
 not today's date.** This is the detail that makes the second constraint work as
@@ -1221,6 +1248,51 @@ four attempts, about five seconds — after which the handler returns and the po
 keeps saying `in_progress`. It is short because the failures it covers are
 transient local ones; anything longer is a fault that needs the repair paths
 below, not a fifth attempt.
+
+##### 2.5.2.2a The three rows an activation can produce
+
+One press writes **at most three** ledger rows, and which ones depend only on how
+far it got. Stated in full because the earlier revision specified the first and
+the third and left the second to be inferred.
+
+| Row                           | Written at                      | `provider_ref`      | `idempotency_key` | `amount_cents`              | `period_id`          |
+| ----------------------------- | ------------------------------- | ------------------- | ----------------- | --------------------------- | -------------------- |
+| `activation_charge_attempted` | Step 1, before Stripe is called | — none yet          | `$idem`           | the fee about to be charged | — no period exists   |
+| `activation_charge_failed`    | Step 2, on decline              | `payment_intent.id` | —                 | the fee that was refused    | — no period exists   |
+| `activation_charge`           | Step 3, inside the transaction  | `payment_intent.id` | —                 | the fee charged             | the period it opened |
+
+**`period_id` is null on the first two because a period does not exist yet**, and
+[F6.1](Ringly_PRD_v3.md#f6-1) makes the first charge _period 1's_ — so a period
+that existed before its charge cleared would be a period nobody paid for. That is
+why the column is nullable in [§2.4](#24-data-model)/005 rather than merely
+convenient.
+
+**A repeated decline of the same card writes one row, not many.** The idempotency
+key includes the payment-method id ([§2.5.5](#255-decisions-this-section-makes-and-one-correction)
+decision 4), so pressing Activate again with the same card re-issues the same key,
+Stripe returns **the same declined PaymentIntent**, and
+`ON CONFLICT (provider_ref) DO NOTHING` collapses it. Trying a _different_ card is
+a new key, a new PaymentIntent, and therefore a second `activation_charge_failed`
+row — which is correct: [F6.14](Ringly_PRD_v3.md#f6-14) wants each failure
+recorded, and two cards being refused is two failures.
+
+**`activation_charge_failed` and `activation_charge` can never both exist for one
+PaymentIntent**, because they key on the same `provider_ref` under one unique
+index and a PaymentIntent either succeeded or it did not. The database enforces
+what would otherwise be a rule somebody has to remember.
+
+**`occurred_at` is the provider's timestamp wherever there is one** — `created` on
+the PaymentIntent for rows two and three — and Ringly's clock only for row one,
+which happens before the provider knows anything. A repair running a day later
+therefore writes the same instant the original would have
+([§2.5.2.3](#2523-what-a-crash-between-any-two-steps-leaves-behind)), which is the
+same argument that fixes `starts_on` to the charge's date rather than the repair's.
+
+**What is deliberately not written.** A press that arrives while an identical one
+is in flight responds `in_progress` and writes nothing — the attempt row already
+exists and says everything a second one would. And a press by a business whose
+checklist is incomplete never reaches step 1 at all, so it leaves no trace: the
+ledger records charges attempted, not buttons pressed.
 
 #### 2.5.2.3 What a crash between any two steps leaves behind
 
