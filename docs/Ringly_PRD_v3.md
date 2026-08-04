@@ -49,7 +49,7 @@ served at launch, behind an interface built so others can follow.
 | Hours      | Set at onboarding                    | Editable; timezone stays an operator action ([F3.5](#f3-5)–[F3.6](#f3-6))                                                        |
 | Customers  | A messaging channel was planned      | **None, ever.** The call is the only contact ([§1.4](#14-scope))                                                                 |
 | Analytics  | None                                 | Per-business dashboard, plus an operator cost/revenue dashboard                                                                  |
-| Money      | None                                 | $100/30 days in advance, usage in arrears, $500 cap, card on file                                                                |
+| Money      | None                                 | Free trial, then $100/month in advance with usage in arrears on one invoice, $500 cap, card on file                              |
 | Email      | None                                 | Billing and stats emails **to the business**                                                                                     |
 | Verticals  | Salons, clinics, tax offices         | **No healthcare** — no BAA, so clinics are out ([§1.4](#14-scope))                                                               |
 | Hosting    | Assumed Vercel                       | **Undecided** — Vercel or Cloud Run; design stays portable ([N8](#n8--hosting-undecided-and-the-application-must-stay-portable)) |
@@ -487,8 +487,8 @@ _(Carried from v2; renumbered. v2 FR1–FR10 map to [F1.1](#f1-1)–F1.10.)_
 
 ### F4 — Scheduling integrations
 
-- <a id="f4-1"></a>**F4.1** **A connected calendar is mandatory.** A business cannot activate, and
-  cannot take bookings, without one. Ringly refuses to book a time it has not
+- <a id="f4-1"></a>**F4.1** **A connected calendar is mandatory.** A business cannot be
+  provisioned ([F1.9](#f1-9)), and cannot take bookings, without one. Ringly refuses to book a time it has not
   verified ([F2.7](#f2-7)), so a business with no calendar has no product.
 - <a id="f4-2"></a>**F4.2** **Google Calendar is the only supported provider at v3 launch**, and
   is the default. Businesses on other systems are not served yet.
@@ -596,17 +596,22 @@ needs — the full list is F5.15.
     **in progress** · paid · failed · refunded. **"Refunded" is only ever a
     goodwill gesture made by hand** — no rule in this document produces a refund,
     and none should be built.
-  - **A period during which service was suspended says so in its row** ([F6.11b](#f6-11b)).
-    Its dates are still exactly 30 days, so nothing looks wrong; what the label
-    adds is that the business was not served for some of them and was **not
-    charged for those days**. Without it, a period with low usage and a full $100
-    looks like a mistake.
+  - **A period cut short by service stopping says so in its row** ([F6.9a](#f6-9a)).
+    Without the label, a period with a full $100 and a fortnight of usage looks
+    like a mistake. What it adds is that the business stopped being served
+    part-way through and was **not charged for the days after that** — and that
+    the fee is not refunded ([F6.11e](#f6-11e)).
+  - **A business can hold two unpaid invoices at once** ([I3a](#i3a)), and the history
+    shows them as two rows, not one total. They were raised for different things
+    on different days and the provider chases them separately.
   - Minutes and money are different units, so nothing here is charted: a single
     plot carrying both would need two axes, which is the one construction that
     reliably misleads.
 - <a id="f5-10"></a>**F5.10** **The current period's row is live** and carries what a business
   actually asks: usage accrued so far, the cap and how close they are to it, and
-  **the date of the next charge**. Every other row is settled and final.
+  **the date of the next invoice and what it is expected to carry** — this
+  month's usage plus next month's fee ([F6.1a](#f6-1a)). Every other row is settled and
+  final.
 
 **Everything else**
 
@@ -623,10 +628,11 @@ needs — the full list is F5.15.
 - <a id="f5-14"></a>**F5.14** Dashboard queries return in ≤ 500ms p95 regardless of tenant size,
   and their cost must not grow with total call volume across all tenants.
 - <a id="f5-15"></a>**F5.15** From the dashboard a business can: manage its service catalogue and
-  opening hours ([F3.1](#f3-1), [F3.5](#f3-5)), confirm its test call succeeded ([F1.12](#f1-12)), set its
-  own booking horizons ([F2.9](#f2-9)), reconnect a calendar after a
-  failure ([F1.7b](#f1-7b)), and opt out of the stats digest ([F7.4](#f7-4)). **It cannot change its timezone** ([F3.6](#f3-6)) or cancel
-  its account ([F9.2](#f9-2)); both go through Ringly.
+  opening hours ([F3.1](#f3-1), [F3.5](#f3-5)), set its own booking horizons ([F2.9](#f2-9)),
+  reconnect a calendar after a failure ([F1.7b](#f1-7b)), update its payment method,
+  opt out of the stats digest ([F7.4](#f7-4)), **cancel its service** ([F6.12](#f6-12), [F9.2](#f9-2)),
+  and **resume it after a pause** ([F6.11c](#f6-11c)). **It cannot change its timezone**
+  ([F3.6](#f3-6)); that stays an operator action.
 - <a id="f5-16"></a>**F5.16** **The dashboard states how fresh it is, on the page, always.**
   - **A nightly rollup is the right grain for every call metric** ([F5.3](#f5-3)).
     These are questions about shape and trend — how many calls, when they
@@ -652,8 +658,9 @@ needs — the full list is F5.15.
   - **Settled** — money that moved. Closed periods, completed charges.
   - **Accruing** — the current period's usage and running total, correct as of
     now and certain to change ([F5.10](#f5-10)).
-  - **Outstanding** — invoiced and not paid, whether the business is in grace or
-    suspended ([F6.11b-i](#f6-11b-i)).
+  - **Outstanding** — invoiced and not paid, whether the provider is still
+    retrying or the business is already paused ([F6.11](#f6-11), [F6.11b](#f6-11b)). Where there
+    are two, both are shown ([I3a](#i3a)).
 
   **The same rule governs the operator dashboard** ([F8.8](#f8-8)), where it matters more:
   revenue there counts only money actually received, and a figure that quietly
@@ -663,10 +670,12 @@ needs — the full list is F5.15.
   always.** A business must be able to answer "is my phone being answered right
   now?" without ringing it. Three facts, in plain language:
   - **whether the number is live** — bound to an agent and taking calls, or not
-    ([F1.13a](#f1-13a), [F9.3](#f9-3)) — and, when it is not, **why, and exactly what turns it back
-    on**: activate ([F1.13b](#f1-13b)), or settle what is owed ([F6.10b](#f6-10b));
+    ([F9.3](#f9-3)) — and, when it is not, **why, and exactly what turns it back on**:
+    settle what is owed, or resume the service ([F6.11c](#f6-11c));
   - **the number itself**, since it is the business's public identity;
-  - **test calls remaining**, before activation only ([F1.13](#f1-13)).
+  - **where the business is in its trial, while one is running** ([F1.13](#f1-13)):
+    **days left and calls left, both**, because either can end it and a business
+    shown only one of them is being told half the truth ([F1.12b](#f1-12b)).
 
   **This is the one thing on the dashboard that is never stale**: it is read from
   current state, not from the rollup, and it is the first thing on the page. A
@@ -818,6 +827,9 @@ bad fails one invoice rather than two.
   email; cancellation is now self-serve ([F6.12](#f6-12), [F9.2](#f9-2)).
 - <a id="f6-10b"></a>**F6.10b — Retired.** Superseded by [F6.11c](#f6-11c), which states restoration once
   rather than twice.
+- <a id="f6-10b-i"></a>**F6.10b-i — Retired.** Folded into [F6.11c-i](#f6-11c-i), which carries the daily
+  reconciliation unchanged. The number is left unused so references in earlier
+  documents and commits still resolve.
 - <a id="f6-10c"></a>**F6.10c** **A period never resumes; coming back always opens a new one, dated
   from the day service resumes.** Whether the business left by cancelling or by
   not paying, the subscription was paused and the month it was in ended when
@@ -880,6 +892,19 @@ bad fails one invoice rather than two.
     failed; it does not know the agent has been unbound, that the number is
     retained, that settling restores service the same day, or that everything is
     deleted in 60 days ([F6.21](#f6-21)).
+- <a id="f6-11b-i"></a>**F6.11b-i — Retired.** It divided suspension into "the meter pauses, the
+  collection does not", because Ringly ran both and the two settings fought each
+  other. Pausing the subscription now does exactly that split by itself
+  ([F6.11b](#f6-11b)): no new invoice, and the open one still pursued by the provider.
+- <a id="f6-11b-ii"></a>**F6.11b-ii — Retired.** It held the rule that Ringly wrote every suspension
+  email and the provider's dunning stayed off. The dunning is back on and the
+  provider writes the money half ([F6.21](#f6-21)).
+- <a id="f6-11b-iii"></a>**F6.11b-iii — Retired.** It decided whether a restored business landed back
+  inside its old period or opened a new one. A restored business always opens a
+  new one ([F6.10c](#f6-10c)), so there is no longer a question to answer.
+- <a id="f6-11b-iv"></a>**F6.11b-iv — Retired.** It gave a fresh grace clock to a business that failed
+  again immediately after being restored. There is no Ringly-run grace clock; the
+  provider's retry schedule starts over on its own ([F6.11](#f6-11)).
 - <a id="f6-11c"></a>**F6.11c** **Settling what is owed restores service, automatically and the
   same day.** The provider notifies Ringly that the invoice is paid, and Ringly
   resumes the subscription, rebinds the agent with a verified read-back, opens a
@@ -1540,25 +1565,31 @@ what is destroyed in forty-eight hours.
 
 - <a id="f8-6"></a>**F8.6** **Operator alerts** are the set in [F7.13](#f7-13) and no other: a business
   reaching its cap ([F6.9b](#f6-9b), with cost-to-serve and margin), a payment failure,
-  a calendar unreachable ([F2.7](#f2-7)), an activation stuck ([F1.13a](#f1-13a)), **an unactivated
-  business approaching deletion** ([F8.6a](#f8-6a)), **a number that would not release**
-  ([F7.13a](#f7-13a), [F1.12a-ii](#f1-12a-ii)), and a business deleted ([F9.3c](#f9-3c)).
+  a calendar unreachable ([F2.7](#f2-7)), **service stopped for non-payment**
+  ([F6.11b](#f6-11b)), **a failing trial** ([F8.6a](#f8-6a)), **provisioning stuck**
+  ([F1.12a-i](#f1-12a-i)), **a number that would not release** ([F7.13a](#f7-13a), [F1.12a-ii](#f1-12a-ii)),
+  and a business deleted ([F9.3c](#f9-3c)).
   Delivered by **email** initially. _Moving operator alerting to Slack is
   deferred ([§1.9](#19-deferred))._
-- <a id="f8-6a"></a>**F8.6a** **An unactivated business is raised to the operator before its 10-day
-  clock runs out**, whether or not it is stuck ([F1.13a](#f1-13a)). The two conditions are
-  different and both need a human:
-  - **Stuck** means it _cannot_ activate — no test call ever worked — and Ringly
-    is the blocker.
-  - **Expiring** means it _has not_ activated, for any reason, and is about to be
-    deleted with its number released. It may be a business that got busy, hit a
-    problem Ringly never saw, or is one prompt away from paying.
-  - **This is the last moment anything can be done.** After deletion the number
-    is gone to the carrier and the account is a stranger ([F9.4b](#f9-4b)) — an outcome
-    worth one email to avoid, given a signup already cost Ringly enrichment,
-    a number, and up to five calls.
-  - **Timed to leave room to act**, not fired at the deadline. The operator can
-    then reach out, pause the clock ([F9.1b](#f9-1b)), or let it lapse deliberately.
+- <a id="f8-6a"></a>**F8.6a** **A trial that is going badly is raised to the operator, and the
+  test is derived rather than self-reported**: a business inside its trial that
+  has taken calls and booked nothing ([F1.13d](#f1-13d)).
+  - **It replaces the old "activation stuck" alert**, which fired when a business
+    used its five test calls without ticking a box saying one of them worked.
+    That depended on the business telling Ringly, and the business least likely
+    to tell Ringly anything is the one having the worst time.
+  - **Calls but no bookings is the shape of a broken agent** — a mishearing
+    prompt, a wrong service menu, a calendar that refuses every slot ([F2.7](#f2-7)) —
+    and it is visible without asking anyone. It also catches the business that
+    never noticed anything was wrong.
+  - **It is a soft signal and will sometimes be wrong.** A tax office in a quiet
+    fortnight is not broken. That is acceptable: the cost of a false positive is
+    one look at a dashboard, and the cost of a false negative is a business that
+    converts to paying for something that never worked and disputes the charge.
+  - **This is the last useful moment.** After the trial converts, the same
+    business is a paying customer with a grievance; before it, a fault is
+    something Ringly can fix and hand back the days for ([F9.1c](#f9-1c)).
+  - **Timed to leave room to act**, not fired on the trial's last day.
 - <a id="f8-7"></a>**F8.7** **The operator dashboard follows the same freshness rule as the
   business one** ([F5.16](#f5-16)): served from the nightly rollup, complete to a stated
   date, with **median duration the one live figure and labelled as such**. One
@@ -1573,18 +1604,29 @@ what is destroyed in forty-eight hours.
     reliability ([F8.12](#f8-12), [F8.9](#f8-9), [F8.3](#f8-3)). They exist to prompt action today, and a
     business whose calendar broke this morning must not first appear tomorrow.
 - <a id="f8-8"></a>**F8.8** Figures are reported **by calendar month** (June, July, August), not by
-  each business's 30-day period. No two businesses share a period, so per-period
-  reporting cannot be summed into anything meaningful for accounting. Only
+  each business's own subscription month. Businesses are anchored on different
+  days ([F6](#f6--billing-and-payments)), so per-period reporting cannot be summed into anything
+  meaningful for accounting. Only
   **money actually received into Stripe** counts as revenue, and only **real
   incurred cost** counts as cost — neither is accrued or projected.
 - <a id="f8-9"></a>**F8.9** Shows **rented phone numbers that are not earning**: numbers held for
-  businesses that never activated, are suspended, or are otherwise not paying the
-  $100 minimum. Every such number is a standing cost with no revenue against it.
-- <a id="f8-10"></a>**F8.10** The operator **sets, clears, and marks revoked a business's cancelled
-  status** here ([F6.10a](#f6-10a)), since both cancelling and revoking arrive by email
-  ([F9.2](#f9-2)). It is the control that stops future charges, and the only place it
-  exists. **Revoked is a distinct outcome from cleared**, because revoking inside
-  the window makes the usage served during it billable again ([F6.12a](#f6-12a)).
+  businesses in a trial, paused after non-payment, or dormant after cancelling
+  ([F9.3](#f9-3)). Every such number is a standing cost with no revenue against it — and
+  since a number is now bought only once a working card is on file ([F1.9](#f1-9)),
+  every entry here is a business that got at least that far.
+- <a id="f8-10"></a>**F8.10** **The operator has no cancellation control, and that is the change.**
+  Cancelling is the business's own act, taken from its own dashboard and
+  effective immediately ([F6.12](#f6-12), [F9.2](#f9-2)); there is no flag for a human to set,
+  clear or revoke, because there is no window in which any of those would mean
+  anything.
+  - **What the operator can still do is pause the dormancy clock** ([F9.1b](#f9-1b),
+    [F8.13](#f8-13)) and **extend a trial** ([F9.1c](#f9-1c)). Both are concessions, not
+    corrections: neither changes what a business was charged.
+  - **The cap-cycling worry the old control existed to answer is answered
+    differently.** A business that cancels and returns opens a new period at full
+    price on the day it returns ([F6.10c](#f6-10c)), so cycling buys a fresh $500 ceiling
+    at the cost of a fresh $100 fee and a gap in service. It is no longer a way to
+    get something for nothing, which is what made a human in the loop necessary.
 - <a id="f8-11"></a>**F8.11** Shows the same **outcome definitions** the business sees ([F5.7](#f5-7)), so
   both sides of a conversation about the numbers are reading the same
   definitions.
@@ -1594,26 +1636,25 @@ what is destroyed in forty-eight hours.
 
   **Broken now — a customer is being turned away as you read this**
 
-  | Condition            | Trigger                                                                                          | Operator action                                                                                                          |
-  | -------------------- | ------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------ |
-  | **Bookings failing** | An open calendar incident ([F2.7](#f2-7))                                                        | Get them to reconnect the calendar; every caller meanwhile is refused                                                    |
-  | **Activation stuck** | 5 test calls used, never confirmed ([F1.13a](#f1-13a)) — **their number is no longer answering** | Investigate; then reset the allowance and rebind ([F9.1c](#f9-1c)). They are waiting on Ringly and are not being charged |
+  | Condition              | Trigger                                                                         | Operator action                                                                                                       |
+  | ---------------------- | ------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+  | **Bookings failing**   | An open calendar incident ([F2.7](#f2-7))                                       | Get them to reconnect the calendar; every caller meanwhile is refused                                                 |
+  | **Provisioning stuck** | The number never came up after the checklist went green ([F1.12a-i](#f1-12a-i)) | The business is waiting on Ringly and its trial clock has not started ([F1.13](#f1-13)). Nothing else will surface it |
 
   **About to lose the business**
 
-  | Condition                    | Trigger                                      | Operator action                                             |
-  | ---------------------------- | -------------------------------------------- | ----------------------------------------------------------- |
-  | **Deletion imminent**        | Inside the 48-hour warning ([F9.3a](#f9-3a)) | Last chance; number and data go permanently at the deadline |
-  | **Suspended**                | Day 7+ of non-payment ([F9.3](#f9-3))        | Their phone is not being answered; recoverable until day 60 |
-  | **Cancellation window open** | Requested, not yet settled ([F6.12](#f6-12)) | They can still revoke; the window is short                  |
-  | **Unactivated, expiring**    | Approaching day 10 ([F9.1](#f9-1))           | Pause the clock ([F9.1b](#f9-1b)) or let it lapse           |
-  | **Payment failed**           | Inside the 7-day grace ([F6.11](#f6-11))     | Service still running; Stripe is retrying                   |
+  | Condition             | Trigger                                                     | Operator action                                                                          |
+  | --------------------- | ----------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+  | **Deletion imminent** | Inside the 48-hour warning ([F9.3a](#f9-3a))                | Last chance; number, data and subscription go permanently at the deadline                |
+  | **Failing trial**     | Trial calls taken, nothing booked ([F8.6a](#f8-6a))         | Investigate; extend the trial if the fault was Ringly's ([F9.1c](#f9-1c))                |
+  | **Service stopped**   | Retries exhausted, subscription paused ([F6.11b](#f6-11b))  | Their phone is not being answered; recoverable any day inside the 60 ([F6.11c](#f6-11c)) |
+  | **Cancelled**         | The business cancelled from its dashboard ([F6.12](#f6-12)) | Dormant and recoverable; worth a conversation while the number is still theirs           |
 
   **Costing Ringly money**
 
   | Condition               | Trigger                                                                     | Operator action                                                                                         |
   | ----------------------- | --------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
-  | **At cap**              | Reached $500 for the period ([F6.9b](#f6-9b))                               | Everything further is absorbed; check the pricing fits them                                             |
+  | **At cap**              | Reached the cap for the month ([F6.9b](#f6-9b))                             | Everything further is absorbed; check the pricing fits them                                             |
   | **Negative margin**     | Cost exceeded revenue for the range ([R8](Ringly_EDD_v3.md#r8))             | The unbooked-call economics are not working for this business                                           |
   | **Number not released** | An unbind failed its read-back ([F1.12a-ii](#f1-12a-ii), [F7.13a](#f7-13a)) | Release it by hand. It is still answering calls nobody is metering, and no other signal will surface it |
 
@@ -1621,17 +1662,25 @@ what is destroyed in forty-eight hours.
 
   | Condition               | Trigger                                                                                  | Operator action                                                                                            |
   | ----------------------- | ---------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
-  | **Clock paused**        | An operator paused a lifecycle deadline ([F9.1b](#f9-1b))                                | Resolve and unpause — a paused clock never resumes itself                                                  |
+  | **Clock paused**        | An operator paused a dormancy clock ([F9.1b](#f9-1b))                                    | Resolve and unpause — a paused clock never resumes itself                                                  |
   | **Dispute open**        | A chargeback was filed ([F6.17](#f6-17))                                                 | Contest or concede by hand in Stripe; may outlast the account                                              |
-  | **Debt on departure**   | A settlement charge failed ([F6.12f](#f6-12f))                                           | Informational — recorded as owed, not pursued                                                              |
+  | **Debt on departure**   | A final invoice was never paid ([F6.12f](#f6-12f))                                       | Informational — recorded as owed, not pursued                                                              |
   | **Email undeliverable** | A message exhausted its retries, or the recipient's server rejected it ([F7.15](#f7-15)) | Reach the business another way and correct the address. **Assume they know none of what the message said** |
+
+  **Two conditions are deliberately absent.** **"Payment failed"** is not here:
+  the provider is retrying, service is running, and there is nothing for a human
+  to do until it stops ([F7.13](#f7-13)). **"Unactivated, expiring"** is not here because
+  the state does not exist — a trial converts by itself and nothing is deleted for
+  failing to become a customer ([F9.1](#f9-1)).
 
   A business can appear under several conditions at once and is listed once per
   condition, because they need different actions.
 
-- <a id="f8-13"></a>**F8.13** The operator can **pause the 10-day unactivated clock** on an
+- <a id="f8-13"></a>**F8.13** The operator can **pause the 60-day dormancy clock** on an
   individual business ([F9.1b](#f9-1b)), and see which businesses are paused and since
   when. A pause is an explicit act with a visible owner, never a side-effect.
+  **It is the only lifecycle clock in the product** ([F9.3](#f9-3)), so this is the only
+  such control.
 
 ### F9 — Account lifecycle, suspension and data retention
 
@@ -1861,19 +1910,18 @@ what is destroyed in forty-eight hours.
     callers does not reach it. That lowers the stakes; it does not change the
     decision, because the cost argument alone already favours handing it back.
 - <a id="f9-5"></a>**F9.5** **Deleting a business deletes Ringly's own database only**, plus the
-  external teardown in F6.19. Transcripts and recordings expire on their own
-  **30-day TTL** with the telephony provider ([F9.6](#f9-6)), and Ringly does not chase
-  them — with one exception, which exists because the general rule does not hold
-  everywhere:
-  - **On the 60-day paths** (non-payment, cancellation) the TTL has long since
-    expired by the time deletion runs. Nothing to do.
-  - **On the 10-day unactivated path ([F9.1](#f9-1)) it has not.** A test call placed on
-    day 1 is held by the provider until day 31, three weeks after the business
-    and every record of it are gone. **Ringly therefore issues an explicit
-    provider-side deletion for that path**, or the business's calls outlive the
-    business — the one case where "the TTL is always shorter" is simply false.
-    _(The earlier blanket claim that provider content always expires first is
-    withdrawn.)_
+  external teardown in [F6.19](#f6-19). Transcripts and recordings expire on their own
+  **30-day TTL** with the telephony provider ([F9.6](#f9-6)), and **Ringly does not chase
+  them on any path**.
+  - **The TTL is always shorter than the deletion clock now.** Deletion is 60 days
+    after service stopped ([F9.3](#f9-3)) and the last call a business can have taken was
+    on the day service stopped, so provider-held content has expired at least 30
+    days before Ringly's own rows go.
+  - **The earlier exception is withdrawn with the clock that created it.** A
+    ten-day unactivated path meant a call on day 1 was still held by the provider
+    on day 31, three weeks after the business was gone, and Ringly had to issue an
+    explicit provider-side deletion for that case alone ([F9.1](#f9-1)). One clock
+    removes the special case rather than handling it.
 - <a id="f9-6"></a>**F9.6** **Ringly stores neither transcripts nor recordings.** Both remain
   with the telephony provider and are fetched on demand when needed. Retention is
   configured **on every provisioned agent**, never inherited from a default:
@@ -2024,9 +2072,19 @@ is a provider failing its p95, and that is an operational problem to raise
 
 - <a id="n5-1"></a>**N5.1** Every instant is stored in UTC and rendered in the business's IANA
   timezone.
-- <a id="n5-2"></a>**N5.2** All day, week, and month boundaries — for availability, analytics
-  grouping, and billing periods — are computed in the business's timezone, not
-  the server's and not UTC.
+- <a id="n5-2"></a>**N5.2** All day, week, and month boundaries **for availability and analytics
+  grouping** are computed in the business's timezone, not the server's and not
+  UTC.
+  - **Billing periods are the exception, and they are not Ringly's to compute.**
+    A period boundary is one instant held by the payment provider ([F6](#f6--billing-and-payments)); Ringly
+    reads it and renders it in the business's timezone, but never derives it.
+    Two systems computing when a month ends is two systems that will eventually
+    disagree about which month a call belongs to, and the provider is the one
+    that raises the invoice.
+  - **The consequence is that a billing month is anchored to a UTC instant**, so
+    a business far from UTC may see its invoice dated a few hours either side of
+    its own local midnight. Accepted, and stated so nobody treats it as a
+    defect.
 - <a id="n5-3"></a>**N5.3** Behaviour is correct across DST transitions, including the duplicated
   and skipped local hours.
 
@@ -2166,24 +2224,32 @@ totals, or the usage they were derived from.
 
 ## 1.7 Success metrics
 
-**v3 splits the v2 "time to live" metric in two**, because activation is no
-longer the end of a single uninterrupted sitting: it now requires an inbox
-round-trip and a card ([F1.12](#f1-12)), so a p50 measured end to end would be measuring
-how fast someone checks their email.
+**v3 measures two transitions, not one**, because the business's commitment and
+its first payment are no longer the same event. It commits when it gives a
+working card and its number goes live ([F1.12](#f1-12)); it starts paying when the trial
+ends by itself, days or calls later ([F1.12b](#f1-12b)). Measuring only the second would
+attribute to the product a delay that is the trial length by design.
 
-| Metric                                      | Target                 | Measured from → to                                   |
-| ------------------------------------------- | ---------------------- | ---------------------------------------------------- |
-| **Time to provisioned** — land → own number | p50 < 3 min            | First keystroke → checklist screen ([F1.12](#f1-12)) |
-| **Time to activated** — land → paying       | p50 < 24 h             | First keystroke → $100 charged ([F1.12a](#f1-12a))   |
-| **Activation rate** — provisioned → paying  | > 60%                  | Of businesses reaching the checklist                 |
-| Caller-perceived silence per turn           | p95 ≈ 0, no gap > 1.5s |                                                      |
-| Booking conflicts reaching a customer       | 0                      |                                                      |
-| Dashboard load                              | p95 ≤ 500 ms           |                                                      |
-| Monthly infra cost per business             | tracked, trending down |                                                      |
+| Metric                                                    | Target                 | Measured from → to                                                   |
+| --------------------------------------------------------- | ---------------------- | -------------------------------------------------------------------- |
+| **Time to live** — land → own number answering            | p50 < 15 min           | First keystroke → number bound and trial started ([F1.12a](#f1-12a)) |
+| **Checklist completion** — land → all three green         | > 70%                  | Of businesses reaching the checklist ([F1.12](#f1-12))               |
+| **Trial conversion** — trial started → first invoice paid | > 75%                  | Of businesses whose number went live                                 |
+| **Trial engagement** — a booking taken during the trial   | > 60%                  | Of trials; the leading indicator for conversion ([F8.6a](#f8-6a))    |
+| Caller-perceived silence per turn                         | p95 ≈ 0, no gap > 1.5s |                                                                      |
+| Booking conflicts reaching a customer                     | 0                      |                                                                      |
+| Dashboard load                                            | p95 ≤ 500 ms           |                                                                      |
+| Monthly infra cost per business                           | tracked, trending down |                                                                      |
 
-**Activation is the same event as the first payment** ([F1.12a](#f1-12a)), so there is no
-intermediate "live but unpaid" state to measure between them — the v2 metric
-that assumed one is retired.
+**Time to live is minutes, not hours**, where the old time-to-activated was under
+a day. The inbox round-trip is still there — the contact email must be verified
+([F1.11](#f1-11)) — but nothing waits on a business deciding whether to pay, because that
+decision has moved to the end of the trial and is made by not cancelling.
+
+**Trial engagement is the metric worth watching.** Conversion is decided during
+the trial and observed a fortnight later; a booking taken is the earliest signal
+that the product worked, and it is the same signal the operator alert uses
+([F8.6a](#f8-6a)).
 
 ## 1.8 Decisions and open questions
 
@@ -2192,15 +2258,25 @@ that assumed one is retired.
 - <a id="q1"></a>**Q1 — The per-connected-minute rate.** TBD; held as configuration
   ([F6.8](#f6-8)), so billing can be built and tested with a placeholder but **cannot be
   switched on for real customers until it is set**.
-- <a id="q3"></a>**Q3 — Ringly's contact email address** ([F9.2](#f9-2)). It is the single channel for
-  cancellation, deletion and reactivation, so it is needed by the dashboard, the
-  transactional emails, and the footer of every message Ringly sends.
+- <a id="q3"></a>**Q3 — Ringly's contact email address.** No longer load-bearing for any
+  lifecycle transition ([F9.2](#f9-2)) — cancellation and resumption are both self-serve
+  — but still needed in the footer of every message Ringly sends and as the route
+  to a human for everything else.
 - <a id="q6"></a>**Q6 — Where the application is hosted ([N8](#n8--hosting-undecided-and-the-application-must-stay-portable)).** **Vercel** or **Google Cloud
   Run**; undecided. It does not block any phase — [N8.2](#n8-2) keeps the application
   portable while it is open — but it must be settled before the first paying
   customer, because moving a live phone system is not a thing to do casually.
   The decision turns on how scheduled work is run ([N8.3](#n8-3)) and on whether the
   Next.js-native deployment is worth more than the container control.
+- <a id="q7"></a>**Q7 — The trial's two bounds** ([F1.13](#f1-13)): how many days and how many calls.
+  Both are configuration and neither blocks building the trial, but they cannot
+  be left unset at launch — they are stated to the business on the checklist
+  screen before it commits ([F1.12](#f1-12)), so a placeholder is visible to a customer in
+  a way a placeholder rate is not.
+- <a id="q8"></a>**Q8 — The retry count and window** ([F6.11](#f6-11)). Three attempts is the working
+  assumption; the window they span decides how long a business with a failed card
+  keeps being served free, which is the largest uncontrolled giveaway left in the
+  model after the cap ([F6.9b](#f6-9b)).
 
 **Action items — work that is not a question and not a phase:**
 
@@ -2216,15 +2292,23 @@ that assumed one is retired.
 - <a id="a2"></a>**A2 — A load exercise against the [N2.1](#n2-1) targets** (10,000 businesses × 10,000
   customers), which an end-to-end suite cannot express (EDD [§2.15.6](Ringly_EDD_v3.md#2156-what-the-suite-cannot-prove)).
 - <a id="a3"></a>**A3 — A restore drill** proving [N10.5](#n10-5), including from the cross-region copy.
-- <a id="a4"></a>**A4 — Confirm, against a payment-provider test account, that one open invoice
-  is still retried on day 59.** [F6.11b-i](#f6-11b-i) makes "the retries that never stopped"
-  the whole recovery path, and [F6.11d](#f6-11d) case (a) needs a single invoice retried
-  from the day-1 decline to the day-60 deletion. The provider's automatic retry
-  window is roughly two months, so this runs very close to its edge — and if it
-  runs out, a recoverable business goes un-chased for the days that matter most,
-  silently. **Blocks charging a real customer**; blocks nothing about building
-  the billing path, which can be written and tested against the answer either
-  way. A test clock answers it in an afternoon.
+- <a id="a4"></a>**A4 — Prove the subscription lifecycle against a payment-provider test clock,
+  end to end.** The model now depends on provider behaviour at four points, and
+  each is cheap to confirm and expensive to be wrong about:
+  1. **A usage line can be added to a subscription invoice before it finalises**,
+     reliably, on the provider's own invoice-created notification ([F6.1a](#f6-1a)).
+  2. **A paused subscription raises no new invoice and its open one is still
+     pursued** ([F6.11b](#f6-11b)) — the pair the whole dormancy design rests on.
+  3. **A paused subscription resumes with its anchor reset to the resume date**
+     ([F6.10c](#f6-10c)), and the business keeps its customer, its card and its history.
+  4. **Ending a trial early on the call bound raises the first invoice that day**
+     ([F1.13a](#f1-13a)).
+
+  **Blocks charging a real customer**; blocks nothing about building the billing
+  path, which can be written and tested against the answer either way. _(This
+  replaces the earlier A4, which asked whether one open invoice was still retried
+  on day 59 — a question created by Ringly running its own 60-day suspension
+  window, and removed with it.)_
 
 ---
 
@@ -2237,16 +2321,6 @@ unused column, no dead code path held open against a future that may not arrive
 
 ### Soon after v3
 
-- **Self-serve cancellation, and self-serve revocation with it.** Replaces the
-  email-based flow in [F9.2](#f9-2) in both directions — a business that can cancel from
-  its own dashboard must be able to undo it there too, or the reconsideration
-  window is harder to use than the decision it exists to soften. Recorded now
-  because it raises questions that should be answered before it is built:
-  - Does cancelling take effect immediately, or at period end?
-  - What stops a business cycling — cancel, re-activate, and reset the $500 cap
-    ([F6.9](#f6-9)) — which is only safe today because a human sees every cancellation?
-  - Can a suspended business self-serve reactivate, or does that stay manual.
-
 - **Operator alerting via Slack**, replacing email ([F8.6](#f8-6)).
 - **A third copy of the money records, outside the primary provider account**
   ([N10](#n10--durability-of-money-records)). v3 ships point-in-time recovery plus cross-region backups, which both
@@ -2255,11 +2329,17 @@ unused column, no dead code path held open against a future that may not arrive
   shape). **Deferred because it is real work against a rare failure**, and
   because Stripe independently holds the payments half in the meantime ([N10.7](#n10-7)).
   Worth doing once there is enough revenue to miss.
-- **Stripe's own customer portal as the cancellation route.** It would give
-  businesses self-service cancellation and payment-method updates without Ringly
-  building either. Deliberately **disabled in v3** because it would bypass the
-  email-only flow ([F9.2](#f9-2)) and let a business cancel without the operator seeing
-  it — which is currently the only thing preventing cap-cycling ([F6.9](#f6-9)).
+- **The provider's own customer portal**, for payment-method updates and invoice
+  history. Ringly builds the minimum itself in v3 ([F5.15](#f5-15)); the portal would do
+  it better and for free. **Not adopted now because its cancellation flow is the
+  provider's, not Ringly's** — it would cancel the subscription outright where
+  [F6.12](#f6-12) requires a pause, and a cancelled subscription cannot be resumed, which
+  would silently destroy dormancy ([F6.12b](#f6-12b)). Adopting it means configuring it
+  for payment methods only.
+- **Plan changes and annual billing.** A subscription makes both cheap for the
+  first time — the provider handles proration between prices — and neither is
+  expressible in the old hand-rolled model. Not now, because there is one plan
+  ([§1.4](#14-scope)).
 
 ### Not planned
 
