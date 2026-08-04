@@ -11,10 +11,13 @@
 > recurring appointments. **[§1.8](#18-decisions-and-open-questions)** carries the questions still open and the action
 > items that are not phases.
 
-> **Edge cases are marked inline**, in the requirement they belong to, as
-> **⚠ Edge case** — a case the requirement does not settle, a recommendation, and
-> what else was considered. They are open questions with a proposed answer, not
-> decisions.
+> **Open items are marked inline**, in the section they belong to, each with a
+> recommendation and the alternatives weighed against it. They are proposals with
+> a proposed answer, not decisions.
+>
+> - **⚠ Edge case** — a case an existing requirement does not settle.
+> - **⚠ Gap** — a requirement that is missing entirely. The product has no stated
+>   behaviour at all, so whatever gets built becomes the behaviour by default.
 
 > **Revision history is in `git log docs/Ringly_PRD_v3.md`** — one commit per
 > decision, each carrying the reasoning for that decision alone. Every decision is
@@ -94,6 +97,37 @@ served at launch, behind an interface built so others can follow.
   exactly what they have ([F2.2a](#f2-2a)). There is no series record anywhere in the
   system, so every appointment is a standalone one.
 - Multi-staff / resource-level scheduling (one implicit calendar per business).
+
+  > **⚠ Gap — this boundary is stated far more mildly than it behaves.** One
+  > calendar per business means **one appointment at a time, for the whole
+  > business**. A salon with three chairs, a garage with two ramps or a practice
+  > with two rooms will be told 14:00 is unavailable when two thirds of it is
+  > free — and it will look like a bug, because from the owner's seat it is one.
+  >
+  > Nothing downstream contradicts it: [F2.3](#f2-3) refuses a taken slot, [F2.8](#f2-8) books
+  > inside opening hours, and neither has any concept of capacity. **So the
+  > product as specified serves single-operator businesses only** — a sole trader,
+  > a one-chair salon, a single tax preparer.
+  >
+  > **Recommendation: say so, and say it in [§1.3](#13-personas) rather than only here.** The
+  > persona is a business where **one appointment happens at a time**. That is a
+  > real and large market, it is honest, and it stops the first multi-chair salon
+  > being sold a product that cannot serve it.
+  >
+  > **A single `concurrent_capacity` integer per business would lift it**, and it
+  > is worth pricing before ruling out: availability subtracts booked
+  > appointments from capacity rather than treating any booking as blocking. It
+  > buys most of the market at the cost of one column and one changed predicate,
+  > and it does **not** require resource-level scheduling — no caller is assigned
+  > to a chair, and the business decides who takes whom.
+  >
+  > **Alternatives considered.** _(a) Full resource scheduling_ — named staff,
+  > per-resource calendars, a caller asking for Maria. A different product, and
+  > correctly out of scope. _(b) Leave it as written and let businesses inflate
+  > opening hours_ — they cannot; the constraint is concurrency, not hours. _(c)
+  > Tell businesses to connect one calendar per chair_ — reintroduces multi-tenancy
+  > inside one account and breaks [F2.3](#f2-3)'s single conflict check.
+
 - Multiple logins per business. **One business has exactly one owner account**,
   the Google identity that signed it up ([F1.7](#f1-7)). There are no staff logins, no
   invitations, and no roles.
@@ -122,6 +156,34 @@ _(Carried from v2; renumbered. v2 FR1–FR10 map to [F1.1](#f1-1)–F1.10.)_
 - <a id="f1-6"></a>**F1.6** Enrichment resolves in a single request.
 - <a id="f1-7"></a>**F1.7** A single Google OAuth grants the Ringly session and offline calendar
   access; the account is keyed to the Google identity.
+
+  > **⚠ Gap — there is no way back into an account.** Identity is a Google
+  > account and nothing else ([F1.7](#f1-7)), and there is no second owner ([§1.4](#14-scope)), no
+  > staff login, and no recovery path. **If that Google account is lost, the
+  > business loses everything at once** — dashboard, catalogue, calendar
+  > connection and the ability to cancel — while its number keeps answering and
+  > its card keeps being charged.
+  >
+  > It is not exotic. The founder leaves, the account was a personal Gmail nobody
+  > else can reach, the business changes its Workspace domain, or Google suspends
+  > it. Today the only outcome is a chargeback, because that is the sole lever the
+  > business has left.
+  >
+  > **Recommendation: an operator-performed identity reassignment, with proof of
+  > control of the contact email.** The verified contact address ([F1.10](#f1-10)) is a
+  > second factor Ringly already holds and already trusts for deletion warnings;
+  > requiring a fresh verification to it before re-keying the business to a new
+  > Google identity is proportionate, auditable, and needs no new product surface
+  > beyond an operator control.
+  >
+  > **Alternatives considered.** _(a) Nothing, as today_ — the business's only
+  > exit is a dispute, and Ringly loses the customer and the money. _(b) A second
+  > owner account_ — solves it properly and reopens staff logins, roles and
+  > per-account permissions, which [§1.4](#14-scope) rules out for good reasons. _(c)
+  > Self-serve re-keying from the contact email_ — makes the contact inbox a
+  > complete account takeover path, which is a worse trade than an operator step
+  > on a rare event.
+
   > **⚠ Edge case — one person, two businesses.** [§1.4](#14-scope) settles that one business
   > has exactly one owner account. It does not settle the reverse: whether one
   > Google identity can own **two businesses**, which is an ordinary situation —
@@ -141,6 +203,7 @@ _(Carried from v2; renumbered. v2 FR1–FR10 map to [F1.1](#f1-1)–F1.10.)_
   > believes they created a second business and cannot find it. _(c) Key on the
   > business rather than the identity_ — reopens which identity may sign in, which
   > is the staff-logins question [§1.4](#14-scope) rules out.
+
 - <a id="f1-7a"></a>**F1.7a** **Calendar scope may be declined independently of sign-in.** Google
   offers granular consent, so a user can grant sign-in and refuse calendar in the
   same dialog. Ringly checks the scopes actually granted rather than assuming.
@@ -157,6 +220,38 @@ _(Carried from v2; renumbered. v2 FR1–FR10 map to [F1.1](#f1-1)–F1.10.)_
   **only once the whole checklist is green** ([F1.11](#f1-11)) — a verified email, calendar
   access, and a payment method that has been checked and works. Before that
   Ringly has bought nothing and owes nobody rent.
+
+  > **⚠ Gap — the business already has a phone number, and this document never
+  > mentions it.** Ringly buys a new one and [F9.4](#f9-4) then calls it "the business's
+  > public identity, printed on signage and listings". **It is not.** The number
+  > on the signage is the one the business has had for years, and nothing here
+  > says how a caller dialling _that_ number reaches the agent.
+  >
+  > As written, adopting Ringly means republishing your number everywhere — a
+  > cost far larger than $100/month, paid before any value arrives, and it lands
+  > during the trial when the business is least committed. It is plausibly the
+  > single largest barrier to the trial converting at all.
+  >
+  > **Recommendation: the business forwards its existing number to the Ringly
+  > number, and onboarding tells it how.** Ringly still buys and owns a number —
+  > everything in [F9.4](#f9-4)–[F9.4b](#f9-4b) is unchanged — but it becomes plumbing rather than
+  > the business's identity. Forwarding is a carrier feature the business already
+  > has, needs no integration, and is reversible in one step, which also makes
+  > leaving Ringly safe and is worth saying out loud.
+  >
+  > **This also changes what deletion destroys** ([F9.4b](#f9-4b)): a departing business
+  > un-forwards and keeps the number its customers actually dial, so releasing
+  > Ringly's number stops being the irreversible loss that requirement is written
+  > around.
+  >
+  > **Alternatives considered.** _(a) Port the number to Ringly_ — the business's
+  > real number becomes Ringly's, which is the strongest integration and the
+  > worst lock-in; porting takes days, can fail, and makes leaving a migration.
+  > _(b) New number only, as written_ — honest and simple, and it asks every
+  > business to change its listings before it trusts the product. _(c) Both,
+  > business's choice_ — the right end state and two flows to build; forwarding
+  > first is the one that unblocks adoption.
+
 - <a id="f1-10"></a>**F1.10** Onboarding collects and verifies a **business contact email**,
   defaulted from the Google identity and editable. It is the destination for all
   billing email, including the 48-hour warning before deletion ([F9.3a](#f9-3a)), so an
@@ -368,6 +463,31 @@ _(Carried from v2; renumbered. v2 FR1–FR10 map to [F1.1](#f1-1)–F1.10.)_
 - <a id="f2-1"></a>**F2.1** The agent answers on the business's dedicated number, identifies the
   business, and can describe services, prices, and durations.
 - <a id="f2-1a"></a>**F2.1a** **Every call opens with a recording disclosure**, immediately after
+
+  > **⚠ Gap — two callers at once.** Nothing in this document says what happens
+  > when a second customer rings while the agent is mid-call. The answers differ
+  > enormously: both are answered in parallel, the second hears an engaged tone,
+  > or the second rings out. **It is left to whatever the telephony provider
+  > happens to default to**, which is how a product acquires a behaviour nobody
+  > chose.
+  >
+  > It also interacts with two requirements that assume it away. [F2.3a](#f2-3a)'s
+  > slot race is written for "another caller" and is only reachable if concurrent
+  > calls are answered. And the trial's call allowance ([F1.12a](#f1-12a)) is a count that
+  > two simultaneous calls can cross together.
+  >
+  > **Recommendation: concurrent calls are answered, with no stated ceiling.** It
+  > is what a receptionist that never misses a call has to mean ([§1.1](#11-vision)), the
+  > booking path is already safe against the race, and a busy hour is exactly when
+  > a missed call costs the business most.
+  >
+  > **Alternatives considered.** _(a) One at a time, others hear engaged_ — cheap
+  > and predictable, and it makes the product a worse receptionist than an
+  > answering machine on the day it matters. _(b) A per-business cap_ — a number
+  > nobody can set correctly, and the failure is silent. _(c) Queue the second
+  > caller_ — [F2.6](#f2-6)'s "without being told to hold" rules it out explicitly.
+
+- <a id="f2-1a"></a>**F2.1a** **Every call opens with a recording disclosure**, immediately after
   the greeting and before the caller says anything of substance.
   Around a dozen US states require all-party consent to record. **The disclosure
   is appended by Ringly and is not part of the business's editable greeting
@@ -486,6 +606,38 @@ _(Carried from v2; renumbered. v2 FR1–FR10 map to [F1.1](#f1-1)–F1.10.)_
   finds out this is happening. Adding a transfer target would mean holding an
   owner's personal number, ringing it out of hours, and building a hand-off the
   agent cannot verify anyone answered.
+
+  > **⚠ Gap — nothing addresses calls that are not customers.** Every call is
+  > answered, transcribed and reasoned over by a model, and **every one costs
+  > Ringly telephony and LLM minutes** ([R8](Ringly_EDD_v3.md#r8)). Spam, robocalls, wrong numbers and
+  > one aggrieved person ringing forty times are all treated as ordinary traffic.
+  > Two things make it worse than a flat cost: a fresh number is exactly the kind
+  > that attracts dialler traffic, and **spam consumes the trial's call allowance**
+  > ([F1.12a](#f1-12a)) — a business can lose its trial to robocalls and never hear the
+  > agent handle a real customer.
+  >
+  > **Recommendation, in two parts, and only the first is a v3 requirement.**
+  > **(1) Make it visible**: a call that reaches no outcome and lasts under a few
+  > seconds is already `dropped` ([F5.4](#f5-4)), and the operator's cost figures
+  > ([F8.5](#f8-5)) should surface a business whose cost-per-booking is dominated by them.
+  > **(2) Do not filter in v3.** Ringly cannot tell a robocall from a nervous
+  > customer without heuristics that will eventually refuse a real one, and
+  > refusing a real customer is the failure this product exists to prevent.
+  >
+  > **Trial calls are the exception worth fixing**, because the cost there is the
+  > business's trial rather than Ringly's margin: **a call that reaches no outcome
+  > should not count against the allowance**. It is a rule Ringly can apply
+  > confidently after the fact, it cannot refuse anyone, and it removes the case
+  > where a business's trial is spent on nobody.
+  >
+  > **Alternatives considered.** _(a) Block known spam numbers at the carrier_ —
+  > cheap, and the lists are incomplete and go stale. _(b) Let the business
+  > blocklist a number from its dashboard_ — reasonable and deferred: it needs a
+  > per-customer control the dashboard deliberately does not have ([F5.3](#f5-3)). _(c)
+  > Cap calls per business per day_ — bounds the cost and refuses real customers on
+  > the busiest day of the year, which is the wrong trade in a product sold on
+  > never missing a call.
+
 - <a id="f2-11"></a>**F2.11** **The caller's booking confirmation is the agent reading it back**
   during the call — date, time, service, and business — and nothing else. Ringly
   cannot reach the caller after the call ([§1.4](#14-scope)), so the read-back is the whole
@@ -545,6 +697,54 @@ _(Carried from v2; renumbered. v2 FR1–FR10 map to [F1.1](#f1-1)–F1.10.)_
     handle it.
   - **Narrowing hours does not retroactively invalidate anything**, and widening
     them makes new slots bookable immediately.
+
+  > **⚠ Gap — there is no way to close for a day.** [F3](#f3--service-catalogue-and-opening-hours) describes a **weekly**
+  > pattern and nothing else. A business cannot say "closed 25 December", "closed
+  > Thursday afternoon for a funeral", or "shut for two weeks in August". **The
+  > agent will book appointments on all of those days**, read them back
+  > confidently, and the customers will turn up.
+  >
+  > This is not a rare case. Every business in the target verticals closes for
+  > public holidays, and most take a holiday.
+  >
+  > **Recommendation: one-off closures are a first-class list on the same screen
+  > as the weekly hours** — a date or date range, optionally a part-day, with an
+  > optional reason the agent never speaks. Availability subtracts them
+  > ([F2.8](#f2-8)) exactly as it subtracts a closed weekday. **Existing appointments
+  > inside a new closure are left alone** ([F3.5](#f3-5)) and the business is shown how
+  > many there are, because that is the moment it needs to ring those customers
+  > itself.
+  >
+  > **Alternatives considered.** _(a) Rely on the connected calendar_ — the
+  > business puts an all-day "CLOSED" event in Google and [F2.3](#f2-3)'s conflict check
+  > blocks the day. Nearly free, and rejected: all-day event semantics are
+  > ambiguous, it depends on a convention nobody told the business about, and a
+  > business whose calendar is unreadable ([F2.7](#f2-7)) loses its closures at exactly
+  > the wrong moment. _(b) Let the business set a weekly day closed and undo it
+  > later_ — cannot express a single date at all. _(c) Defer to v4_ — defensible
+  > only if the product ships in a month with no holidays in it.
+
+  > **⚠ Gap — no gap between appointments.** A service has a duration and nothing
+  > else, so the agent books back-to-back: a 30-minute cut at 14:00 makes 14:30
+  > bookable. Real businesses need turnaround — cleaning a chair, writing up
+  > notes, a van getting across town. **Every business in the target verticals will
+  > hit this on its first busy day**, and the only workaround available is to
+  > inflate every service's duration, which then lies to the customer about how
+  > long they will be there.
+  >
+  > **Recommendation: one `buffer_minutes` per business**, applied after every
+  > appointment, default 0, set on the same screen as opening hours. It is a
+  > property of the business's turnaround rather than of the service, and one number
+  > is enough for the businesses in scope ([§1.4](#14-scope)).
+  >
+  > **Alternatives considered.** _(a) Per-service buffers_ — more accurate and more
+  > to explain; a salon does not need a different gap after a cut than after a
+  > colour, and per-service buffers invite per-service-pair buffers, which is a
+  > scheduling engine. _(b) Fold it into duration_ — the caller is told the wrong
+  > length, and [F3.4](#f3-4)'s "duration is locked at booking" then locks the wrong
+  > number onto the appointment. _(c) Nothing, and let businesses inflate durations_
+  > — the status quo, and it produces exactly (b) with no requirement admitting it.
+
 - <a id="f3-6"></a>**F3.6** **Changing timezone is an operator action, not a self-serve one.**
   A timezone is resolved once at onboarding from the business's address ([F1.3](#f1-3))
   and is almost never genuinely wrong; changing it silently re-interprets every
@@ -1867,6 +2067,31 @@ forty-eight hours.
   **It is the only lifecycle clock in the product** ([F9.3](#f9-3)), so this is the only
   such control.
 
+  > **⚠ Gap — operator actions leave no record except where one happens to be
+  > convenient.** A pause records who and when because those columns exist for
+  > other reasons. **Nothing else does.** Extending a trial ([F9.1c](#f9-1c)), issuing a
+  > goodwill refund ([F5.9](#f5-9)), conceding a dispute ([F6.17](#f6-17)) and reading a business's
+  > dashboard through the borrowed view ([F8.2e](#f8-2e)) all leave the product with no
+  > memory of who did them or why.
+  >
+  > Three of those move money or extend free service, and the fourth is a person
+  > looking at a customer's data. **[N10](#n10--durability-of-money-records) is strict about money records and silent
+  > about who caused them**, which is the half that answers "why is this business
+  > on its third extended trial".
+  >
+  > **Recommendation: one append-only `operator_actions` log** — who, what,
+  > which business, when, and a required free-text reason — written by every
+  > operator control including the borrowed view. It is one table and one call
+  > per control, it costs nothing while there is one operator, and it is
+  > impossible to add retrospectively for the period you most want it.
+  >
+  > **Alternatives considered.** _(a) Rely on the audit trail in each vendor_ —
+  > Stripe records the refund and not the reason, and nothing records a trial
+  > extension at all. _(b) Application logs_ — not durable, not queryable
+  > alongside the business, and gone by the time anyone asks. _(c) Defer until
+  > there is more than one operator_ — the value is retrospective, so deferring it
+  > guarantees the gap covers exactly the period nobody can reconstruct.
+
 ### F9 — Account lifecycle, dormancy and data retention
 
 - <a id="f9-1"></a>**F9.1** **A business is never deleted for failing to become a customer.**
@@ -2328,6 +2553,40 @@ failure modes are stated explicitly.
 - <a id="n7-3"></a>**N7.3** Every degraded path is logged, surfaced to the business, and alerted
   to the operator. **Silent degradation is a defect** — see [R1](Ringly_EDD_v3.md#r1), which is exactly
   this bug in the shipped code.
+
+> **⚠ Gap — every failure here is somebody else's. None of them is Ringly's
+> own.** [N7](#n7--third-party-dependencies-and-degradation) covers a vendor being unreachable, and the whole document is
+> written from a Ringly that is running. **Nothing says what happens when Ringly
+> is the thing that is down**, and the consequence is the most severe in the
+> product: the number stops being answered, every caller is lost, and — because
+> the dashboard is also down — **the business has no way to find out**, including
+> by looking.
+>
+> Two requirements assume this away. [F5.18](#f5-18) makes the dashboard the answer to
+> "is my phone being answered right now?", which it cannot be when the answer is
+> no because the dashboard is gone. And [F2.7](#f2-7)'s per-incident email reaches the
+> business only if the thing that sends it is up.
+>
+> **Recommendation, and it is deliberately small.** **(1) A status page on
+> separate infrastructure** — a static page on a different host, which is the only
+> honest place to answer [F5.18](#f5-18)'s question during an outage, and cheap enough
+> that there is no argument against it. **(2) One requirement that Ringly tells
+> affected businesses after the fact**, by email, saying the dates and times their
+> number was not answering. A business that lost a Saturday morning of calls
+> deserves to know which morning, and it is the only way it can ring those
+> customers back.
+>
+> **What is deliberately not recommended: an uptime commitment.** A number in a
+> requirement is a number somebody has to defend contractually, and Ringly's real
+> availability is bounded by three vendors it does not run.
+>
+> **Alternatives considered.** _(a) Nothing, as today_ — the failure mode is
+> total, silent to the customer, and discovered from a caller's complaint. _(b)
+> A stated SLA with credits_ — makes the outage a billing question, which needs
+> measurement, a dispute path and a credit mechanism this design does not have
+> ([F5.9](#f5-9) keeps refunds manual on purpose). _(c) Fail over to voicemail_ —
+> [F2.10](#f2-10) rules out voicemail as a product boundary, and a fallback that only
+> exists during an outage is the least tested path in the system.
 
 ### N8 — Hosting: undecided, and the application must stay portable
 
