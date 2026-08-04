@@ -122,6 +122,25 @@ _(Carried from v2; renumbered. v2 FR1–FR10 map to [F1.1](#f1-1)–F1.10.)_
 - <a id="f1-6"></a>**F1.6** Enrichment resolves in a single request.
 - <a id="f1-7"></a>**F1.7** A single Google OAuth grants the Ringly session and offline calendar
   access; the account is keyed to the Google identity.
+  > **⚠ Edge case — one person, two businesses.** [§1.4](#14-scope) settles that one business
+  > has exactly one owner account. It does not settle the reverse: whether one
+  > Google identity can own **two businesses**, which is an ordinary situation —
+  > a salon and a barbershop, or a trade with two brands. Keying the account to
+  > the identity ([F1.7](#f1-7)) implies it cannot, but no requirement says so and the
+  > sign-in flow would silently return them to the first business.
+  >
+  > **Recommendation:** **one Google identity owns exactly one business in v3, and
+  > the second signup is refused with an explanation** rather than being silently
+  > resolved to the first. It is a real constraint and the product should say it
+  > out loud; a second business means a second Google account today.
+  >
+  > **Alternatives considered.** _(a) Allow several and add a switcher_ — every
+  > screen, query and email in this document assumes one business per session, and
+  > it is the multi-tenancy of [N1](#n1--multi-tenancy-and-isolation) arriving inside a single account. _(b) Silently
+  > return them to the first_ — the current behaviour, and the worst: the person
+  > believes they created a second business and cannot find it. _(c) Key on the
+  > business rather than the identity_ — reopens which identity may sign in, which
+  > is the staff-logins question [§1.4](#14-scope) rules out.
 - <a id="f1-7a"></a>**F1.7a** **Calendar scope may be declined independently of sign-in.** Google
   offers granular consent, so a user can grant sign-in and refuse calendar in the
   same dialog. Ringly checks the scopes actually granted rather than assuming.
@@ -405,6 +424,29 @@ _(Carried from v2; renumbered. v2 FR1–FR10 map to [F1.1](#f1-1)–F1.10.)_
     **nearest future Tuesday** from the moment of the call. The agent then
     **states the full date back to the caller** and waits for confirmation before
     acting, so an ambiguous phrase is never resolved silently.
+  > **⚠ Edge case — more than one appointment matches, and "partially" has no
+  > threshold.** The requirement describes a search that either matches or does
+  > not, and settles neither of the two ways that fails. **Several appointments
+  > can match** — the same customer, the same service, two slots on one day, and a
+  > caller who says "my haircut on Tuesday". And **"did not even partially match"
+  > is not a testable condition**: it has no definition, so two implementations
+  > can disagree about whether "Dave" matches "David Okonkwo" and both claim to
+  > satisfy F2.4.
+  >
+  > **Recommendation, two parts.** _Ambiguity:_ when more than one appointment
+  > matches, the agent **reads back the candidates and asks which one** rather than
+  > picking. _Threshold:_ state the rule as **name matches on any spoken form the
+  > caller offers; date and time must resolve to exactly one slot once the agent
+  > has confirmed them back ([F2.4](#f2-4)); service matches on the catalogue entry the
+  > caller names or an obvious short form of it.** The point is that a human
+  > listening to the call could say whether it matched.
+  >
+  > **Alternatives considered.** _(a) Refuse on ambiguity_ — a customer with two
+  > bookings cannot change either, which is worse than one clarifying question.
+  > _(b) Take the soonest_ — silently acts on a guess, and the caller finds out by
+  > turning up. _(c) A numeric similarity score_ — moves the ambiguity into a
+  > constant nobody can review, and makes the behaviour untestable in the terms
+  > callers actually speak.
 - <a id="f2-5"></a>**F2.5** All times spoken to a caller are in the **business's** local timezone,
   never UTC and never the caller's.
 - <a id="f2-6"></a>**F2.6** While the agent is waiting on any backend operation, the caller hears
@@ -641,6 +683,24 @@ needs — the full list is F5.15.
   **the date of the next invoice and what it is expected to carry** — this
   month's usage plus next month's fee ([F6.1a](#f6-1a)). Every other row is settled and
   final.
+  > **⚠ Edge case — the billing screen during a trial.** A trialing business has
+  > **no billing period at all** ([F6.1](#f6-1)), so there is no current row to render
+  > live and no history behind it. [F5.9](#f5-9) and [F5.10](#f5-10) both describe a screen that
+  > cannot exist yet, and the natural implementation shows an empty table to every
+  > business in its first fortnight.
+  >
+  > **Recommendation:** during a trial the billing screen shows **the trial
+  > instead of a period** — days left, calls left, the date the first invoice is
+  > raised, and what it will carry ($100, no usage). It is the same question the
+  > screen answers for everyone else: what will I be charged, and when.
+  >
+  > **Alternatives considered.** _(a) An empty table with a note_ — technically
+  > honest, and it is the screen most likely to make a business think billing is
+  > broken on the day it is deciding whether to keep the product. _(b) A
+  > zero-valued period row_ — invents a period that does not exist, which every
+  > other part of the design would then have to special-case ([I2](#i2)). _(c) Hide the
+  > screen until the first invoice_ — removes the one place the trial's two bounds
+  > are visible after the checklist ([F1.11](#f1-11)).
 
 **Everything else**
 
@@ -774,6 +834,23 @@ fails one invoice rather than two.
   - **It is not a guarantee.** A card that authorises in January can decline in
     March, so the failure path ([F6.11](#f6-11)) exists regardless and the trial's first
     invoice is not a special case of it.
+  > **⚠ Edge case — the card is removed during the trial.** Nothing stops a
+  > business detaching its card in the provider's own hosted flows. The trial then
+  > ends into an invoice that **cannot be attempted at all** — not declined,
+  > unpayable — so the retry window passes without a single real attempt and the
+  > business is stopped having never been asked for money it could refuse.
+  >
+  > **Recommendation:** treat "no payment method on a business whose trial is
+  > running" as a condition on the operator queue **and** a banner on the business
+  > dashboard ([F5.18](#f5-18)), from the moment it is observed. It is the one
+  > checklist item that can regress after provisioning, and the business is the
+  > only party who can fix it.
+  >
+  > **Alternatives considered.** _(a) Stop service immediately_ — punishes an
+  > accident during a free trial, and the business may simply be replacing an
+  > expiring card. _(b) Do nothing and let the invoice fail_ — the outcome above:
+  > correct by the letter of [F6.11](#f6-11) and a bad surprise. _(c) Block the removal_
+  > — not available; the provider's hosted flows are not Ringly's to gate.
 - <a id="f6-3"></a>**F6.3** Ringly never stores, transmits, or logs raw card details. Card data is
   handled entirely by the payment provider; Ringly stores only provider
   identifiers. _(Hard requirement, not a preference.)_
@@ -841,6 +918,22 @@ fails one invoice rather than two.
     both things this model refuses.
   - **It is clamped at $400** — the same ceiling any single month's usage faces
     ([F6.9](#f6-9)) — because it is a month's usage, merely a short one.
+
+  > **⚠ Edge case — both moments on the same day.** A business whose retries run
+  > out, or which cancels, on the day its period rolls over has **two totalling
+  > events on one date**. Whichever runs second finds the period already closed
+  > and either double-invoices its usage or drops it.
+  >
+  > **Recommendation:** a period can be closed once, and the first close wins.
+  > Service stopping on a rollover day closes the period that was open at that
+  > instant and no new one opens ([I2](#i2)); a rollover arriving afterwards finds
+  > nothing to close and raises no fee, because the subscription is already
+  > paused.
+  >
+  > **Alternatives considered.** _(a) Let the rollover win_ — it would open a
+  > period for a business that is no longer being served, which [I2](#i2) forbids.
+  > _(b) Order them by time of day_ — makes a money outcome depend on
+  > milliseconds and on which webhook the provider happened to send first.
 
 - <a id="f6-9b"></a>**F6.9b** On crossing the cap Ringly **continues to serve the business and
   absorbs the excess**, **alerts the operator** ([F8.6](#f8-6)), and **emails the
@@ -950,6 +1043,26 @@ fails one invoice rather than two.
   - **Either way it works only inside the dormancy window.** After teardown there
     is no subscription to resume, no number to rebind, and no data to restore
     ([F6.12b](#f6-12b)).
+  > **⚠ Edge case — a business that cancelled, owing money, then pays.** The two
+  > return routes are distinguished by _who initiates_, but the trigger for the
+  > automatic one is a payment arriving. A business that cancels while a payment
+  > is outstanding ([F6.11a](#f6-11a)) leaves two open invoices behind it; when the
+  > provider finally collects one, the automatic path fires and **restores a
+  > business that asked to leave** — rebinding its number and charging it $100 for
+  > a period it never asked for.
+  >
+  > **Recommendation:** make the automatic restore conditional on _why_ service
+  > stopped. Settling restores a business stopped for non-payment; a business that
+  > cancelled is never restored by a payment, only by asking. Its debt is still
+  > collected — the two are independent ([F9.3b](#f9-3b)).
+  >
+  > **Alternatives considered.** _(a) Refuse the payment_ — no: the debt is real
+  > and Ringly should collect it. _(b) Restore and let them cancel again_ — no:
+  > they are charged $100 for the round trip, which is a bill produced by Ringly's
+  > own ambiguity. _(c) Ask them_ — an email saying "you have paid, would you like
+  > to come back?" is defensible but adds a message to a business that has already
+  > left, and the dashboard's resume control already says the same thing to anyone
+  > who wants it.
 - <a id="f6-11d"></a>**F6.11d** **A business that has paid and is still not being answered is the
   worst state in the system**, so recovery must not depend on a single message
   arriving. If the payment notification is lost, a **daily reconciliation** finds
@@ -993,6 +1106,24 @@ fails one invoice rather than two.
     said it does not want the service and meters it for calls it did not expect to
     pay for. The fee is not refunded either way ([F6.11e](#f6-11e)), so the business loses
     nothing it would otherwise have kept except days it has chosen not to use.
+  > **⚠ Edge case — the appointments already in the diary.** Cancelling stops the
+  > number that day, and bookings may stand up to 70 days out ([F2.9](#f2-9)). Those
+  > customers can no longer ring to reschedule or cancel, and **Ringly cannot tell
+  > them anything** ([§1.4](#14-scope)). The confirmation screen does not currently mention
+  > them.
+  >
+  > **Recommendation:** the confirmation screen states **how many future
+  > appointments are booked and the date of the last one**, before the business
+  > confirms. The appointments are in the business's own calendar and stay there;
+  > what it needs to know is that its customers now have no way to reach it
+  > through Ringly.
+  >
+  > **Alternatives considered.** _(a) Refuse to cancel while bookings stand_ — no:
+  > a business may cancel for any reason and 70 days is too long to be held. _(b)
+  > Cancel the appointments in the calendar_ — no: they are the business's, and
+  > deleting a customer's booking on its behalf is not Ringly's call. _(c) Keep
+  > answering until the last booking passes_ — that is cancellation at period end
+  > wearing a different hat, and it can run ten weeks.
 - <a id="f6-12a"></a>**F6.12a** **The final invoice is the metered usage of the current period, up
   to the moment service stopped, and nothing else** ([F6.9a](#f6-9a)). It carries no
   fixed fee — the month's fee was charged on the first day and is not refunded
@@ -1021,6 +1152,22 @@ fails one invoice rather than two.
     dormancy lengths is one that gets the short one wrong at the worst moment.
   - **Only after the 60 days is anything deleted** ([F9.8](#f9-8)), and a business
     returning after that is a wholly new account with a new number.
+  > **⚠ Edge case — returning mid-trial.** A business that cancels on day 3 of a
+  > 14-day trial and returns on day 40 is inside its dormancy window, so [F6.11c](#f6-11c)
+  > restores it. **What it is restored to is unstated:** the rest of its trial,
+  > a fresh trial, or a paid period starting that day.
+  >
+  > **Recommendation:** resuming always opens a paid period ([F6.10a](#f6-10a)), and any
+  > unused trial is forfeited. A trial is an offer to evaluate the product once;
+  > a business that evaluated it, left, and came back has made the decision the
+  > trial exists to inform.
+  >
+  > **Alternatives considered.** _(a) Restore the remaining days_ — requires
+  > holding a paused trial clock through dormancy, and lets a business bank free
+  > days by cancelling the moment it stops needing the phone. _(b) A fresh trial_
+  > — worse: cancel-and-return becomes an unlimited free tier. _(c) Refuse the
+  > return and make them a new account_ — contradicts [F6.12b](#f6-12b)'s whole purpose,
+  > which is that the number and history survive.
 - <a id="f6-12c"></a>**F6.12c** The total on any invoice **never exceeds $500** ([F6.9](#f6-9)), cancellation
   or not. Worked example: a business accrues $470 of usage in a month → the next
   invoice would be `$100 + $470 = $570` → clamped to **$500**, so $400 of usage is
@@ -1045,6 +1192,24 @@ fails one invoice rather than two.
 - <a id="f6-16"></a>**F6.16** A change to commercial terms **never rewrites history**. Each billing
   period is settled under the terms in force when it ran, so past invoices remain
   reproducible.
+  > **⚠ Edge case — a trial in flight when the terms change.** [F6.16](#f6-16) pins a
+  > _billing period_ to the terms in force when it ran, and a trial is not a
+  > billing period ([F6.1](#f6-1)). Shortening `trial_days` from 21 to 14 therefore has
+  > no stated effect on the businesses currently on day 16 of a 21-day trial —
+  > which either ends their trial retroactively or does nothing, depending only on
+  > how it is implemented.
+  >
+  > **Recommendation:** **a trial is pinned to the policy version in force when it
+  > started**, exactly as a period is. Both bounds and both figures are fixed at
+  > the moment the number goes live and never move afterwards, except by the
+  > operator's explicit extension ([F9.1c](#f9-1c)).
+  >
+  > **Alternatives considered.** _(a) Apply the new bounds immediately_ — ends
+  > trials retroactively for businesses that were told a different number on the
+  > checklist screen ([F1.11](#f1-11)), which is a promise broken silently. _(b) Apply
+  > only if it lengthens the trial_ — no rule should be conditional on which way it
+  > moves the money; it is the kind of asymmetry nobody can predict from the
+  > outside.
 
 > **Architectural consequence.** Pricing is **policy data, not code**: rates, the
 > cap, the fixed fee, the trial bounds, and the set of outcomes that count as
@@ -1781,6 +1946,23 @@ forty-eight hours.
   waiting on a bank, or caught by a Ringly fault would otherwise be deleted while
   the problem is being worked. **Silence is not a pause:** absent an explicit
   operator action the default stands and the business is deleted at day 60.
+  > **⚠ Edge case — a pause has no ceiling.** Nothing bounds how long a clock may
+  > stay paused. A business paused during an investigation that nobody closes
+  > holds a rented number and a full database indefinitely, and **the pause is
+  > invisible to every other part of the product** — it looks like an ordinary
+  > dormant account.
+  >
+  > **Recommendation:** a pause carries an **expiry of its own, defaulting to 30
+  > days**, after which the clock resumes on its own and the operator is emailed.
+  > Extending it is another explicit act. The operator queue already lists paused
+  > businesses ([F8.12](#f8-12)); what it cannot do is act on one nobody revisits.
+  >
+  > **Alternatives considered.** _(a) Leave it unbounded_ — the status quo, and the
+  > failure is silent and slow, which is the shape this document treats as worst.
+  > _(b) A hard maximum with no resume_ — deletes a business mid-investigation,
+  > which is exactly what pausing exists to prevent. _(c) Require a reason and
+  > review it weekly_ — a process, not a mechanism; it works until the week
+  > somebody is on holiday.
   - **It is the only lifecycle clock there is** ([F9.3](#f9-3)), so this is the only
     pause control in the product.
 - <a id="f9-1c"></a>**F9.1c** **The operator can extend a trial** — more days, more calls, or both
