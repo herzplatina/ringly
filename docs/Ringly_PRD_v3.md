@@ -147,6 +147,10 @@ _(Carried from v2; renumbered. v2 FR1–FR10 map to [F1.1](#f1-1)–F1.10.)_
   defaulted from the Google identity and editable. It is the destination for all
   billing email, including the 48-hour warning before deletion ([F9.3a](#f9-3a)), so an
   unverified address is a silent single point of failure.
+  **It is also the address on the payment-provider customer**, so invoices,
+  receipts and decline notices ([F7.3a](#f7-3a)) reach the same inbox as everything
+  Ringly sends. Two addresses would mean a business could be up to date on its
+  service and unaware of its bill, or the reverse.
 - <a id="f1-12"></a>**F1.12** **Getting ready is a checklist of three tasks, presented
   together and completed in any order the business likes:**
 
@@ -175,6 +179,11 @@ _(Carried from v2; renumbered. v2 FR1–FR10 map to [F1.1](#f1-1)–F1.10.)_
   business its number is live and free until a stated date. **No further act is
   required of the business at any point** — not to go live, and not to start
   paying.
+
+  **The subscription is opened once the number is confirmed live** ([F1.12a-ii](#f1-12a-ii)),
+  not when the checklist goes green, so the provider's trial end and Ringly's own
+  trial start are the same instant and neither has to be corrected afterwards
+  ([F1.12a-i](#f1-12a-i)).
 
   **The business is told two dates at once**, in the same message: the day its
   trial ends and the day its first invoice is raised. They are the same day
@@ -514,12 +523,19 @@ needs — the full list is F5.15.
 **(a) Aggregate analysis of calls to Ringly**
 
 - <a id="f5-1"></a>**F5.1** Each business sees only its own data, always.
-- <a id="f5-2"></a>**F5.2** **Two filters, in order, governing everything on the page:**
-  1. **Unit** — `calendar month` (how a business thinks) or `billing period`
-     (how it is charged). One or the other, never both at once.
-  2. **Range** — `current` · `past 3` · `past 6` · `past 12` of that unit. These
-     four and no others; an arbitrary date picker invites ranges that cross a
-     unit boundary and answer nothing.
+- <a id="f5-2"></a>**F5.2** **One filter: the range** — `current` · `past 3` · `past 6` ·
+  `past 12` **billing periods**. These four and no others; an arbitrary date
+  picker invites ranges that cross a period boundary and answer nothing.
+  - **The old unit filter is withdrawn**, because the two units it offered are now
+    the same thing. It let a business choose between a calendar month (how it
+    thinks) and a billing period (how it is charged), which was a real choice only
+    while a period was a rolling 30 days from an arbitrary anchor. A period is now
+    a month of the subscription ([F6](#f6--billing-and-payments)) — the 14th to the 14th — so a control
+    offering both would offer the same answer twice.
+  - **It is a month offset from the calendar's**, not identical to it, and the
+    page says so: a business anchored on the 14th sees March 14 – April 14, not
+    March. Labelling the range with its actual dates costs nothing and stops the
+    figures being read against a calendar month they do not cover.
 - <a id="f5-3"></a>**F5.3** **Five top-level metric tiles, aggregate only.** There is no per-customer reporting:
   a customer cannot be reliably identified — names are not unique and one person
   rings from different numbers — so any per-customer figure would be a guess
@@ -847,6 +863,18 @@ bad fails one invoice rather than two.
     model had a fixed seven days of service after a decline, counted by Ringly.
     That clock is withdrawn: service now lasts exactly as long as the provider is
     still trying, which is the same thing said once instead of twice.
+  - **The window must be shorter than a billing period, and this is a hard
+    constraint rather than a preference.** A subscription whose invoice is unpaid
+    goes on raising the next month's invoice at the next cycle. If the retries for
+    March's invoice were still running when April's was raised, the business would
+    hold **two** unpaid periodic invoices and be charged $100 for a month during
+    which the decision to stop serving it had already been made — the exact
+    accumulation [I2](#i2) exists to forbid. **Ringly must pause the subscription before
+    the next cycle**, and configuring a retry window shorter than a month is what
+    guarantees it does ([Q8](#q8)).
+  - **The constraint also bounds the debt.** With it, a business holds at most one
+    periodic invoice plus one final usage invoice ([I3a](#i3a)); without it, there is no
+    ceiling at all.
   - **Usage accrued during it is billable**, and settles with its period in the
     ordinary way. Service given is service billed.
   - **The provider emails about the decline and each retry** ([F6.21](#f6-21)); Ringly
@@ -905,18 +933,26 @@ bad fails one invoice rather than two.
 - <a id="f6-11b-iv"></a>**F6.11b-iv — Retired.** It gave a fresh grace clock to a business that failed
   again immediately after being restored. There is no Ringly-run grace clock; the
   provider's retry schedule starts over on its own ([F6.11](#f6-11)).
-- <a id="f6-11c"></a>**F6.11c** **Settling what is owed restores service, automatically and the
-  same day.** The provider notifies Ringly that the invoice is paid, and Ringly
+- <a id="f6-11c"></a>**F6.11c** **A paused business comes back by owing nothing and asking, and
+  those are two different acts for two different reasons.** In both cases Ringly
   resumes the subscription, rebinds the agent with a verified read-back, opens a
   new period ([F6.10c](#f6-10c)), and emails to say the number is answering again.
-  - **"Nothing outstanding" is the test, not "a payment arrived."** A business can
-    have two open invoices ([F6.11a](#f6-11a)); clearing one of two leaves it paused, and
-    the email says what remains.
+  - **A business that was paused for non-payment resumes automatically, the same
+    day it settles.** The provider notifies Ringly that the invoice is paid, and
+    Ringly restores it without being asked. **It is not made to ask**: it has
+    already done the only thing that was being required of it, and a second step
+    between paying and being served is a step that will be missed.
+  - **A business that cancelled resumes by asking, from the dashboard** ([F5.15](#f5-15)).
+    It owes nothing, so there is no event to trigger on and nothing to infer — it
+    left deliberately and comes back deliberately.
+  - **"Nothing outstanding" is the precondition for both.** A business can hold
+    two open invoices ([F6.11a](#f6-11a)); clearing one of two leaves it paused, the resume
+    control stays unavailable, and the email says what remains ([F6.12b](#f6-12b)).
   - **It does not matter how the payment cleared** — a provider retry, a new card,
     or the business paying the hosted invoice by hand all reach Ringly the same
     way.
-  - **It works only inside the dormancy window.** After teardown there is no
-    subscription to resume, no number to rebind, and no data to restore
+  - **Either way it works only inside the dormancy window.** After teardown there
+    is no subscription to resume, no number to rebind, and no data to restore
     ([F6.12b](#f6-12b)).
 - <a id="f6-11c-i"></a>**F6.11c-i** **A business that has paid and is still not being answered is the
   worst state in the system**, so recovery must not depend on a single message
@@ -1537,8 +1573,8 @@ what is destroyed in forty-eight hours.
   names**. This is how a support conversation gets resolved — looking at the same
   screen the person on the phone is describing.
   - **Read-only. Every control in [F5.15](#f5-15) is absent**, not disabled — editing
-    services and hours, setting horizons, confirming a test call, and the digest
-    opt-out. **There is no customer-deletion control to hide**, here or on the
+    services and hours, setting horizons, updating the payment method, cancelling
+    the service, and the digest opt-out. **There is no customer-deletion control to hide**, here or on the
     business's own dashboard ([F9.1a](#f9-1a)).
   - **Visibly a borrowed view**, banner-marked with the business's name.
   - **Not impersonation.** No business session is created and no business
@@ -1682,7 +1718,7 @@ what is destroyed in forty-eight hours.
   **It is the only lifecycle clock in the product** ([F9.3](#f9-3)), so this is the only
   such control.
 
-### F9 — Account lifecycle, suspension and data retention
+### F9 — Account lifecycle, dormancy and data retention
 
 - <a id="f9-1"></a>**F9.1** **A business is never deleted for failing to become a customer.**
   The trial converts by itself ([F1.12b](#f1-12b)), so there is no state in which a
@@ -1852,9 +1888,12 @@ what is destroyed in forty-eight hours.
   - **To the operator:** the same event, with the money — lifetime net revenue
     and the amount left owing — because deletion is the moment a customer
     relationship ends and the only moment those totals are final ([F7.13](#f7-13)).
-  - **It is sent even when the address was never verified** ([F1.11](#f1-11)). An
-    unactivated business may never have confirmed its email; best effort to the
-    address on file is better than deleting in silence.
+  - **It is sent even when the address has stopped working** ([F7.15](#f7-15)). Every
+    provisioned business verified its contact address once ([F1.11](#f1-11), [F1.12](#f1-12)),
+    but an address that worked in March can bounce in September, and the operator
+    queue may already be carrying it as undeliverable. **Best effort to the
+    address on file is better than deleting in silence**, and the queue entry is
+    what prompts a human to reach them another way.
 - <a id="f9-3d"></a>**F9.3d** **The deletion email is sent before anything irreversible happens to
   the business.** Two constraints fix its position and both are load-bearing:
   - **Before the tenant rows are deleted**, because `departed_businesses`
@@ -2277,6 +2316,14 @@ that the product worked, and it is the same signal the operator alert uses
   assumption; the window they span decides how long a business with a failed card
   keeps being served free, which is the largest uncontrolled giveaway left in the
   model after the cap ([F6.9b](#f6-9b)).
+  - **It is bounded above by one billing period and that bound is not negotiable**
+    ([F6.11](#f6-11)): a window running past the next cycle raises a second $100 invoice
+    against a business already being stopped. Whatever is chosen, it is a value
+    strictly under 28 days — the shortest month a period can be.
+  - The provider's own retry scheduling spreads attempts across the window, so
+    the question is really "how many days of free service is a recoverable
+    customer worth", and it should be answered with the same reasoning that made
+    dormancy 60 days: the number rental is cheap and a lost customer is not.
 
 **Action items — work that is not a question and not a phase:**
 
