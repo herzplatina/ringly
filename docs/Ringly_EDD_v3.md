@@ -1112,33 +1112,49 @@ only to Ringly (2.1.3).
 
 #### 2.5.2.1 One press, and what makes it exactly one
 
-**The idempotency key is derived, not generated**, so a double-click, a retried
-`POST`, a proxy replay and a resumed background run all produce the same key
-without needing to have agreed on one:
+**Activation is not a special charge.** It is period 1's fixed fee
+([F1.12a](Ringly_PRD_v3.md#f1-12a): "there is no separate activation fee"), so it
+goes through the same invoice sequence as every other fixed fee
+([§2.10.9](#2109-the-stripe-object-lifecycle-end-to-end)) and produces the same
+Stripe objects, the same tax treatment ([F6.18](Ringly_PRD_v3.md#f6-18)), the same
+receipt ([F6.20](Ringly_PRD_v3.md#f6-20)) and the same webhooks. **An earlier
+revision charged it with a bare `PaymentIntent`**, which gave period 1 no invoice,
+no Stripe-computed tax, no receipt, and no `fixed_fee_invoiced` row for the
+per-period index to protect — a special case that bought nothing.
+
+**The invoice is the idempotent object, and it is created once per business.**
 
 ```
-idem = 'activate:v1:' || business_id || ':' || payment_method_id
+idem = 'activate:v1:' || business_id
 ```
 
-**The payment method is in the key deliberately.** Without it, a business whose
-card declines and who then adds a different card would re-press Activate and
-receive a replay of the first decline — the payment provider returns the
-original response for a repeated key, and the original response was "no". With
-it, changing the card changes the key, which is correct because a new card is a
-new act; pressing again with the _same_ card replays, which is also correct
-because that press is the one [F1.12a-i](Ringly_PRD_v3.md#f1-12a-i) says must never take money twice.
+`stripe.invoices.create` carries that key, so a double-click, a retried `POST`, a
+proxy replay and a resumed background run all reach the same invoice. **There is
+never a second activation invoice**, which is the property that matters: two open
+invoices for period 1 would both sit inside Smart Retries and could both
+eventually be paid.
 
-**Two presses in flight at once do not race.** The second reaches the provider
-with the key already in use and receives that provider's in-use error, which the
-handler maps to "in progress" — the same thing the poll says. Nothing local
-needs a lock.
+**A different card is a genuine retry, not a replay.** `stripe.invoices.pay`
+takes the payment method and is called without an idempotency key, so pressing
+Activate again after a decline attempts payment again — and after a _successful_
+one errors with "already paid", which
+[§2.10.4](#2104-when-a-charge-fails) classifies as success. This is why the
+payment method is **not** in the key. An earlier revision put it there to stop a
+second card replaying the first decline; that was solving a `PaymentIntent`
+problem, and with an invoice the same key must be kept stable or a second card
+creates a second invoice.
+
+**Two presses in flight at once do not race.** The second reaches Stripe with the
+key already in use on `invoices.create` and receives the in-use error, which the
+handler maps to "in progress" — the same thing the poll says. Nothing local needs
+a lock.
 
 **Decision, not settled by the PRD — Activate is submit-and-poll, not
-request-response.** [F1.12a-i](Ringly_PRD_v3.md#f1-12a-i)'s "no failure is ever handed back as press it
-again" cannot be satisfied by a design where the screen's state is the `POST`'s
-response, because a response can be lost to a closed laptop lid, a proxy
-timeout, or a deploy. So the button's state is read from `GET /api/activation`,
-which is a pure function of durable state, and the `POST` is merely what starts
+request-response.** [F1.12a-i](Ringly_PRD_v3.md#f1-12a-i)'s "no failure is ever
+handed back as press it again" cannot be satisfied by a design where the screen's
+state is the `POST`'s response, because a response can be lost to a closed laptop
+lid, a proxy timeout, or a deploy. The button's state is read from
+`GET /api/activation`, a pure function of durable state; the `POST` merely starts
 the work. A lost response is then not a lost activation, and the client never
 needs to know whether its request arrived.
 
@@ -1160,21 +1176,24 @@ needs to know whether its request arrived.
                    VALUES ($1, 'activation_charge_attempted',
                            $policy.fixed_fee_cents, $idem, now())
                    ON CONFLICT (idempotency_key) DO NOTHING
-2  (sync, remote)  PaymentIntent: off_session, confirm, Idempotency-Key: $idem,
-                   metadata { business_id, purpose: 'activation' }
-   ├─ declined        → INSERT billing_events 'activation_charge_failed'
-   │                       (provider_ref = payment_intent.id,
+2  (sync, remote)  the charge sequence of §2.10.9 — create, item, finalise, pay —
+                   with two differences, because no period exists yet:
+                     • idempotencyKey on `invoices.create` is $idem, not the
+                       period-derived key
+                     • metadata carries no ringly_period_id; step 3 supplies it
+   ├─ pay declines    → INSERT billing_events 'activation_charge_failed'
+   │                       (provider_ref = the failed payment attempt's id,
    │                        amount_cents = policy.fixed_fee_cents,
-   │                        occurred_at  = payment_intent.created)
+   │                        occurred_at  = the attempt's timestamp)
    │                     ON CONFLICT (provider_ref) DO NOTHING       → respond
    ├─ key in use      → respond 'in_progress'                        (no row)
-   └─ succeeded       ↓
+   └─ paid            ↓
 3  (sync, local)   ── ONE TRANSACTION ────────────────────────────────────
                    INSERT INTO billing_periods (business_id, policy_id,
                        starts_on, ends_on, fixed_fee_state, fixed_fee_invoice_ref, …)
                      ON CONFLICT (business_id, starts_on) DO NOTHING
                    INSERT INTO billing_events (kind 'activation_charge',
-                       provider_ref = payment_intent.id, period_id, amount_cents)
+                       provider_ref = invoice.id, period_id, amount_cents)
                      ON CONFLICT (provider_ref) DO NOTHING
                    UPDATE businesses SET billing_status = 'active',
                        activated_at = $starts_on
@@ -1188,135 +1207,172 @@ needs to know whether its request arrived.
 
 **Step 3 is one transaction because every write in it is local to one Postgres,
 and it is the only step that can be.** Steps 2 and 4 are HTTP calls to other
-companies; the same argument as [§2.6.3](#263-booking-in-order)'s steps 5 and 6, and the same conclusion
-— pick an order in which the unwind is in the safe direction rather than
-pretending a distributed transaction exists.
+companies; the same argument as [§2.6.3](#263-booking-in-order)'s steps 5 and 6,
+and the same conclusion — pick an order in which the unwind is in the safe
+direction rather than pretending a distributed transaction exists.
 
 **What is durable after each step:**
 
-| After | At Stripe                 | In Ringly's database                                     |
-| ----- | ------------------------- | -------------------------------------------------------- |
-| 1     | nothing                   | the attempt row, carrying the idempotency key            |
-| 2     | a succeeded PaymentIntent | the attempt row, unchanged                               |
-| 3     | as above                  | `active`, period 1, the ledger row, no deletion deadline |
-| 4     | as above                  | `agent_bound_at`                                         |
-| 5     | as above                  | a queued email row                                       |
+| After | At Stripe      | In Ringly's database                                     |
+| ----- | -------------- | -------------------------------------------------------- |
+| 1     | nothing        | the attempt row, carrying the idempotency key            |
+| 2     | a paid invoice | the attempt row, unchanged                               |
+| 3     | as above       | `active`, period 1, the ledger row, no deletion deadline |
+| 4     | as above       | `agent_bound_at`                                         |
+| 5     | as above       | a queued email row                                       |
 
 **Step 1 exists to make step 2's window recoverable locally.** The attempt row
-carries the exact key step 2 used, so any repair path can re-issue byte-identical
-create call and receive the original PaymentIntent back rather than charging a
-second time. Without it, the repair would have to search the payment provider by
-metadata to discover a charge Ringly does not know it made — possible, but a
-scan of somebody else's system standing in for a row of our own. The cost is one
-extra ledger row per activation, and `billing_events` is append-only anyway
-([N10.4](Ringly_PRD_v3.md#n10-4), [F6.14](Ringly_PRD_v3.md#f6-14)), so the row is a permanent and accurate statement that a press
-happened.
+carries the exact key step 2 used, so any repair path can re-issue a
+byte-identical `invoices.create` and receive the original invoice back rather than
+raising a second one. Without it the repair would have to search Stripe by
+metadata to discover an invoice Ringly does not know it raised — possible, but a
+scan of somebody else's system standing in for a row of our own.
 
-**The uniqueness that makes step 3 safe to run repeatedly is in the database,
-not in the application** — the same choice as [§2.6.4](#264-fail-closed-concretely)'s partial index:
+**The uniqueness that makes step 3 safe to run repeatedly is in the database, not
+in the application** — the same choice as [§2.6.4](#264-fail-closed-concretely)'s
+partial index:
 
 ```sql
 CREATE UNIQUE INDEX billing_events_provider_ref_unique
-    ON billing_events (provider_ref)     WHERE provider_ref     IS NOT NULL;
+    ON billing_events (provider_ref)    WHERE provider_ref    IS NOT NULL;
 
 CREATE UNIQUE INDEX billing_events_idempotency_key_unique
-    ON billing_events (idempotency_key)  WHERE idempotency_key  IS NOT NULL;
+    ON billing_events (idempotency_key) WHERE idempotency_key IS NOT NULL;
 
 ALTER TABLE billing_periods ADD CONSTRAINT one_period_per_start
     UNIQUE (business_id, starts_on);
 ```
 
 **Two columns rather than one, because they are two different namespaces.**
-`provider_ref` holds an id the payment provider minted; `idempotency_key` holds a
-string Ringly minted. An earlier revision put the key in `provider_ref` and relied
-on `activate:v1:…` never colliding with `pi_…` — true, and true by luck rather
-than by construction. Separating them makes each unique index mean one thing, and
-makes the attempt row addressable by the only identifier that exists before the
-provider has been called at all.
+`provider_ref` holds an id Stripe minted; `idempotency_key` holds a string Ringly
+minted. An earlier revision put the key in `provider_ref` and relied on
+`activate:v1:…` never colliding with an `in_…` id — true, and true by luck rather
+than by construction.
 
-**`starts_on` is the charge's date rendered in the business's timezone ([N5.2](Ringly_PRD_v3.md#n5-2)),
-not today's date.** This is the detail that makes the second constraint work as
-a guard rather than as a coincidence: a repair running a day after the charge
-must compute the same `starts_on`, or it inserts a second period, gives the
+**`starts_on` is the invoice's date rendered in the business's timezone
+([N5.2](Ringly_PRD_v3.md#n5-2)), not today's date.** This is what makes the third
+constraint a guard rather than a coincidence: a repair running a day after the
+charge must compute the same `starts_on`, or it inserts a second period, gives the
 business a free day, and moves every subsequent boundary for the life of the
-account. Deriving the date from the payment provider's `created` timestamp makes
-the period's identity a function of the charge — which is what [F6.1](Ringly_PRD_v3.md#f6-1) says it is —
-and makes the constraint idempotent forever rather than for a day.
+account. Deriving the date from Stripe's own timestamp makes the period's identity
+a function of the charge — which is what [F6.1](Ringly_PRD_v3.md#f6-1) says it is —
+and makes the constraint idempotent for ever rather than for a day.
 
 **The in-request retry ladder for step 3 is immediate, then 250 ms, 1 s, 4 s** —
 four attempts, about five seconds — after which the handler returns and the poll
 keeps saying `in_progress`. It is short because the failures it covers are
-transient local ones; anything longer is a fault that needs the repair paths
-below, not a fifth attempt.
+transient local ones; anything longer is a fault for the repair paths below, not a
+fifth attempt.
 
 ##### 2.5.2.2a The three rows an activation can produce
 
 One press writes **at most three** ledger rows, and which ones depend only on how
-far it got. Stated in full because the earlier revision specified the first and
-the third and left the second to be inferred.
+far it got.
 
-| Row                           | Written at                      | `provider_ref`      | `idempotency_key` | `amount_cents`              | `period_id`          |
-| ----------------------------- | ------------------------------- | ------------------- | ----------------- | --------------------------- | -------------------- |
-| `activation_charge_attempted` | Step 1, before Stripe is called | — none yet          | `$idem`           | the fee about to be charged | — no period exists   |
-| `activation_charge_failed`    | Step 2, on decline              | `payment_intent.id` | —                 | the fee that was refused    | — no period exists   |
-| `activation_charge`           | Step 3, inside the transaction  | `payment_intent.id` | —                 | the fee charged             | the period it opened |
+| Row                           | Written at                      | `provider_ref`                  | `idempotency_key` | `amount_cents`              | `period_id`          |
+| ----------------------------- | ------------------------------- | ------------------------------- | ----------------- | --------------------------- | -------------------- |
+| `activation_charge_attempted` | Step 1, before Stripe is called | — none yet                      | `$idem`           | the fee about to be charged | — no period exists   |
+| `activation_charge_failed`    | Step 2, on decline              | the failed payment attempt's id | —                 | the fee that was refused    | — no period exists   |
+| `activation_charge`           | Step 3, inside the transaction  | `invoice.id`                    | —                 | the fee charged             | the period it opened |
 
 **`period_id` is null on the first two because a period does not exist yet**, and
 [F6.1](Ringly_PRD_v3.md#f6-1) makes the first charge _period 1's_ — so a period
-that existed before its charge cleared would be a period nobody paid for. That is
-why the column is nullable in [§2.4](#24-data-model)/005 rather than merely
-convenient.
+that existed before its charge cleared would be one nobody paid for. That is why
+the column is nullable in [§2.4](#24-data-model)/005 rather than merely convenient.
 
-**A repeated decline of the same card writes one row, not many.** The idempotency
-key includes the payment-method id ([§2.5.5](#255-decisions-this-section-makes-and-one-correction)
-decision 4), so pressing Activate again with the same card re-issues the same key,
-Stripe returns **the same declined PaymentIntent**, and
-`ON CONFLICT (provider_ref) DO NOTHING` collapses it. Trying a _different_ card is
-a new key, a new PaymentIntent, and therefore a second `activation_charge_failed`
-row — which is correct: [F6.14](Ringly_PRD_v3.md#f6-14) wants each failure
-recorded, and two cards being refused is two failures.
+**The failure row keys on the payment attempt, not on the invoice**, because the
+invoice is stable across retries by design and two genuine declines — one card,
+then another — must both be recorded ([F6.14](Ringly_PRD_v3.md#f6-14)). Keying
+them on `invoice.id` would collapse the second into the first and lose a failure
+the requirement wants kept.
 
-**`activation_charge_failed` and `activation_charge` can never both exist for one
-PaymentIntent**, because they key on the same `provider_ref` under one unique
-index and a PaymentIntent either succeeded or it did not. The database enforces
-what would otherwise be a rule somebody has to remember.
+> **Needs confirming against a test account, with A4.** That each `invoices.pay`
+> attempt exposes a distinguishable payment-attempt id is assumed here and not
+> verified. If Stripe reuses one identifier across attempts on an invoice, the
+> failure row needs a different key — the attempt count, or Ringly's own
+> monotonic — and this is the sentence that says so rather than the code
+> discovering it.
 
-**`occurred_at` is the provider's timestamp wherever there is one** — `created` on
-the PaymentIntent for rows two and three — and Ringly's clock only for row one,
-which happens before the provider knows anything. A repair running a day later
-therefore writes the same instant the original would have
-([§2.5.2.3](#2523-what-a-crash-between-any-two-steps-leaves-behind)), which is the
-same argument that fixes `starts_on` to the charge's date rather than the repair's.
+**`activation_charge` keys on `invoice.id`, and there is exactly one**, because
+[§2.5.2.1](#2521-one-press-and-what-makes-it-exactly-one)'s key makes one
+activation invoice per business for the life of the account.
 
-**What is deliberately not written.** A press that arrives while an identical one
-is in flight responds `in_progress` and writes nothing — the attempt row already
-exists and says everything a second one would. And a press by a business whose
-checklist is incomplete never reaches step 1 at all, so it leaves no trace: the
-ledger records charges attempted, not buttons pressed.
+**`occurred_at` is Stripe's timestamp wherever there is one** and Ringly's clock
+only for row one, which happens before Stripe knows anything. A repair running a
+day later therefore writes the same instant the original would have.
+
+**What is deliberately not written.** A press arriving while an identical one is
+in flight responds `in_progress` and writes nothing. A press by a business whose
+checklist is incomplete never reaches step 1: the ledger records charges
+attempted, not buttons pressed.
+
+##### 2.5.2.2b Which mechanism writes each row, and how the owner finds out
+
+Three things can advance an activation — the request handler, the Stripe webhook,
+and the sweep — and it matters which, because only one of them has the owner
+watching.
+
+| Row                           | Written in-process                        | Written by webhook                                 | Written by sweep |
+| ----------------------------- | ----------------------------------------- | -------------------------------------------------- | ---------------- |
+| `activation_charge_attempted` | **Always** — step 1 is synchronous        | Never                                              | Never            |
+| `activation_charge_failed`    | **Normally** — step 2 returns the decline | `invoice.payment_failed`, if the response was lost | Yes, on replay   |
+| `activation_charge`           | **Normally** — step 3 follows step 2      | `invoice.paid`, if the crash was between 2 and 3   | Yes, on replay   |
+
+**The webhooks are the ones already subscribed** — `invoice.paid` and
+`invoice.payment_failed` ([§2.10.10](#21010-the-webhook-endpoint)) — which is a
+consequence of activation using the ordinary invoice path rather than a
+`PaymentIntent`. An earlier revision named `payment_intent.succeeded` here, and
+that event was never in the subscribed set, so the repair it promised did not
+exist.
+
+**In the ordinary case the owner is watching and the poll answers.** Step 2
+returns in a second or two, step 3 follows immediately, and the poll moves
+`in_progress → connecting → live` while the page is open.
+
+**When the response is lost, the webhook usually beats the sweep.** Stripe pushes
+`invoice.paid` within seconds, and the handler runs the same step 3. An owner who
+kept the tab open sees the poll advance without doing anything.
+
+**When both are lost, the sweep closes it — and the owner is told by email, not
+by the page.** The hourly worker
+([§2.2.2](#222-request-paths-and-background-work)) picks up attempt rows older
+than a few minutes with neither a charge nor a failure against them, and step 5
+enqueues the "you're live" message ([§2.11](#211-email)). **This is the case that
+answers "must the owner come back to the page?" — no.** The page is the fast path
+and the email is the guarantee, which is the same division
+[F1.12a-i](Ringly_PRD_v3.md#f1-12a-i) already makes for the number-connecting row:
+say it plainly, then email when it is true.
+
+**The owner is never asked to press Activate again in any of these**
+([F1.12a-i](Ringly_PRD_v3.md#f1-12a-i)). A repeat press while work is in flight is
+absorbed by the idempotency key, and one after the work has finished finds the
+invoice already paid.
 
 #### 2.5.2.3 What a crash between any two steps leaves behind
 
-| Crash                              | Left behind                             | Repaired by                                                                                                                                                  |
-| ---------------------------------- | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Before 1                           | Nothing. The press did not happen       | Nothing to repair; the button is still available                                                                                                             |
-| Between 1 and 2                    | An attempt row, no money moved          | The sweep replays 2 with the recorded key; the provider either has the intent or charges once                                                                |
-| Between 2 and 3                    | **Money taken, nothing local**          | The `payment_intent.succeeded` webhook, or the sweep, replays 2 (same object returned) then runs 3                                                           |
-| Inside 3                           | Nothing partial — it is one transaction | Rolled back; the sweep re-runs it                                                                                                                            |
-| Between 3 and 4                    | Activated, charged, possibly unbound    | [§2.5.3.1](#2531-intended-bind-state-is-derived-never-stored)'s reconciliation: intent says answer, provider says no agent                                   |
-| Inside 4, after the bind, before 5 | Activated and bound, no email           | The dispatcher; `reason_key` makes it one message however many times it is enqueued ([§2.11.2](#2112-enforcing-if-it-is-not-in-the-registry-it-is-not-sent)) |
+| Crash                              | Left behind                             | Repaired by                                                                                |
+| ---------------------------------- | --------------------------------------- | ------------------------------------------------------------------------------------------ |
+| Before 1                           | Nothing. The press did not happen       | Nothing to repair; the button is still available                                           |
+| Between 1 and 2                    | An attempt row, no money moved          | The sweep replays 2 with the recorded key; Stripe either has the invoice or raises it once |
+| Between 2 and 3                    | **Money taken, nothing local**          | The `invoice.paid` webhook, or the sweep, replays 2 (same invoice returned) then runs 3    |
+| Inside 3                           | Nothing partial — it is one transaction | Rolled back; the sweep re-runs it                                                          |
+| Between 3 and 4                    | Activated, charged, possibly unbound    | [§2.5.3.1](#2531-intended-bind-state-is-derived-never-stored)'s reconciliation             |
+| Inside 4, after the bind, before 5 | Activated and bound, no email           | The dispatcher; `reason_key` makes it one message however many times it is enqueued        |
 
-**Row three is the one the design exists for**, and it is the only window in
-which money exists and Ringly does not know it. It is closed by two independent
-mechanisms because [F1.12a-i](Ringly_PRD_v3.md#f1-12a-i)'s row two must never reach the screen: the payment
-provider's own webhook, which is push and usually arrives in seconds, and the
-**hourly settlement worker** ([§2.2.2](#222-request-paths-and-background-work)), which scans attempt rows older than a few
-minutes with neither a charge nor a failure row against them. Both call the same
-function. Both are safe to run concurrently, because step 3's constraints
+**Row three is the one the design exists for**, and it is the only window in which
+money exists and Ringly does not know it. It is closed by two independent
+mechanisms because [F1.12a-i](Ringly_PRD_v3.md#f1-12a-i)'s row two must never reach
+the screen: Stripe's `invoice.paid` webhook, which is push and usually arrives in
+seconds, and the **hourly settlement worker**
+([§2.2.2](#222-request-paths-and-background-work)), which scans attempt rows older
+than a few minutes with neither a charge nor a failure row against them. Both call
+the same function. Both are safe to run concurrently, because step 3's constraints
 arbitrate rather than the caller's care.
 
 **The sweep's cost is bounded by the number of activations in flight**, which in
-steady state is zero — the same property [§2.2.2](#222-request-paths-and-background-work) requires of every worker, and
-the reason this does not become a scan that grows with tenants ([N4.1](Ringly_PRD_v3.md#n4-1)).
+steady state is zero — the same property [§2.2.2](#222-request-paths-and-background-work)
+requires of every worker, and the reason this does not become a scan that grows
+with tenants ([N4.1](Ringly_PRD_v3.md#n4-1)).
 
 #### 2.5.2.4 The three rows, made independently reachable
 
@@ -1576,7 +1632,7 @@ implementation:
 | 1   | Commit the business row **before** checking granted scopes (steps 5 and 6 swapped)                                                                                               | [F1.7b](Ringly_PRD_v3.md#f1-7b)'s "the draft is kept" is only durable if it is a row                                                                                                                                                                                |
 | 2   | `enrichment_requests` and `test_call_confirmed_at` are tables/columns in `005`; `billing_events` sits there too, with the rest of the foundations                                | Each lands where the things that depend on it can reach it — [N9.1](Ringly_PRD_v3.md#n9-1), [F1.12](Ringly_PRD_v3.md#f1-12), and a money ledger that must predate the first payment fact. **Ratified 2026-08-01: delivery order does not get to decide the schema** |
 | 3   | Provisioning waits for the calendar credential                                                                                                                                   | [F4.1](Ringly_PRD_v3.md#f4-1) makes a calendar-less business unable to become a customer; [N9.3](Ringly_PRD_v3.md#n9-3)'s argument, one step on                                                                                                                     |
-| 4   | The idempotency key includes the payment method id                                                                                                                               | Otherwise a second card replays the first decline                                                                                                                                                                                                                   |
+| 4   | The activation idempotency key is the **business**, not the business plus payment method. **Revised 2026-08-03**                                                                 | With an invoice, a key that moves when the card does raises a _second_ activation invoice, and two open invoices for period 1 could both be paid. Paying again with a different card is a genuine retry ([§2.5.2.1](#2521-one-press-and-what-makes-it-exactly-one)) |
 | 5   | Activate is submit-and-poll                                                                                                                                                      | [F1.12a-i](Ringly_PRD_v3.md#f1-12a-i)'s "never press it again" cannot survive the state living in a response                                                                                                                                                        |
 | 6   | An `activation_charge_attempted` ledger row precedes the charge                                                                                                                  | Makes the charge-without-record window repairable from Ringly's own data                                                                                                                                                                                            |
 | 7   | `starts_on` comes from the charge's timestamp, not from the clock at repair time                                                                                                 | A late repair must compute the same period boundary or it moves every one after it                                                                                                                                                                                  |
@@ -3901,8 +3957,13 @@ default payment method is idempotent, so the design does not choose between them
   automatic attempt, an hour later, finds a paid invoice and does nothing; if it
   should ever win the race, step 4 errors with "already paid", which [§2.10.4](#2104-when-a-charge-fails)
   classifies as success.
-- **The idempotency key is derived from the period id, not generated.** Two
-  worker ticks racing produce the same key and Stripe returns the first result.
+- **The idempotency key is derived, not generated.** For a period's charges it is
+  the period id, so two worker ticks racing produce the same key and Stripe
+  returns the first result. **Activation is the one case where no period exists
+  yet**, and it keys on the business instead
+  ([§2.5.2.1](#2521-one-press-and-what-makes-it-exactly-one)) — the same sequence,
+  a different key, because the thing being made unique is still "one invoice per
+  fixed fee".
   **This protects a same-run retry only** — Stripe prunes v1 keys after about 24
   hours — so it is the cheap outer guard and not the real one. The real one is
   [§2.10.11](#21011-transaction-boundaries-and-what-a-crash-leaves)'s claim-then-record, plus:
