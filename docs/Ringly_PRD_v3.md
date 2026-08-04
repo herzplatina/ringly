@@ -1112,17 +1112,32 @@ charge failed first (F6.11).
 - **F6.20** **The division of responsibility with the payment provider is
   explicit, and nothing is done twice.** Where both could act, exactly one does:
 
-  | Function                                                                     | Owner                                                                |
-  | ---------------------------------------------------------------------------- | -------------------------------------------------------------------- |
-  | Tax calculation                                                              | **Stripe** — Ringly stores the amounts                               |
-  | Invoices, receipts, payment-succeeded email                                  | **Stripe**, carrying Ringly branding                                 |
-  | Retrying failed payments                                                     | **Stripe** — Ringly builds no retry loop                             |
-  | Every failure-path email (failure, follow-ups, suspension, deletion warning) | **Ringly**                                                           |
-  | The $500 cap and the clamp at settlement                                     | **Ringly** computes, Stripe executes                                 |
-  | Refunds                                                                      | **Neither, automatically** — goodwill only, by hand in Stripe (F5.9) |
-  | End-of-dunning behaviour and teardown                                        | **Ringly** (F6.19)                                                   |
-  | Billing thresholds                                                           | **Neither** — deliberately not configured                            |
-  | Self-service cancellation portal                                             | **Disabled** (§1.9)                                                  |
+  | Function                                                                     | Owner                                                                                                              |
+  | ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+  | Tax calculation                                                              | **Stripe** — Ringly stores the amounts                                                                             |
+  | Invoices, receipts, payment-succeeded email                                  | **Stripe**, carrying Ringly branding                                                                               |
+  | Retrying failed payments                                                     | **Stripe** while its automatic window lasts; **Ringly** for whatever remains of suspension after it ends (R27, A4) |
+  | Every failure-path email (failure, follow-ups, suspension, deletion warning) | **Ringly**                                                                                                         |
+  | The $500 cap and the clamp at settlement                                     | **Ringly** computes, Stripe executes                                                                               |
+  | Refunds                                                                      | **Neither, automatically** — goodwill only, by hand in Stripe (F5.9)                                               |
+  | End-of-dunning behaviour and teardown                                        | **Ringly** (F6.19)                                                                                                 |
+  | Billing thresholds                                                           | **Neither** — deliberately not configured                                                                          |
+  | Self-service cancellation portal                                             | **Disabled** (§1.9)                                                                                                |
+
+- **F6.20a** **The one exception to "Ringly builds no retry loop" is the tail of
+  suspension.** Stripe's automatic retries stop after roughly two months from the
+  invoice; F6.11d case (a) needs the charge attempted from a day-1 decline to a
+  day-60 deletion. **Ringly retries only after Stripe has stopped**, never
+  alongside it — two systems charging one card is a double charge, which is worse
+  than the gap it would close.
+  - **The test is the provider's own state, not a date Ringly computes**: an
+    invoice still open, still unpaid, with no further attempt scheduled, on a
+    business still inside its suspension window.
+  - **It changes who presses the button and nothing else.** The amount, the
+    invoice and the card are unchanged; F6.11c still forbids a new period, and no
+    new charge of any kind arises (F6.11b).
+  - **If A4 shows the window already covers day 59, this never fires** and the
+    row above reads as it always did.
 
 - **F6.21** **The failure path is Ringly's because only Ringly knows the
   consequence.** Stripe's dunning email can say a card was declined; it cannot
