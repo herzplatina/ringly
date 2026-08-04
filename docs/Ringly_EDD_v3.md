@@ -5528,15 +5528,65 @@ freeing it.
   survives the risk** and stays in the catalogue: suspend, cross a would-be period
   boundary, restore, then assert that no new invoice was raised and that the
   original was retried throughout.
-- **R27 — Stripe's automatic retry window may be shorter than suspension.**
-  F6.11b-i makes the retries that never stopped the entire recovery path, and
-  case (a) of F6.11d needs one invoice retried from a day-1 decline to a day-60
-  deletion — 59 days, against a Smart Retries window of roughly two months. **This
-  is unaffected by D1**; it would be equally true under a subscription. If the
-  window runs out first, a recoverable business is quietly un-chased for exactly
-  the days when chasing matters, and nothing in the system notices. Answered by
-  A4 against a test account; if it fails, Ringly issues its own retry against the
-  stored payment method on the days the provider has stopped.
+- **R27 — Stripe stops retrying before suspension ends, and Ringly has to finish
+  the job.** F6.11b-i makes "the retries that never stopped" the entire recovery
+  path, and F6.11d case (a) needs one invoice attempted from a day-1 decline to a
+  day-60 deletion — **59 days against a Smart Retries window of roughly two
+  months**. If the window closes first, a recoverable business is quietly
+  un-chased for exactly the days when chasing matters most, and **nothing in the
+  system notices**: the invoice is still open, the business is still suspended,
+  and every component is behaving correctly on its own terms. That is the same
+  silent shape R21 had, relocated.
+  - **The window question is not caused by D1** — it would be identical under a
+    subscription. **The remedy is**: with no subscription, the only thing that can
+    take over is Ringly (F6.20a).
+  - **It contradicts F6.20 as originally written** ("Ringly builds no retry
+    loop"), which is why F6.20a now carves out the tail of suspension explicitly
+    rather than leaving the design quietly at odds with the requirement.
+  - **Ringly retries only after Stripe has stopped, never alongside it.** The
+    trigger is provider state — an invoice `open`, unpaid, with
+    `next_payment_attempt` null, on a business still inside suspension — not a
+    date Ringly computes. Two systems charging one card is a double charge, which
+    is worse than the gap it closes.
+  - Answered by **A4** with a test clock. If the window already covers day 59,
+    F6.20a never fires and this risk closes.
+
+- **R28 — D1 puts Ringly's own scheduler on the billing critical path.** Under a
+  subscription Stripe raises the invoice whether or not Ringly is healthy; under
+  D1 a settlement worker that stops means nobody is charged and no period opens.
+  **Bounded rather than unbounded**: periods and deadlines are stored rows, not
+  computed offsets (§2.4/008), so a late run catches up and computes the same
+  boundaries — F6.16 and §2.5.5's decision 7 both depend on that already. The
+  residual is **delayed revenue and a silence nobody hears** until someone looks
+  at the operator dashboard, which is the argument for the worker's own failure
+  alerting rather than for a subscription.
+
+- **R29 — Stripe becomes less legible to anyone not reading Ringly's dashboard.**
+  Without a subscription object a customer in Stripe is a list of invoices with
+  no recurring relationship, so "is this business active, and on what terms" is
+  answerable only from Ringly. That is fine for the operator (F8 exists) and
+  costs something for everyone else: Stripe's dashboard analytics — MRR, churn,
+  subscriber counts — and revenue-recognition schedules a subscription would
+  generate on its own. **Not a v3 problem; a real one the first time somebody
+  does accrual accounting or reads the account in diligence.** Accepted as the
+  known price of D1.
+
+- **R30 — a later move to plans, tiers or annual billing is a migration, not a
+  setting.** §1.9 rules out plan changes and coupons for v3, but F6.15 expects the
+  commercial terms to change once real usage is observed. If that change is ever
+  "plans" rather than "different numbers", adopting subscriptions then means doing
+  it with live paying customers and open invoices. **Accepted**: F6.15's own list
+  of what does not change — 30-day periods, the two-phase lifecycle — is the shape
+  D1 is built for, and designing for a pivot that may never come is what §1.9
+  forbids.
+
+- **R31 — Retired before it was written: Stripe's Card Account Updater is not
+  subscription-only.** The worry was that dropping the subscription would worsen
+  involuntary churn from expired and reissued cards. It does not: Stripe updates
+  **saved payment method details** whenever a network reports a replacement,
+  independently of what charges them, and support is widest in the US — which is
+  the only market Ringly serves (§1.4). Recorded because it is the first thing a
+  reviewer will reasonably fear about D1, and the answer is no.
 - **R22 — Every backup of the money records lives in one provider account**
   (N10.2). A credential compromise or an account closure takes point-in-time
   recovery and the cross-region copies together. **Accepted for v3 and deferred**
