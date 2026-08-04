@@ -69,14 +69,15 @@ and must survive losing a region. Everything else can be rebuilt from a provider
 or asked for again; what a business was charged, under which policy version, and
 against how many seconds of usage exists nowhere else in full. This forces
 append-only ledgers, versioned pricing policy, and the transaction at the end of
-teardown ([§2.13](#213-lifecycle-suspension-and-teardown)).
+teardown ([§2.13](#213-lifecycle-dormancy-and-teardown)).
 
-**2.1.4 — Exactly one act starts billing.** [F1.12b](Ringly_PRD_v3.md#f1-12b) enumerates, negatively, every
-thing that must not: call volume, elapsed time, a confirmed test call, a stored
-card, an operator. There is therefore exactly one code path that can create
-period 1 and take the first $100, and it is reached only from the Activate
-button. This is a structural claim, not a policy one — a second path is a defect
-even if it never fires.
+**2.1.4 — Exactly two things end a trial, and nothing else starts billing.**
+[F1.12b](Ringly_PRD_v3.md#f1-12b) closes the set: the trial's last day, or its call allowance. There is
+therefore exactly one code path that can create period 1 and take the first $100
+— Stripe raising an invoice because a trial ended ([§2.10.3](#2103-the-rollover-one-webhook-does-the-whole-thing)) — and
+exactly two things that can cause it, one of them the provider's own scheduler
+and one an atomic counter ([§2.10.2](#2102-ending-the-trial-on-the-call-bound)). This is a structural
+claim, not a policy one: a third trigger is a defect even if it never fires.
 
 **2.1.5 — Nothing may degrade with total platform size.** [N2.1](Ringly_PRD_v3.md#n2-1) targets 10,000
 businesses × 10,000 customers, order 10⁸ rows in `calls` and `appointments`.
@@ -143,10 +144,9 @@ email.
 | Worker                     | Cadence         | Owns                                                                                                  |
 | -------------------------- | --------------- | ----------------------------------------------------------------------------------------------------- |
 | **Analytics rollup**       | Nightly, per tz | Yesterday's `daily_call_rollups` and `cost_records` for every business                                |
-| **Billing settlement**     | Hourly          | Periods due to open or settle; the cap clamp ([§2.10](#210-billing))                                  |
-| **Lifecycle sweeper**      | Hourly          | Deadlines that have come due and are not paused; suspension; teardown                                 |
+| **Lifecycle sweeper**      | Hourly          | Dormancies due to warn or tear down; bind reconciliation ([§2.13.1](#2131-one-clock-and-the-sweeper-that-runs-it)) |
 | **Email dispatcher**       | Minutely        | Sending what is queued, with retry ([§2.11](#211-email))                                              |
-| **Billing reconciliation** | Daily           | Suspended businesses that owe nothing and were never restored ([F6.10b-i](Ringly_PRD_v3.md#f6-10b-i)) |
+| **Billing reconciliation** | Daily           | Dormant businesses that owe nothing and were never restored; periods Stripe opened that Ringly missed ([§2.10.10](#21010-coming-back), [R28](#r28)) |
 | **Calendar health probe**  | Every 5 min     | Businesses with an open calendar incident ([§2.6.4](#264-fail-closed-concretely))                     |
 | **Classification**         | Hourly          | Submits and reaps outcome-classification batches ([§2.9.1](#291-outcome-classification))              |
 
@@ -158,19 +158,23 @@ have come due, and each is safe to invoke twice.
 There is no recurrence materialiser. Recurring appointments left the product
 ([§1.4](Ringly_PRD_v3.md#14-scope)), and the worker that generated future occurrences went with them.
 
-**Hourly, not daily, for settlement and the sweeper**, because both carry
-deadlines a business feels: a period opening late means a business is served
-without a period to bill it to, and a suspension arriving a day late is a free
-day nobody decided to give. Both are cheap — they process only rows that have
-come due, which is also what satisfies [N2.3](Ringly_PRD_v3.md#n2-3): a worker's cost is bounded by the
-number of due rows, not by total platform size, so steady-state lag stays bounded
-as tenants arrive.
+**There is no billing settlement worker.** Periods open and close because Stripe
+raised an invoice, in a webhook handler rather than on a timer
+([§2.10.3](#2103-the-rollover-one-webhook-does-the-whole-thing)) — which is the largest thing the subscription
+took off Ringly's critical path, and why a scheduler that stops no longer means
+nobody is charged ([R28](#r28)).
+
+**Hourly, not daily, for the sweeper**, because the 48-hour warning has to land
+48 hours out and not 48-to-72 ([I4](Ringly_PRD_v3.md#i4)). It is cheap — it processes only rows that
+have come due, which is also what satisfies [N2.3](Ringly_PRD_v3.md#n2-3): a worker's cost is bounded by
+the number of due rows, not by total platform size, so steady-state lag stays
+bounded as tenants arrive.
 
 **Why not a queue.** Every job above is a scan of rows that have become due,
 which a table already expresses. A queue would add a second source of truth
 about what is outstanding, a second thing to keep exactly-once, and a host
-dependency 2.1.6 forbids. `lifecycle_deadlines` and the pending-email table are
-the queues.
+dependency 2.1.6 forbids. `dormancies` and the pending-email table are the
+queues.
 
 ### 2.2.3 What runs where
 
@@ -285,11 +289,12 @@ a feature that may arrive, and no table for recurrence.
 
 ```
 businesses(id pk, name, address, timezone, website, business_type,
-           contact_email, contact_email_verified_at, test_call_confirmed_at,
+           contact_email, contact_email_verified_at,
            phone_number, telephony_agent_id, agent_bound_at,
-           billing_status, activated_at,
+           stripe_customer_id, stripe_subscription_id,
+           service_state, service_started_at,
            booking_horizon_days default 70 check between 7 and 180,
-           test_calls_used, created_at)
+           created_at)
 
 billing_events(id pk, business_id fk, kind, amount_cents null,
                provider_ref null, idempotency_key null,
@@ -313,7 +318,7 @@ appointments(id pk, business_id fk, customer_id fk not null,
 
 calls(id pk, business_id fk, provider_call_id unique,
       started_at, ended_at, connected_seconds,
-      is_test_call, calendar_incident_id fk null,
+      is_trial_call, calendar_incident_id fk null,
       outcome null, outcome_ruleset_version null, classified_at null)
 
 call_sessions(provider_call_id pk, business_id fk, snapshot jsonb,
@@ -329,30 +334,35 @@ any period exists. [N10.4](Ringly_PRD_v3.md#n10-4)'s "nothing is ever hard-delet
 is explicitly cheapest to hold from the first migration, and holding it from the
 _second_ one means the first payment fact the product learns has nowhere to go.
 **`amount_cents` and `provider_ref` are nullable** because the ledger records
-events that carry no money — a payment method attached, a SetupIntent confirmed —
-and those are exactly the ones the checklist reads ([§2.5.1.7](#2517-the-checklist-step-8)).
+attempts before their outcome is known, and an attempt has neither a settled
+amount nor an id from the provider until it succeeds.
 
 **The checklist's three items split by who owns the fact, and that is
-deliberate**: `contact_email_verified_at` and `test_call_confirmed_at` are
-Ringly's own and live here; **the card is Stripe's, and is read from Stripe**
-([§2.5.1.7](#2517-the-checklist-step-8), [§2.10.10a](#21010a-the-card-is-stripes-fact-and-is-read-from-stripe)).
+deliberate** ([F1.12](Ringly_PRD_v3.md#f1-12)). `contact_email_verified_at` is Ringly's own and lives
+here. **The calendar grant is the credential store's** ([§2.4](#24-data-model)/006) — the item is
+green when a usable refresh token exists, which is the same question
+[§2.7.3](#273-credentials-and-the-token-lifecycle) already answers for the call path. **The card is
+Stripe's, and is read from Stripe** ([§2.10.11](#21011-the-card-is-stripes-fact-and-is-read-from-stripe)).
 There is no `payment_method_attached_at` column and no ledger row standing in for
-one — the payment-method rows below are history, not an answer.
+one.
 
-**`test_call_confirmed_at` is a timestamp rather than a boolean for one honest
-reason: every "has this happened" in this schema is a nullable `*_at`.**
-`contact_email_verified_at`, `agent_bound_at`, `activated_at`, `classified_at`,
-`closed_at`, `bounced_at`, `warned_at`, `revoked_at`, `usage_settled_at` — a
-boolean here would be the single exception, and two idioms for one concept cost
-a reader more than seven bytes saves. A nullable timestamp is also a strict
-superset at the same price: `IS NULL` reads exactly as `= false` would.
-**Nothing reads the value today** — [§2.5.4](#254-the-test-call-allowance)'s alert test is `IS NULL` — and that
-is stated rather than dressed up. Where it would earn its keep is a support
-conversation and [F8.6a](Ringly_PRD_v3.md#f8-6a) outreach, neither of which is a stated requirement.
+**Three facts, three owners, no local mirror of any of them but the first** —
+which is the reason the checklist has no state of its own to go stale, and why a
+business that fixes something in Stripe or at Google sees the checklist agree
+without Ringly being told.
 
-**`is_test_call` is written at the time of the call, never derived** ([F1.13c](Ringly_PRD_v3.md#f1-13c)).
-Billing status changes; a call's history must not. Deriving it from today's
-status would reclassify every test call the instant a business activated.
+**Every "has this happened" in this schema is a nullable `*_at`, without
+exception.** `contact_email_verified_at`, `agent_bound_at`, `service_started_at`,
+`classified_at`, `closed_at`, `bounced_at`, `warned_at`, `usage_invoiced_at` — a
+boolean anywhere here would be the single deviation, and two idioms for one
+concept cost a reader more than seven bytes saves. A nullable timestamp is a
+strict superset at the same price: `IS NULL` reads exactly as `= false` would.
+
+**`is_trial_call` is the one boolean, and it is a classification rather than an
+event.** It is written at the time of the call and never derived ([F1.13c](Ringly_PRD_v3.md#f1-13c)):
+service state changes, and a call's history must not. Deriving it from today's
+state would reclassify every trial call the instant the trial ended — including
+the call that ended it, which is the one that matters.
 
 **`duration_minutes` is on the appointment, `price` is not** ([F3.4](Ringly_PRD_v3.md#f3-4)). Duration is
 locked at booking and never moves, or appointments booked around it silently
@@ -405,7 +415,7 @@ at call end and swept at `expires_at`.
 
 **`calls.calendar_incident_id` records that a call was refused because the
 calendar could not be read**, written at the time of the refusal in the same
-spirit as `is_test_call`. It is what makes "how many customers did this outage
+spirit as `is_trial_call`. It is what makes "how many customers did this outage
 turn away" answerable, and **the answer is a query rather than a counter** —
 counting the calls that point at an incident cannot drift from the calls
 themselves, where a maintained tally on `calendar_incidents` would be a second
@@ -447,67 +457,135 @@ somebody asks what it cost.
 
 ```
 pricing_policy(id pk, version, effective_from,
-               fixed_fee_cents, per_minute_rate_cents, cap_cents,
-               billable_outcomes text[], test_call_allowance)
+               fixed_fee_cents, per_minute_rate_cents,
+               invoice_cap_cents, usage_cap_cents,
+               billable_outcomes text[],
+               trial_days, trial_call_allowance,
+               retry_attempts, retry_window_days)
+
+trials(business_id pk fk, policy_id fk,
+       started_at, ends_at, call_allowance, calls_used default 0,
+       ended_at null, ended_by null)          -- 'days' | 'calls' | 'cancelled'
 
 billing_periods(id pk, business_id fk, policy_id fk,
-                starts_on, ends_on,
-                fixed_fee_state, fixed_fee_invoice_ref,
-                usage_settled_at null, usage_invoice_ref null,
-                billable_seconds, usage_charge_cents, total_cents,
-                was_suspended_during, status)
+                starts_at, ends_at,
+                fee_invoice_ref null,
+                usage_seconds default 0, usage_charge_cents null,
+                usage_invoiced_at null, usage_invoice_ref null,
+                closed_at null, closed_by null, -- 'rollover' | 'service_stopped'
+                unique (business_id, starts_at))
 
-usage_records(id pk, business_id fk, period_id fk null, call_id fk,
+usage_records(id pk, business_id fk, period_id fk not null, call_id fk unique,
               connected_seconds, created_at)
 ```
 
-**`billing_events` is not here — it is in 005** (above), because the ledger has to
-predate the first payment fact the product learns, which arrives in the checklist
-before any period exists.
+#### The subscription is the only thing that decides when a month begins
 
-**Pricing is policy data, not code** ([F6.15](Ringly_PRD_v3.md#f6-15), [F6.8](Ringly_PRD_v3.md#f6-8)). The fixed fee, the cap, the
-per-minute rate, the test-call allowance and **the set of outcomes that count as
-billable** all live in a versioned row with an effective date. Each
-`billing_periods` row records which version it settled under, which is the whole
-of [F6.16](Ringly_PRD_v3.md#f6-16): a change to commercial terms never rewrites history, because history
-points at the terms it ran under.
+`billing_periods.starts_at` and `ends_at` are **copied from Stripe, never
+computed** ([N5.2](Ringly_PRD_v3.md#n5-2), [I1](Ringly_PRD_v3.md#i1)). They arrive on the `invoice.created` event as
+`lines.data[].period`, and the row is written in the same transaction that
+handles it ([§2.10.3](#2103-the-rollover-one-webhook-does-the-whole-thing)).
 
-**`usage_records.period_id` is nullable, and the null case is a requirement**
-([F6.11c-ii](Ringly_PRD_v3.md#f6-11c-ii)). When the failed charge _was_ a period's settlement, that period
-closes the same day and the grace week that follows has no open period to bill
-to. Those seconds are recorded and never charged. A non-null constraint here
-would force the design to invent a period to hold them — which is exactly the
-$100 charge [F6.11c](Ringly_PRD_v3.md#f6-11c) refuses to manufacture.
+There is no local anchor, no `+ interval '1 month'`, and no month arithmetic
+anywhere in the codebase. This is not fastidiousness: Stripe clamps a 31st anchor
+to the 28th in February, and any independent implementation of that rule is a
+second opinion about which month a call was in. **The one that raises the invoice
+wins by definition**, so it is the only one consulted.
 
-**`billing_events` is the append-only ledger of money moving**
-([F6.14](Ringly_PRD_v3.md#f6-14), [N10.4](Ringly_PRD_v3.md#n10-4)): charges,
-refunds, failures and chargebacks. Nothing in it is updated; corrections are new
-rows. `amount_cents` is nullable because an attempt recorded before its outcome
-does not yet have one.
+`unique (business_id, starts_at)` is what makes the rollover idempotent under
+Stripe's at-least-once delivery — a redelivered `invoice.created` cannot open a
+second period.
 
-**What is written to it, and what is read from it.** The table is easy to mistake
-for a log nobody consults, so both halves are enumerated.
+#### `usage_records.period_id` is `not null`, and that is a change
 
-**Written by** — the activation sequence ([§2.5.2.2](#2522-the-sequence-and-the-one-transaction-in-it)):
-`activation_charge_attempted` before the charge, then `activation_charge` or
-`activation_charge_failed`. The settlement worker ([§2.10.11](#21011-transaction-boundaries-and-what-a-crash-leaves)'s
-T2): `fixed_fee_invoiced`, `usage_invoiced`. The webhook handler
-([§2.10.10](#21010-the-webhook-endpoint)): `invoice_paid`, `invoice_payment_failed`,
-`invoice_voided`, `invoice_marked_uncollectible`, `charge_refunded`,
-`dispute_opened`, `dispute_closed`.
+The column was nullable in an earlier draft, to hold seconds served during a
+grace week that had no open period to bill to. **That state cannot arise now.** A
+period is open from the moment the previous one rolls over until service stops,
+and service stopping closes the period it was in and invoices it
+([§2.10.5](#2105-when-a-charge-fails)). There is no window in which Ringly serves a call with
+no period to attribute it to, so the nullable column would only ever hold a bug.
 
-**Read by** — five things, none of them a support query:
+`call_id` is unique: one usage record per call, ever. The post-call worker is
+at-least-once ([§2.6.2](#262-three-webhooks)) and this is what makes a redelivery free.
 
-| Reader                                                                                                           | What it needs                                                                                                                                          |
-| ---------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `outstanding()` ([§2.10.6](#2106-coming-back))                                                                   | **Disputes.** A chargeback withdraws funds without leaving an open invoice, so Stripe's open-invoice list cannot see it and Ringly must hold it itself |
-| The operator's revenue, cost and margin ([§2.9.5](#295-the-operator-dashboard), [F8.8](Ringly_PRD_v3.md#f8-8))   | Money **actually received**, which is a sum over paid rows rather than over invoices raised                                                            |
-| The `dispute_open` queue condition ([F8.12](Ringly_PRD_v3.md#f8-12))                                             | An opened dispute with no closing row                                                                                                                  |
-| The `service_restored` email's reason key ([§2.11.4](#2114-reason-keys-constructed-so-two-workers-agree))        | The id of the payment that cleared the debt                                                                                                            |
-| Repairing a crash between charge and record ([§2.5.2.3](#2523-what-a-crash-between-any-two-steps-leaves-behind)) | The `activation_charge_attempted` row, which is what makes the window repairable from Ringly's own data                                                |
+#### Two caps, two columns
 
-**And three things enforced by its indexes rather than queried** — which is the
-part that would be lost if the table were only history:
+`invoice_cap_cents` ($500) and `usage_cap_cents` ($400) are separate values
+rather than one derived from the other ([I3](Ringly_PRD_v3.md#i3)). A periodic invoice carries a fee
+and is bounded by the first; a final usage invoice carries no fee and is bounded
+by the second ([§2.10.4](#2104-the-clamp)). Deriving `usage_cap = invoice_cap −
+fixed_fee` would tie three commercial numbers together so that changing one
+silently moves another, which is the opposite of what [F6.15](Ringly_PRD_v3.md#f6-15) asks for.
+
+#### `retry_attempts` and `retry_window_days` are stored but not enforced here
+
+Stripe runs the retries ([§2.10.5](#2105-when-a-charge-fails)); these two columns record what its
+dunning settings were configured to when a period ran, so that a past failure can
+be explained years later without archaeology in a vendor dashboard. **They are
+documentation of a vendor setting, not an input to any Ringly code path** — and
+the EDD says so because a column that looks like a control and is not is worse
+than no column.
+
+**`retry_window_days` has a hard upper bound of 27** ([I3a](Ringly_PRD_v3.md#i3a)), checked by a
+constraint rather than by a comment, because exceeding it lets a second periodic
+invoice be raised behind the retries and removes the ceiling on what a business
+can owe:
+
+```sql
+ALTER TABLE pricing_policy
+  ADD CONSTRAINT retry_window_fits_inside_a_period
+  CHECK (retry_window_days BETWEEN 1 AND 27);
+```
+
+#### `trials` is a table, not three columns on `businesses`
+
+A trial is a bounded episode with its own policy version, its own two limits and
+its own ending, and it is read by exactly two things — the dashboard banner and
+the post-call counter. Keeping it apart from `businesses` means the hot business
+row does not carry columns that are null for every paying customer.
+
+**`calls_used` is incremented atomically, and the increment is the trigger**
+([§2.10.2](#2102-ending-the-trial-on-the-call-bound)). Two calls ending in the same second must not both
+observe "one call left", so the counter is not read-then-written:
+
+```sql
+UPDATE trials SET calls_used = calls_used + 1
+ WHERE business_id = $1 AND ended_at IS NULL
+ RETURNING calls_used, call_allowance;
+```
+
+The worker that gets back `calls_used = call_allowance` is the one that ends the
+trial, and there is exactly one of them.
+
+**`ends_at` is Ringly's fact, and the billing anchor is Stripe's.** These look
+alike and are not: the trial's length comes from `pricing_policy` and Ringly
+tells Stripe about it, so Ringly is the origin and the copy is Stripe's. A
+period's boundary is minted by Stripe's billing cycle and Ringly reads it. **The
+rule is "whoever decides it, holds it"**, and it points different ways for the
+two.
+
+#### `billing_events` stays in 005, with a narrower job
+
+The ledger ([F6.14](Ringly_PRD_v3.md#f6-14), [N10.4](Ringly_PRD_v3.md#n10-4)) is unchanged in shape and smaller in scope than
+it was, because the events it recorded around activation no longer exist. What
+writes to it now:
+
+| Writer                                                                        | Rows                                                                                                                            |
+| ----------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| The rollover ([§2.10.3](#2103-the-rollover-one-webhook-does-the-whole-thing)) | `usage_invoiced`                                                                                                                |
+| Service stopping ([§2.10.6](#2106-stopping-service))                          | `final_usage_invoiced`                                                                                                          |
+| The webhook handler ([§2.10.9](#2109-the-webhook-endpoint))                   | `invoice_paid`, `invoice_payment_failed`, `invoice_marked_uncollectible`, `charge_refunded`, `dispute_opened`, `dispute_closed` |
+
+**What is read from it** — three things, none of them a support query:
+
+| Reader                                                                    | What it needs                                                                                                                                           |
+| ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `outstanding()` ([§2.10.7](#2107-outstanding-is-asked-of-stripe))         | **Disputes only.** A chargeback withdraws funds without leaving an open invoice, so Stripe's open-invoice list cannot see it and Ringly holds it itself |
+| The operator's revenue and margin ([§2.9.5](#295-the-operator-dashboard)) | Money **actually received**, which is a sum over paid rows rather than over invoices raised ([F8.8](Ringly_PRD_v3.md#f8-8))                             |
+| The `dispute_open` queue condition ([F8.12](Ringly_PRD_v3.md#f8-12))      | An opened dispute with no closing row                                                                                                                   |
+
+**And two things enforced by its indexes rather than queried**, which is the part
+that would be lost if the table were only history:
 
 ```sql
 CREATE UNIQUE INDEX billing_events_provider_ref_unique
@@ -517,100 +595,133 @@ CREATE UNIQUE INDEX billing_events_idempotency_key_unique
     ON billing_events (idempotency_key) WHERE idempotency_key IS NOT NULL;
 ```
 
-**One row per payment-provider object, ever**, so a retried charge cannot become a
-second charge ([§2.10.9](#2109-the-stripe-object-lifecycle-end-to-end)). **One row
-per idempotency key**, so a repeated Activate press cannot become a second attempt
-([§2.5.2.2a](#2522a-the-three-rows-an-activation-can-produce)). And the per-period
-partial indexes that make one fixed fee and one settlement per period structurally
-impossible to exceed ([§2.10.13](#21013-what-24-must-gain)).
+One row per Stripe object ever, so a redelivered event cannot become a second
+recorded payment; one row per key Ringly minted, so a retried worker cannot
+become a second invoice ([§2.10.8](#2108-every-write-to-stripe-carries-a-key-ringly-can-recompute)).
+The two columns are two namespaces and are never mixed — `provider_ref` is an id
+Stripe minted, `idempotency_key` is a string Ringly minted before Stripe was
+called at all.
 
-**The two columns are two namespaces and are never mixed.** `provider_ref` is an
-id Stripe minted; `idempotency_key` is a string Ringly minted, and it is the only
-identifier that exists before Stripe has been called at all — which is exactly the
-window [§2.5.2.3](#2523-what-a-crash-between-any-two-steps-leaves-behind) has to
-repair.
+**Why Stripe is not enough on its own.** Stripe holds every payment and holds
+none of the reasoning. It does not know which period a payment settled, under
+which policy version, against how many seconds of usage, or clamped by how much.
+`billing_events`, `billing_periods` and `pricing_policy` together are that
+reasoning and it exists nowhere else ([N10.1](Ringly_PRD_v3.md#n10-1), [N10.7](Ringly_PRD_v3.md#n10-7)).
 
-**Why Stripe is not enough on its own** — [N10.7](Ringly_PRD_v3.md#n10-7) states
-it: Stripe holds every payment, and holds none of the reasoning. It does not know
-which period a payment settled, under which policy version, against how many
-seconds of usage, or clamped by how much. `billing_events`, `billing_periods` and
-`pricing_policy` together are that reasoning, and it exists nowhere else
-([N10.1](Ringly_PRD_v3.md#n10-1)).
+#### What 005 gains and loses
 
-**What is deliberately _not_ recorded: the payment-method lifecycle.** Attach and
-detach rows were added when the checklist read them and removed when it stopped
-([§2.10.10a](#21010a-the-card-is-stripes-fact-and-is-read-from-stripe)). Nothing
-reads them, Stripe's own dashboard already holds that history in full, and they
-carried a real cost: attach and detach share a payment-method id, so keeping both
-meant weakening the index above to `(kind, provider_ref)` — trading the guarantee
-that protects charge idempotency for rows no one consults.
+```
+businesses(... contact_email, contact_email_verified_at,
+           phone_number, telephony_agent_id, agent_bound_at,
+           stripe_customer_id, stripe_subscription_id,
+           service_state, service_started_at, ...)
 
-**`usage_records.created_at` earns its place where `calls.created_at` did not.**
-This is a money table ([N10.1](Ringly_PRD_v3.md#n10-1)): it is append-only, corrections arrive as new rows
-rather than edits ([N10.4](Ringly_PRD_v3.md#n10-4)), and reconciling it against the payment provider means
-being able to order the writes and say what existed at a given moment. [N10.3](Ringly_PRD_v3.md#n10-3)'s
-"at most one hour of usage records at risk" is a claim about write time, and it
-is unanswerable without one. A call's creation time is a duplicate of its end
-time; a money row's is part of the audit trail.
+calls(... is_trial_call, ...)
+```
+
+- **Gone: `test_call_confirmed_at`, `test_calls_used`, `activated_at`.** The
+  checklist item they served is withdrawn ([F1.13d](Ringly_PRD_v3.md#f1-13d)) and there is no
+  activation instant to stamp — a business starts paying because a trial ended,
+  which `trials.ended_at` already records.
+- **Renamed: `calls.is_test_call` → `is_trial_call`.** Same column, same
+  write-at-call-time rule ([F1.13c](Ringly_PRD_v3.md#f1-13c)), different name for a different thing: it
+  no longer means "the owner testing" but "inside the free window", and a call
+  from a real customer can now carry it.
+- **Gone: `billing_status`. Replaced by `service_state`**
+  ([§2.10.1](#2101-service-state-is-four-values)), because the old name described a fact about money and
+  the thing every caller of it actually wanted was whether the phone answers.
+- **`stripe_subscription_id` is the handle everything else hangs off.** It is
+  written once, when the number goes live ([§2.5.2](#252-provisioning-and-the-start-of-the-trial)), and
+  cleared only at teardown.
+
+_(Migrations are forward-only and immutable once run. None of these has run
+anywhere — there is no product code yet — so 005 is revised in place rather than
+patched by a later file. The first migration to be applied against a real
+database is the first one that becomes immutable.)_
 
 ### 008 — lifecycle (F9)
 
 ```
-lifecycle_deadlines(id pk, business_id fk, kind, due_at,
-                    warned_at null, paused_at null, paused_by null, reason null,
-                    unique (business_id, kind))
+dormancies(business_id pk fk, stopped_at, stopped_by, due_at,
+           warned_at null,
+           paused_at null, paused_by null, pause_reason null)
 
 departed_businesses(business_id pk, name, joined_at, left_at, ended_by,
                     owed_at_departure_cents, lifetime_net_revenue_cents)
 ```
 
-**A deadline is a stored row, not a computed offset.** `created_at + interval
-'10 days'` cannot be paused, and [F9.1b](Ringly_PRD_v3.md#f9-1b) requires the operator to pause exactly
-that. A `due_at` with a nullable `paused_at` can.
+#### The row's existence is the state
 
-**The table is a to-do list for the sweeper, one row per clock a business is
-currently under.** The sweeper's entire query is _rows where `due_at` has passed
-and `paused_at` is null_; everything else about lifecycle is which rows exist.
-**Silence never pauses anything** — absent an explicit operator action the
-default stands.
+A business is dormant if and only if it has a `dormancies` row. The row is
+written in the same transaction that stops service ([§2.10.6](#2106-stopping-service)) and
+deleted in the same transaction that resumes it ([§2.10.10](#21010-coming-back)).
+Nothing anywhere asks "is this business dormant" by comparing dates.
 
-**`kind` is a closed set, and each has exactly one thing that creates it and one
-thing that clears it.** A business usually has none; a failing one has two.
+`stopped_by` is `'nonpayment'` or `'cancelled'`. It is recorded because the
+operator queue and the departure record both want it ([F8.12](Ringly_PRD_v3.md#f8-12), [F9.9](Ringly_PRD_v3.md#f9-9)) —
+**not because anything branches on it.** Both routes produce identical behaviour
+from here on ([F9.3](Ringly_PRD_v3.md#f9-3)), and the design keeps them identical by giving the
+sweeper no access to a reason.
 
-| `kind`                      | Created when                                                     | Due                                          | Cleared when                                                    | On due                                                         |
-| --------------------------- | ---------------------------------------------------------------- | -------------------------------------------- | --------------------------------------------------------------- | -------------------------------------------------------------- |
-| `unactivated_deletion`      | The business row is created                                      | +10 days ([F9.1](Ringly_PRD_v3.md#f9-1))     | It activates                                                    | Teardown ([§2.13.4](#2134-teardown-in-order))                  |
-| `grace_expiry`              | The **first** charge fails ([F6.11](Ringly_PRD_v3.md#f6-11))     | +7 days                                      | Nothing is owed                                                 | Suspend: unbind the agent                                      |
-| `nonpayment_deletion`       | The **first** charge fails ([F9.3](Ringly_PRD_v3.md#f9-3))       | +60 days                                     | Nothing is owed                                                 | Teardown                                                       |
-| `cancellation_window_close` | The operator marks cancelled ([F6.10a](Ringly_PRD_v3.md#f6-10a)) | +7 days or period end, whichever sooner      | The cancellation is revoked ([F6.12a](Ringly_PRD_v3.md#f6-12a)) | Settle early, stop service ([F6.12b](Ringly_PRD_v3.md#f6-12b)) |
-| `dormancy_deletion`         | The cancellation window closes                                   | +60 days ([F6.12e](Ringly_PRD_v3.md#f6-12e)) | The business returns                                            | Teardown                                                       |
+#### One kind of deadline replaces five
 
-**Both non-payment rows are created together, at the first decline**, not one
-after the other. The 60-day clock runs from the failure, not from the suspension
-([F9.3](Ringly_PRD_v3.md#f9-3)), so creating it at day 7 would give away a week. It is also why
-`unique (business_id, kind)` is per-kind rather than per-business: a business in
-grace legitimately has two clocks running.
+The previous design had a `lifecycle_deadlines` table keyed by `kind`, carrying
+`unactivated_deletion`, `grace_expiry`, `nonpayment_deletion`,
+`cancellation_window_close` and `dormancy_deletion` — with a business in trouble
+legitimately holding two at once, and a page of prose explaining which cleared
+which.
 
-**`warned_at` is how [F9.3a](Ringly_PRD_v3.md#f9-3a) is kept unconditional.** Nothing is deleted without a
-48-hour warning, so the sweeper's second job is to warn on any deletion row
-falling due within 48 hours that has not been warned yet, and stamp it. Making
-the warning a milestone on the deadline it warns about — rather than a sixth
-`kind` — means a paused clock cannot warn, an extended clock re-warns at the
-right time, and a deletion whose warning never sent is visible as a due row with
-a null `warned_at` rather than being invisible.
+**There is one clock and it starts when the phone stops answering** ([F9.3](Ringly_PRD_v3.md#f9-3)).
+Every other deadline was removed by a decision in the PRD rather than by a schema
+change: the ten-day clock by the trial converting itself, the grace clock by the
+retry window being the grace, the cancellation window by cancellation taking
+effect immediately. What is left needs no `kind` column, so it does not have one,
+and the sweeper's query is the whole of the lifecycle:
 
-**Pausing stops the clock; it does not cancel the deadline.** On pause,
-`paused_at` is stamped. On resume, `due_at` moves forward by however long the
-pause lasted and `paused_at` returns to null. A clock paused on day 4 of 10 and
-resumed three days later is due on day 13, with six days left — the operator
-bought the business investigation time, not a different deadline. The alternative
-of leaving `due_at` fixed would mean a business emerging from a long pause is
-deleted immediately, which is the opposite of what pausing was for.
+```sql
+-- delete
+SELECT business_id FROM dormancies
+ WHERE due_at <= now() AND paused_at IS NULL;
 
-**`departed_businesses` carries no consumer data by construction** ([F9.9](Ringly_PRD_v3.md#f9-9)) — no
-caller name, no number, no appointment. It has no RLS policy and is reachable
-only through `/ops`. It also carries no phone number: the number is released at
-deletion ([F9.4b](Ringly_PRD_v3.md#f9-4b)) and recording it would outlive the business's claim to it.
+-- warn (48 hours out, once)
+SELECT business_id FROM dormancies
+ WHERE due_at <= now() + interval '48 hours'
+   AND warned_at IS NULL AND paused_at IS NULL;
+```
+
+```sql
+CREATE INDEX dormancies_due ON dormancies (due_at) WHERE paused_at IS NULL;
+```
+
+#### `warned_at` is a milestone on the deadline, not a second deadline
+
+Nothing is deleted without a 48-hour warning and [I4](Ringly_PRD_v3.md#i4) admits no exception, so
+the warning is a column on the row it warns about rather than a clock of its own.
+That buys three properties for free: **a paused clock cannot warn**, **an extended
+clock re-warns at the right time**, and **a warning that never sent is visible as
+a due row with a null `warned_at`** rather than being invisible.
+
+#### Pausing stops the clock; it does not cancel the deadline
+
+On pause, `paused_at` is stamped and the partial index drops the row. On resume,
+`due_at` moves forward by however long the pause lasted and `paused_at` returns
+to null. A clock paused on day 4 of 60 and resumed three days later is due on day
+63, with 56 days left — the operator bought the business investigation time, not
+a different deadline. Leaving `due_at` fixed would mean a business emerging from a
+long pause is deleted immediately, which is the opposite of what pausing was for.
+
+#### `departed_businesses` carries no consumer data by construction
+
+No caller name, no number, no appointment ([F9.9](Ringly_PRD_v3.md#f9-9)). It has no RLS policy and is
+reachable only through `/ops`. It carries no phone number either: the number is
+released at deletion ([F9.4b](Ringly_PRD_v3.md#f9-4b)) and recording it would outlive the business's
+claim to it.
+
+**`owed_at_departure_cents` is read from Stripe during teardown, not carried
+forward from the day service stopped** ([F9.9](Ringly_PRD_v3.md#f9-9)). Stripe goes on collecting
+throughout the 60 dormant days, and a business that settled on day 50 must not be
+recorded as a debtor forever. This is why step 1 of teardown reads the provider
+before step 2 destroys the records it reads from ([§2.13.4](#2134-teardown-in-order)).
 
 ### 009 — analytics (F5, F8)
 
@@ -694,7 +805,7 @@ Views and indexes only; no new tenant data. Per-business revenue, cost and
 margin ([F8.2a](Ringly_PRD_v3.md#f8-2a)) are derived from `billing_events` and `cost_records`, and the
 "needs attention" queue ([F8.12](Ringly_PRD_v3.md#f8-12)) is derived from lifecycle, billing and incident
 state. **Nothing about the operator's dashboard is stored separately**, because
-a second copy of "is this business suspended" is a second thing that can be
+a second copy of "is this business dormant" is a second thing that can be
 wrong.
 
 **Testing this section**
@@ -713,20 +824,27 @@ _Behaviours owed to the catalogue_
   it is or how long it runs.
 - Deleting a service leaves its appointments valued at the last price it had.
 - Deactivating a service never alters an appointment already booked against it.
-- A call's test-call status does not change when the business activates.
-- Grace usage served while no period is open is recorded and never charged.
+- A call's trial status does not change when the trial ends, including for the
+  call that ended it.
+- A trial call produces a cost record and no usage record.
 - A policy change applies to the next period and leaves settled ones untouched.
 - No appointment can exist without a customer or without a service, by any route.
 
 ---
 
-## 2.5 Onboarding and activation
+## 2.5 Onboarding and the trial
 
 [F1](Ringly_PRD_v3.md#f1--onboarding-and-identity) in order. Three things in this section are harder than they look, and each
-gets its own subsection: an unauthenticated endpoint that spends money ([N9](Ringly_PRD_v3.md#n9--cost-control-on-the-unauthenticated-surface)), a
-single button that must take money exactly once across systems that fail
-separately ([F1.12a-i](Ringly_PRD_v3.md#f1-12a-i)), and a provider write that reports success without taking
-effect ([F1.12a-ii](Ringly_PRD_v3.md#f1-12a-ii)).
+gets its own subsection: an unauthenticated endpoint that spends money ([N9](Ringly_PRD_v3.md#n9--cost-control-on-the-unauthenticated-surface)),
+a checklist whose completion silently commits Ringly to a monthly rental
+([F1.12](Ringly_PRD_v3.md#f1-12)), and a provider write that reports success without taking effect
+([F1.12a-ii](Ringly_PRD_v3.md#f1-12a-ii)).
+
+**Nothing in this section takes money.** That is the largest change from the
+design it replaces, where a single button had to charge exactly once across three
+systems that failed separately. The first charge now happens because a trial
+ended, on Stripe's schedule, through the same path as every other month
+([§2.10.3](#2103-the-rollover-one-webhook-does-the-whole-thing)).
 
 ### 2.5.1 The flow
 
@@ -752,7 +870,7 @@ background; 8–9 are a screen they come back to.** The numbering is load-bearin
    identity, and **the user is told that their Google login is now their Ringly
    login** ([F1.8](Ringly_PRD_v3.md#f1-8)). There is no password to set and no second account to
    remember, which is only reassuring if it is said. The `unactivated_deletion`
-   deadline is written here ([§2.10.1](#2101-states)).
+   deadline is written here ([§2.10.1](#2101-service-state-is-four-values)).
 6. **Scopes actually granted are checked, never assumed** ([F1.7a](Ringly_PRD_v3.md#f1-7a)). Granular
    consent means sign-in can succeed while calendar is refused; a refusal stops
    here on the explanation screen with a re-consent button ([F1.7b](Ringly_PRD_v3.md#f1-7b)) and the
@@ -1012,12 +1130,12 @@ thing that can detect a silent bind failure believe the write instead.
 Three items, no ordering, each answered from a single row read so the screen is
 never stale ([F5.18](Ringly_PRD_v3.md#f5-18) applies the same rule to the dashboard):
 
-| Item                   | Answered by                                                                                                                        | Cleared by                                   |
-| ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------- |
-| Contact email verified | `businesses.contact_email_verified_at`                                                                                             | Editing the address                          |
-| Test call confirmed    | `businesses.test_call_confirmed_at`                                                                                                | Nothing; it is the owner's judgement         |
-| Card added             | **Stripe, live** — does the customer have a payment method ([§2.10.10a](#21010a-the-card-is-stripes-fact-and-is-read-from-stripe)) | Nothing to clear; the answer is never stored |
-| Test calls remaining   | allowance − `businesses.test_calls_used`                                                                                           | —                                            |
+| Item                   | Answered by                                                                                                                       | Cleared by                                   |
+| ---------------------- | --------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------- |
+| Contact email verified | `businesses.contact_email_verified_at`                                                                                            | Editing the address                          |
+| Test call confirmed    | `businesses.test_call_confirmed_at`                                                                                               | Nothing; it is the owner's judgement         |
+| Card added             | **Stripe, live** — does the customer have a payment method ([§2.10.10a](#21011-the-card-is-stripes-fact-and-is-read-from-stripe)) | Nothing to clear; the answer is never stored |
+| Test calls remaining   | allowance − `businesses.test_calls_used`                                                                                          | —                                            |
 
 **The three items have three different owners, and the schema follows the
 ownership rather than the screen.**
@@ -1029,7 +1147,7 @@ like gibberish is indistinguishable from a ninety-second call that sounded
 perfect. `test_call_confirmed_at` therefore lives on `businesses` ([§2.4](#24-data-model)/005), is
 written by one `UPDATE` when the owner presses confirm, and is never inferred and
 never cleared. It is also the column that makes [F1.13d](Ringly_PRD_v3.md#f1-13d)'s business B and business
-C different people: [§2.5.4](#254-the-test-call-allowance) raises the activation-stuck alert **only** when it is
+C different people: [§2.5.4](#254-the-trials-two-bounds) raises the activation-stuck alert **only** when it is
 null, and without it the operator queue either alerts on every spent allowance —
 which [F1.13a](Ringly_PRD_v3.md#f1-13a) says would make it meaningless — or on none, and businesses that can
 never activate are never rescued ([F9.1b](Ringly_PRD_v3.md#f9-1b), [F9.1c](Ringly_PRD_v3.md#f9-1c)).
@@ -1037,7 +1155,7 @@ never activate are never rescued ([F9.1b](Ringly_PRD_v3.md#f9-1b), [F9.1c](Ringl
 **Item 3 is Stripe's fact, and Ringly stores no second copy of it.** _(Decision,
 ratified 2026-08-01, replacing an earlier `payment_method_attached_at` column.)_
 The checklist asks Stripe, on every render, whether the customer has a payment
-method ([§2.10.10a](#21010a-the-card-is-stripes-fact-and-is-read-from-stripe)).
+method ([§2.10.10a](#21011-the-card-is-stripes-fact-and-is-read-from-stripe)).
 **Nothing about the card is stored to answer this**, because any stored answer is
 a copy of somebody else's state — and that is true of a `billing_events` row
 standing in for the column just as much as of the column. A copy with three
@@ -1049,7 +1167,7 @@ reaching [F1.12a-i](Ringly_PRD_v3.md#f1-12a-i)'s declined-card row _through a gr
 state the checklist exists to prevent.
 
 **The cost of asking Stripe every time is small and was measured, not assumed**
-([§2.10.10a](#21010a-the-card-is-stripes-fact-and-is-read-from-stripe)): no
+([§2.10.10a](#21011-the-card-is-stripes-fact-and-is-read-from-stripe)): no
 per-request fee, rate limits far above this volume, and a population bounded by
 the ten-day clock, because only unactivated businesses ever see this screen. Items
 1 and 2 still render from Ringly's own rows if Stripe is slow, and item 3 says so
@@ -1088,315 +1206,94 @@ failure wearing a green badge.
 card details never reach Ringly ([N6.2](Ringly_PRD_v3.md#n6-2)); the browser talks to the payment
 provider directly and Ringly stores the resulting identifiers.
 
-### 2.5.2 Activation touches three systems and can fail at each
+### 2.5.2 Provisioning and the start of the trial
 
-[F1.12a-i](Ringly_PRD_v3.md#f1-12a-i) is a specification of what the business sees, and the design has to
-make each row reachable independently.
-
-| Fails at               | Design response                                                                                       | Business sees                   |
-| ---------------------- | ----------------------------------------------------------------------------------------------------- | ------------------------------- |
-| **The card**           | Nothing else has happened yet. The charge is attempted first, precisely so this row is clean          | Declined, try another. No state |
-| **Recording it**       | The charge succeeded, so Ringly owns the inconsistency: retry against its own database until it lands | Progress, then success          |
-| **Binding the number** | Activation stands. The bind retries; the operator is alerted ([F8.6](Ringly_PRD_v3.md#f8-6))          | "Activated; number connecting"  |
-
-**The order is charge → record → bind**, and it is chosen so that the only
-failure the business is asked to act on is the only one they can act on. A card
-that declines is theirs to fix. Everything after the charge is Ringly's.
-
-It is also the only order in which a partial failure is not a lie. Record-then-charge
-would put a `billing_periods` row and a $100 line in the business's history for
-a payment that never cleared, and [§2.6](#26-the-call-path) would begin metering against it — a
-period that exists for an unpaid activation is worse than a charge with no
-period, because the first is visible to the business and the second is visible
-only to Ringly (2.1.3).
-
-#### 2.5.2.1 One press, and what makes it exactly one
-
-**Activation is not a special charge.** It is period 1's fixed fee
-([F1.12a](Ringly_PRD_v3.md#f1-12a): "there is no separate activation fee"), so it
-goes through the same invoice sequence as every other fixed fee
-([§2.10.9](#2109-the-stripe-object-lifecycle-end-to-end)) and produces the same
-Stripe objects, the same tax treatment ([F6.18](Ringly_PRD_v3.md#f6-18)), the same
-receipt ([F6.20](Ringly_PRD_v3.md#f6-20)) and the same webhooks. **An earlier
-revision charged it with a bare `PaymentIntent`**, which gave period 1 no invoice,
-no Stripe-computed tax, no receipt, and no `fixed_fee_invoiced` row for the
-per-period index to protect — a special case that bought nothing.
-
-**The invoice is the idempotent object, and it is created once per business.**
+**The checklist going green is the trigger, and it is the only one.** Three items
+([F1.12](Ringly_PRD_v3.md#f1-12)) with three different owners — a verified contact email (Ringly's), a
+calendar grant (the credential store's), a working card (Stripe's) — and the
+moment the third is satisfied, Ringly spends money for the first time.
 
 ```
-idem = 'activate:v1:' || business_id
+provision(businessId):                                   ← idempotent, keyed
+  1  buy a number from the telephony provider
+  2  create the agent and BIND it, then read the record back   (§2.5.3)
+       └─ read-back fails → retry, then alert. Stop here.
+  BEGIN
+    3  businesses: phone_number, telephony_agent_id, agent_bound_at,
+                   service_state ← 'trialing', service_started_at ← now()
+    4  INSERT trials (business_id, policy_id, started_at,
+                      ends_at         = now() + policy.trial_days,
+                      call_allowance  = policy.trial_call_allowance)
+  COMMIT
+  5  stripe.subscriptions.create({ customer, items: [fee],
+                                   trial_end: trials.ends_at,
+                                   metadata: { ringly_business_id } })
+     → businesses.stripe_subscription_id
+  6  enqueue the trial-started email  (the number, both bounds, the end date)
 ```
 
-`stripe.invoices.create` carries that key, so a double-click, a retried `POST`, a
-proxy replay and a resumed background run all reach the same invoice. **There is
-never a second activation invoice**, which is the property that matters: two open
-invoices for period 1 would both sit inside Smart Retries and could both
-eventually be paid.
+**Nothing is bought before step 1 can be justified**, which is the whole reason
+the checklist gates provisioning rather than following it. A number costs rent
+from the day it is purchased ([F8.9](Ringly_PRD_v3.md#f8-9)) and a calendar Ringly cannot read is a
+product that cannot book ([F4.1](Ringly_PRD_v3.md#f4-1)); requiring both plus a card means every rented
+number belongs to a business that has proved it can be served.
 
-**A different card is a genuine retry, not a replay.** `stripe.invoices.pay`
-takes the payment method and is called without an idempotency key, so pressing
-Activate again after a decline attempts payment again — and after a _successful_
-one errors with "already paid", which
-[§2.10.4](#2104-when-a-charge-fails) classifies as success. This is why the
-payment method is **not** in the key. An earlier revision put it there to stop a
-second card replaying the first decline; that was solving a `PaymentIntent`
-problem, and with an invoice the same key must be kept stable or a second card
-creates a second invoice.
+**The trial clock starts at step 3, not when the checklist went green**
+([F1.12a-i](Ringly_PRD_v3.md#f1-12a-i)). Steps 1 and 2 depend on a third party and can take minutes or,
+on a bad day, not complete at all. A business must never lose trial days to
+Ringly's own provisioning, and the day count is meaningless before the phone can
+ring.
 
-**Two presses in flight at once do not race.** The second reaches Stripe with the
-key already in use on `invoices.create` and receives the in-use error, which the
-handler maps to "in progress" — the same thing the poll says. Nothing local needs
-a lock.
+**Step 5 after the commit, and it is why `trial_end` is exact.** Ringly decides
+the trial length from policy and tells Stripe; the subscription is created with
+`trials.ends_at` already known, so the provider's trial end and Ringly's are the
+same instant and neither is corrected afterwards. Creating the subscription first
+and stamping the trial from Stripe's echo would invert an ownership the rest of
+the design depends on ([§2.4](#24-data-model)/007).
 
-**Decision, not settled by the PRD — Activate is submit-and-poll, not
-request-response.** [F1.12a-i](Ringly_PRD_v3.md#f1-12a-i)'s "no failure is ever
-handed back as press it again" cannot be satisfied by a design where the screen's
-state is the `POST`'s response, because a response can be lost to a closed laptop
-lid, a proxy timeout, or a deploy. The button's state is read from
-`GET /api/activation`, a pure function of durable state; the `POST` merely starts
-the work. A lost response is then not a lost activation, and the client never
-needs to know whether its request arrived.
+**A crash between 4 and 5 is the one visible failure**, and it is repaired rather
+than prevented: a business with `service_state = 'trialing'`, a live number and a
+null `stripe_subscription_id`. The reconciliation sweep finds exactly that shape
+and completes step 5, and until it does the business is being served free — which
+is what a trial is anyway, so the customer sees nothing wrong.
 
-**The poll answers from durable state alone**, which is what makes it honest:
+#### 2.5.2.1 Two systems, and the business is told the truth at each
 
-| Poll says     | True when                                                                |
-| ------------- | ------------------------------------------------------------------------ |
-| `ready`       | Three checklist items green, no attempt row                              |
-| `in_progress` | An attempt row exists with neither a charge nor a failure row against it |
-| `declined`    | The latest attempt has a failure row and no charge row                   |
-| `connecting`  | `billing_status = 'active'` and `agent_bound_at IS NULL`                 |
-| `live`        | `billing_status = 'active'` and `agent_bound_at IS NOT NULL`             |
+Provisioning touches Stripe and the telephony provider, and they fail
+differently. **Neither failure can charge anyone**, which is what makes this
+simpler than the design it replaces: there is no money in flight anywhere on this
+path.
 
-#### 2.5.2.2 The sequence, and the one transaction in it
+| Fails at           | The business sees                                                                                                                      | Recovery                                                                                         |
+| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| **The card check** | Inline, immediately: declined, try another. Nothing else has changed, and **nothing has been charged** ([F6.2](Ringly_PRD_v3.md#f6-2)) | The business retries with another card. No state to unwind                                       |
+| **The number**     | "Your trial has started. Your number is being connected — we will email you the moment it is live." Plus that email                    | Retried; then raised to the operator as **provisioning stuck** ([F8.12](Ringly_PRD_v3.md#f8-12)) |
 
-```
-1  (sync, local)   INSERT INTO billing_events                              ← the intent
-                     (business_id, kind, amount_cents, idempotency_key, occurred_at)
-                   VALUES ($1, 'activation_charge_attempted',
-                           $policy.fixed_fee_cents, $idem, now())
-                   ON CONFLICT (idempotency_key) DO NOTHING
-2  (sync, remote)  the charge sequence of §2.10.9 — create, item, finalise, pay —
-                   with two differences, because no period exists yet:
-                     • idempotencyKey on `invoices.create` is $idem, not the
-                       period-derived key
-                     • metadata carries no ringly_period_id; step 3 supplies it
-   ├─ pay declines    → INSERT billing_events 'activation_charge_failed'
-   │                       (provider_ref = the failed payment attempt's id,
-   │                        amount_cents = policy.fixed_fee_cents,
-   │                        occurred_at  = the attempt's timestamp)
-   │                     ON CONFLICT (provider_ref) DO NOTHING       → respond
-   ├─ key in use      → respond 'in_progress'                        (no row)
-   └─ paid            ↓
-3  (sync, local)   ── ONE TRANSACTION ────────────────────────────────────
-                   INSERT INTO billing_periods (business_id, policy_id,
-                       starts_on, ends_on, fixed_fee_state, fixed_fee_invoice_ref, …)
-                     ON CONFLICT (business_id, starts_on) DO NOTHING
-                   INSERT INTO billing_events (kind 'activation_charge',
-                       provider_ref = invoice.id, period_id, amount_cents)
-                     ON CONFLICT (provider_ref) DO NOTHING
-                   UPDATE businesses SET billing_status = 'active',
-                       activated_at = $starts_on
-                     WHERE id = $1 AND billing_status = 'unbilled'
-                   DELETE FROM lifecycle_deadlines
-                     WHERE business_id = $1 AND kind = 'unactivated_deletion'
-                   ── COMMIT ────────────────────────────────────────────
-4  (sync, remote)  ensure bound, verified by read-back                     (§2.5.3)
-5  (async)         enqueue the "you're live" email                         (§2.11)
-```
+**The second row is the one that will be seen**, because connecting a number
+depends on a third party. It is raised to the operator because a business sitting
+behind a number that never connected has no way to tell whether it is waiting on
+Ringly or on itself — and its trial has not started, so nothing is expiring while
+it waits.
 
-**Step 3 is one transaction because every write in it is local to one Postgres,
-and it is the only step that can be.** Steps 2 and 4 are HTTP calls to other
-companies; the same argument as [§2.6.3](#263-booking-in-order)'s steps 5 and 6,
-and the same conclusion — pick an order in which the unwind is in the safe
-direction rather than pretending a distributed transaction exists.
+**There is no failure mode in which a business is charged and not told why**,
+which was the entire subject of the previous design's hardest subsection. That
+subsection is gone with the button it protected.
 
-**What is durable after each step:**
+#### 2.5.2.2 The one transaction, and what a crash leaves
 
-| After | At Stripe      | In Ringly's database                                     |
-| ----- | -------------- | -------------------------------------------------------- |
-| 1     | nothing        | the attempt row, carrying the idempotency key            |
-| 2     | a paid invoice | the attempt row, unchanged                               |
-| 3     | as above       | `active`, period 1, the ledger row, no deletion deadline |
-| 4     | as above       | `agent_bound_at`                                         |
-| 5     | as above       | a queued email row                                       |
+Steps 3 and 4 commit together because they are the only two that are local, and
+because a business that is `trialing` with no `trials` row has no bounds — the
+post-call counter would find nothing to increment and the trial would never end.
 
-**Step 1 exists to make step 2's window recoverable locally.** The attempt row
-carries the exact key step 2 used, so any repair path can re-issue a
-byte-identical `invoices.create` and receive the original invoice back rather than
-raising a second one. Without it the repair would have to search Stripe by
-metadata to discover an invoice Ringly does not know it raised — possible, but a
-scan of somebody else's system standing in for a row of our own.
+| Crash point       | What is left                                  | What repairs it                                                                                                           |
+| ----------------- | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| After 1, before 2 | A rented number bound to nothing              | Retry; the purchase is keyed and the number is re-used                                                                    |
+| After 2, before 3 | A bound agent, no business row pointing at it | Retry; step 2 is idempotent on the read-back ([§2.5.3](#253-bind-and-unbind-are-verified-by-reading-provider-state-back)) |
+| After 3/4 commit  | Trialing, live, no subscription               | The sweep completes step 5. Free service meanwhile — harmless                                                             |
+| After 5, before 6 | Everything correct, no email                  | The email worker's own at-least-once retry ([§2.11.6](#2116-the-dispatcher-claim-send-record))                            |
 
-**The uniqueness that makes step 3 safe to run repeatedly is in the database, not
-in the application** — the same choice as [§2.6.4](#264-fail-closed-concretely)'s
-partial index:
-
-```sql
-CREATE UNIQUE INDEX billing_events_provider_ref_unique
-    ON billing_events (provider_ref)    WHERE provider_ref    IS NOT NULL;
-
-CREATE UNIQUE INDEX billing_events_idempotency_key_unique
-    ON billing_events (idempotency_key) WHERE idempotency_key IS NOT NULL;
-
-ALTER TABLE billing_periods ADD CONSTRAINT one_period_per_start
-    UNIQUE (business_id, starts_on);
-```
-
-**Two columns rather than one, because they are two different namespaces.**
-`provider_ref` holds an id Stripe minted; `idempotency_key` holds a string Ringly
-minted. An earlier revision put the key in `provider_ref` and relied on
-`activate:v1:…` never colliding with an `in_…` id — true, and true by luck rather
-than by construction.
-
-**`starts_on` is the invoice's date rendered in the business's timezone
-([N5.2](Ringly_PRD_v3.md#n5-2)), not today's date.** This is what makes the third
-constraint a guard rather than a coincidence: a repair running a day after the
-charge must compute the same `starts_on`, or it inserts a second period, gives the
-business a free day, and moves every subsequent boundary for the life of the
-account. Deriving the date from Stripe's own timestamp makes the period's identity
-a function of the charge — which is what [F6.1](Ringly_PRD_v3.md#f6-1) says it is —
-and makes the constraint idempotent for ever rather than for a day.
-
-**The in-request retry ladder for step 3 is immediate, then 250 ms, 1 s, 4 s** —
-four attempts, about five seconds — after which the handler returns and the poll
-keeps saying `in_progress`. It is short because the failures it covers are
-transient local ones; anything longer is a fault for the repair paths below, not a
-fifth attempt.
-
-##### 2.5.2.2a The three rows an activation can produce
-
-One press writes **at most three** ledger rows, and which ones depend only on how
-far it got.
-
-| Row                           | Written at                      | `provider_ref`                  | `idempotency_key` | `amount_cents`              | `period_id`          |
-| ----------------------------- | ------------------------------- | ------------------------------- | ----------------- | --------------------------- | -------------------- |
-| `activation_charge_attempted` | Step 1, before Stripe is called | — none yet                      | `$idem`           | the fee about to be charged | — no period exists   |
-| `activation_charge_failed`    | Step 2, on decline              | the failed payment attempt's id | —                 | the fee that was refused    | — no period exists   |
-| `activation_charge`           | Step 3, inside the transaction  | `invoice.id`                    | —                 | the fee charged             | the period it opened |
-
-**`period_id` is null on the first two because a period does not exist yet**, and
-[F6.1](Ringly_PRD_v3.md#f6-1) makes the first charge _period 1's_ — so a period
-that existed before its charge cleared would be one nobody paid for. That is why
-the column is nullable in [§2.4](#24-data-model)/005 rather than merely convenient.
-
-**The failure row keys on the payment attempt, not on the invoice**, because the
-invoice is stable across retries by design and two genuine declines — one card,
-then another — must both be recorded ([F6.14](Ringly_PRD_v3.md#f6-14)). Keying
-them on `invoice.id` would collapse the second into the first and lose a failure
-the requirement wants kept.
-
-> **Needs confirming against a test account, with A4.** That each `invoices.pay`
-> attempt exposes a distinguishable payment-attempt id is assumed here and not
-> verified. If Stripe reuses one identifier across attempts on an invoice, the
-> failure row needs a different key — the attempt count, or Ringly's own
-> monotonic — and this is the sentence that says so rather than the code
-> discovering it.
-
-**`activation_charge` keys on `invoice.id`, and there is exactly one**, because
-[§2.5.2.1](#2521-one-press-and-what-makes-it-exactly-one)'s key makes one
-activation invoice per business for the life of the account.
-
-**`occurred_at` is Stripe's timestamp wherever there is one** and Ringly's clock
-only for row one, which happens before Stripe knows anything. A repair running a
-day later therefore writes the same instant the original would have.
-
-**What is deliberately not written.** A press arriving while an identical one is
-in flight responds `in_progress` and writes nothing. A press by a business whose
-checklist is incomplete never reaches step 1: the ledger records charges
-attempted, not buttons pressed.
-
-##### 2.5.2.2b Which mechanism writes each row, and how the owner finds out
-
-Three things can advance an activation — the request handler, the Stripe webhook,
-and the sweep — and it matters which, because only one of them has the owner
-watching.
-
-| Row                           | Written in-process                        | Written by webhook                                 | Written by sweep |
-| ----------------------------- | ----------------------------------------- | -------------------------------------------------- | ---------------- |
-| `activation_charge_attempted` | **Always** — step 1 is synchronous        | Never                                              | Never            |
-| `activation_charge_failed`    | **Normally** — step 2 returns the decline | `invoice.payment_failed`, if the response was lost | Yes, on replay   |
-| `activation_charge`           | **Normally** — step 3 follows step 2      | `invoice.paid`, if the crash was between 2 and 3   | Yes, on replay   |
-
-**The webhooks are the ones already subscribed** — `invoice.paid` and
-`invoice.payment_failed` ([§2.10.10](#21010-the-webhook-endpoint)) — which is a
-consequence of activation using the ordinary invoice path rather than a
-`PaymentIntent`. An earlier revision named `payment_intent.succeeded` here, and
-that event was never in the subscribed set, so the repair it promised did not
-exist.
-
-**In the ordinary case the owner is watching and the poll answers.** Step 2
-returns in a second or two, step 3 follows immediately, and the poll moves
-`in_progress → connecting → live` while the page is open.
-
-**When the response is lost, the webhook usually beats the sweep.** Stripe pushes
-`invoice.paid` within seconds, and the handler runs the same step 3. An owner who
-kept the tab open sees the poll advance without doing anything.
-
-**When both are lost, the sweep closes it — and the owner is told by email, not
-by the page.** The hourly worker
-([§2.2.2](#222-request-paths-and-background-work)) picks up attempt rows older
-than a few minutes with neither a charge nor a failure against them, and step 5
-enqueues the "you're live" message ([§2.11](#211-email)). **This is the case that
-answers "must the owner come back to the page?" — no.** The page is the fast path
-and the email is the guarantee, which is the same division
-[F1.12a-i](Ringly_PRD_v3.md#f1-12a-i) already makes for the number-connecting row:
-say it plainly, then email when it is true.
-
-**The owner is never asked to press Activate again in any of these**
-([F1.12a-i](Ringly_PRD_v3.md#f1-12a-i)). A repeat press while work is in flight is
-absorbed by the idempotency key, and one after the work has finished finds the
-invoice already paid.
-
-#### 2.5.2.3 What a crash between any two steps leaves behind
-
-| Crash                              | Left behind                             | Repaired by                                                                                |
-| ---------------------------------- | --------------------------------------- | ------------------------------------------------------------------------------------------ |
-| Before 1                           | Nothing. The press did not happen       | Nothing to repair; the button is still available                                           |
-| Between 1 and 2                    | An attempt row, no money moved          | The sweep replays 2 with the recorded key; Stripe either has the invoice or raises it once |
-| Between 2 and 3                    | **Money taken, nothing local**          | The `invoice.paid` webhook, or the sweep, replays 2 (same invoice returned) then runs 3    |
-| Inside 3                           | Nothing partial — it is one transaction | Rolled back; the sweep re-runs it                                                          |
-| Between 3 and 4                    | Activated, charged, possibly unbound    | [§2.5.3.1](#2531-intended-bind-state-is-derived-never-stored)'s reconciliation             |
-| Inside 4, after the bind, before 5 | Activated and bound, no email           | The dispatcher; `reason_key` makes it one message however many times it is enqueued        |
-
-**Row three is the one the design exists for**, and it is the only window in which
-money exists and Ringly does not know it. It is closed by two independent
-mechanisms because [F1.12a-i](Ringly_PRD_v3.md#f1-12a-i)'s row two must never reach
-the screen: Stripe's `invoice.paid` webhook, which is push and usually arrives in
-seconds, and the **hourly settlement worker**
-([§2.2.2](#222-request-paths-and-background-work)), which scans attempt rows older
-than a few minutes with neither a charge nor a failure row against them. Both call
-the same function. Both are safe to run concurrently, because step 3's constraints
-arbitrate rather than the caller's care.
-
-**The sweep's cost is bounded by the number of activations in flight**, which in
-steady state is zero — the same property [§2.2.2](#222-request-paths-and-background-work)
-requires of every worker, and the reason this does not become a scan that grows
-with tenants ([N4.1](Ringly_PRD_v3.md#n4-1)).
-
-#### 2.5.2.4 The three rows, made independently reachable
-
-**Row one — the card.** The decline is a _known_ outcome, which is what makes it
-the one case where re-pressing is correct rather than dangerous: [F1.12a-i](Ringly_PRD_v3.md#f1-12a-i)'s
-prohibition is on handing back an outcome the business cannot interpret. A
-`billing_events` row of kind `activation_charge_failed` is written ([F6.14](Ringly_PRD_v3.md#f6-14)
-records failures, not only charges), `billing_status` is untouched, the deletion
-deadline still stands, and the checklist still reads three green. Nothing about
-the account changed.
-
-**Row two — the record.** Never surfaced. The handler retries in-process, then
-the webhook, then the sweep; the poll says `in_progress` throughout and the
-button shows progress. **There is no user-visible state between "charging" and
-"activated"**, which is exactly [F1.12a-i](Ringly_PRD_v3.md#f1-12a-i)'s requirement that a charge and no
-explanation is impossible.
-
-**Row three — the bind.** The one that will be seen, because it depends on a
-third party. Activation stands; the poll says `connecting`; the "you're live"
-email is sent from step 4 rather than step 3, because [F7](Ringly_PRD_v3.md#f7--email)'s registry has it state
-that the number is now taking customer calls, and sending it while the number
-answers nowhere would make Ringly's own confirmation the thing that misleads.
-The operator alert is raised at the same moment, not on a later pass ([F1.12a-ii](Ringly_PRD_v3.md#f1-12a-ii)
-requires a failed verification to be retried _and_ raised).
+**Every row is recoverable and none of them charges anybody**, which is the
+property that makes provisioning safe to retry blindly.
 
 ### 2.5.3 Bind and unbind are verified by reading provider state back
 
@@ -1420,8 +1317,8 @@ is_bound(b) := b.agent_bound_at IS NOT NULL
 ```
 
 `grace` and `cancelling` are in the first set because service continues
-unchanged through both ([§2.10.4](#2104-when-a-charge-fails), [§2.10.7](#2107-cancellation)); `suspended` and `dormant` are not.
-That predicate is the whole of [§2.13.2](#2132-unbinding-is-the-one-mechanism-for-stopping-service)'s three unbind moments and [§2.5](#25-onboarding-and-activation)'s two
+unchanged through both ([§2.10.4](#2105-when-a-charge-fails), [§2.10.7](#21012-cancellation)); `suspended` and `dormant` are not.
+That predicate is the whole of [§2.13.2](#2132-unbinding-is-the-one-mechanism-for-stopping-service)'s three unbind moments and [§2.5](#25-onboarding-and-the-trial)'s two
 bind moments in one expression.
 
 **This is what makes a failed unbind retryable at all.** The alternative — a
@@ -1504,150 +1401,123 @@ hand ([F8.12](Ringly_PRD_v3.md#f8-12)).
 
 **It is a read of provider state, never a placed call** ([F1.12a-ii](Ringly_PRD_v3.md#f1-12a-ii)). A synthetic
 call costs minutes on every bind, lands in `calls` where it corrupts both the
-test-call count ([§2.5.4](#254-the-test-call-allowance)) and the analytics ([§2.9](#29-analytics-and-the-two-dashboards)), and still proves only that
+test-call count ([§2.5.4](#254-the-trials-two-bounds)) and the analytics ([§2.9](#29-analytics-and-the-two-dashboards)), and still proves only that
 something answered. Whether the agent _sounds_ right is a human judgement and
 [F1.12](Ringly_PRD_v3.md#f1-12)'s checklist item 2 exists for exactly that.
 
-### 2.5.4 The test-call allowance
+### 2.5.4 The trial's two bounds
 
-A call is a test call if the business had not pressed Activate when it arrived
-([F1.13c](Ringly_PRD_v3.md#f1-13c)) — the whole rule, with no detection and no examination of who is
-calling. At the fifth, the agent is unbound and the sixth call is **not answered
-at all** ([F1.13a](Ringly_PRD_v3.md#f1-13a)): a recorded refusal would still be a connected call and would
-still cost the minutes the limit exists to bound.
+The trial ends at whichever bound is reached first ([F1.13-i](Ringly_PRD_v3.md#f1-13-i)), and the two are
+enforced in different places by different systems — which is the point, because
+the one that matters most is the one Ringly cannot be trusted to run on time.
 
-#### 2.5.4.1 The counter is a column, and that is not an optimisation
+| Bound     | Enforced by                         | Mechanism                                                                                                         |
+| --------- | ----------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| **Days**  | **Stripe**                          | The subscription's own `trial_end`. It fires whether or not Ringly is running                                     |
+| **Calls** | **Ringly**, in the post-call worker | `UPDATE trials SET calls_used = calls_used + 1 … RETURNING` ([§2.10.2](#2102-ending-the-trial-on-the-call-bound)) |
 
-`businesses.test_calls_used` ([§2.4](#24-data-model)/005) against
-`pricing_policy.test_call_allowance` ([§2.4](#24-data-model)/007), the second being configuration
-rather than a constant ([F1.13](Ringly_PRD_v3.md#f1-13), [F6.15](Ringly_PRD_v3.md#f6-15)).
+**The day bound is the provider's deliberately.** It is the bound that will fire
+for most businesses, it must fire on a specific date, and a missed cron on the
+morning it was due would give away service and delay revenue silently. Stripe
+raises the invoice from its own scheduler; Ringly finds out afterwards, from
+`customer.subscription.updated`, and has nothing to do about it.
 
-**A count over `calls WHERE is_test_call` would be derivable and is still
-wrong**, because [F9.1c](Ringly_PRD_v3.md#f9-1c) lets the operator reset the allowance. A reset against a
-derived count means deleting or restamping call rows — which is precisely the
-reclassification of history [F1.13c](Ringly_PRD_v3.md#f1-13c) forbids, arriving through the back door. A
-column can be set to zero without touching a single call's record of what it
-was.
+**The call bound has to be Ringly's** because Stripe cannot count calls. It runs
+after the usage record is written and is the same atomic increment described in
+[§2.10.2](#2102-ending-the-trial-on-the-call-bound).
 
-**It is also the one number two screens read on every render** — the checklist
-([F1.12](Ringly_PRD_v3.md#f1-12)) and the dashboard's service state ([F5.18](Ringly_PRD_v3.md#f5-18)) — and both are required to be
-current rather than rolled up, so a single-row read is the cheap answer and a
-scan of `calls` is not ([N4.3](Ringly_PRD_v3.md#n4-3)).
+**Neither bound unbinds the agent.** This is the change from the design this
+replaces, and it is worth stating in the negative because the old behaviour was
+load-bearing there: a business that used its allowance had its number taken away
+until it paid. Now the number keeps answering and billing simply begins
+([F1.13a](Ringly_PRD_v3.md#f1-13a)). **`stopService` is not called from anywhere in the trial path**, and
+the only unbind in the product is the one that ends service for good
+([§2.10.6](#2106-stopping-service)).
 
-**The allowance resolves from `pricing_policy`, like every other number in the
-commercial model.** [F1.13](Ringly_PRD_v3.md#f1-13) makes it "configuration, not a
-constant" on the same principle as [F6.15](Ringly_PRD_v3.md#f6-15), so the platform
-default lives in the versioned policy row while per-business consumption lives in
-`businesses.test_calls_used` — which is what lets
-[F9.1c](Ringly_PRD_v3.md#f9-1c)'s operator reset change one business without
-moving the default for everyone.
-
-#### 2.5.4.2 The crossing, and the race at the boundary
-
-**Incremented at call end, in the same transaction that writes the call row**
-([§2.6.2.3](#2623-call-end)), which is what makes the counter and `is_test_call` agree by
-construction rather than by care — both are decided from one read of the
-business's status inside one transaction, so there is no interval in which a
-call is classified one way and counted the other.
+**A trial call is written as one at the time of the call, never derived**
+([F1.13c](Ringly_PRD_v3.md#f1-13c)):
 
 ```sql
--- inside the call-end transaction, only if the call row actually inserted
-UPDATE businesses
-   SET test_calls_used = test_calls_used + 1
- WHERE id = $1 AND billing_status = 'unbilled'
-RETURNING test_calls_used;
+INSERT INTO calls (…, is_trial_call) VALUES (…, ${snapshot.wasTrialing});
 ```
 
-**The increment is conditional on the call row having been inserted.**
-[§2.6.2.3](#2623-call-end)'s `ON CONFLICT (provider_call_id) DO NOTHING` makes a redelivered
-webhook a no-op for the call; the increment must be a no-op for the same
-redelivery, or a provider retry silently spends one of the five.
+`wasTrialing` comes from the per-call snapshot ([§2.6.6.2](#2662-the-per-call-snapshot--freezing-config-for-one-conversation)),
+frozen when the call opened. Reading `service_state` at call _end_ would
+misclassify the call that ends the trial — the one that matters most — because by
+then the state has already moved.
 
-**The crossing is decided from the returned integer, and exactly one call can
-own it.** Postgres serialises the two `UPDATE`s on the row lock, so two calls
-ending at the same instant with `test_calls_used = 4` receive 5 and 6, in some
-order, and never both receive 5. The crosser is the one whose returned value `n`
-satisfies `n - 1 < allowance <= n` — expressed against the allowance rather than
-as `n = allowance` so that a platform default lowered while a business is mid-way
-still produces exactly one crossing rather than none.
+**Trial calls produce no `usage_records` row at all.** They are free of usage and
+of the fixed fee ([F1.13](Ringly_PRD_v3.md#f1-13)), and the cleanest way to guarantee the first invoice
+carries no usage line is for there to be nothing to sum. The call is recorded in
+full — it appears in the dashboard, the rollup and the outcome classification like
+any other ([F5.3](Ringly_PRD_v3.md#f5-3)) — and its **cost** is recorded in `cost_records`, because
+what Ringly absorbs, Ringly measures ([F8.5](Ringly_PRD_v3.md#f8-5), [R8](#r8)).
 
-The crosser, and only the crosser:
+**The trial is the whole product** ([F1.13](Ringly_PRD_v3.md#f1-13)), so there is no branch anywhere in
+the call path, the booking path or the calendar integration that consults it. A
+trialing business reaches [§2.6](#26-the-call-path) and [§2.7](#27-scheduling-providers) by exactly the same code as a
+paying one, and its bookings are written to its own Google Calendar with the same
+conflict rules. **The only place `trialing` is read at all** is the post-call
+counter above, the dashboard banner, and the billing state machine.
 
-1. enqueues the "test calls exhausted" email ([F7](Ringly_PRD_v3.md#f7--email)'s registry) with
-   `reason_key = 'test_calls_exhausted:' || call_id`. Keying it to the call
-   rather than to the business is what lets a business emailed once, reset by
-   the operator ([F9.1c](Ringly_PRD_v3.md#f9-1c)) and exhausted again be emailed a second time — a
-   business-keyed reason would suppress the message on the one occasion it is
-   most needed;
-2. **after the transaction commits**, unbinds and verifies ([§2.5.3](#253-bind-and-unbind-are-verified-by-reading-provider-state-back)), then clears
-   `agent_bound_at`. The provider call is outside the transaction because it is
-   HTTP, and after the commit because a rolled-back transaction must not leave a
-   number unbound;
-3. raises the operator alert **only if `test_call_confirmed_at IS NULL`**
-   ([F1.13a](Ringly_PRD_v3.md#f1-13a), [F8.12](Ringly_PRD_v3.md#f8-12)). A business with three green boxes that simply has not pressed
-   the button is deciding, not stuck, and raising it would make the queue
-   meaningless.
+#### 2.5.4.1 The failing-trial signal
 
-**The business is charged nothing at any point in this** ([F1.13](Ringly_PRD_v3.md#f1-13), [F1.13d](Ringly_PRD_v3.md#f1-13d)). There
-is no code path from the counter to `billing_events`, which is 2.1.4 restated:
-the number of calls placed has no bearing on billing status whatsoever.
+The operator alert ([F8.6a](Ringly_PRD_v3.md#f8-6a)) is derived rather than self-reported: a trialing
+business with calls taken and nothing booked.
 
-**One boundary this design has to pick, and [F1.13c](Ringly_PRD_v3.md#f1-13c) picks it.** A call that
-connects while the business is `unbilled` and ends after Activate has been
-pressed is a test call — "the business had not yet pressed Activate when it
-arrived" is the requirement's own wording, and it is a rule about arrival. The
-status must therefore be read from the per-call snapshot frozen at call start
-([§2.6.6.2](#2662-the-per-call-snapshot--freezing-config-for-one-conversation)), not from the live row at call end. Reading the live row at call end
-would disagree in exactly this one window, and [F1.13c](Ringly_PRD_v3.md#f1-13c) is what settles it.
-**[§2.6.2.3](#2623-call-end) states the same rule at the point of use**, and the two may not be
-allowed to drift apart.
+```sql
+SELECT b.id FROM businesses b
+  JOIN trials t ON t.business_id = b.id AND t.ended_at IS NULL
+ WHERE b.service_state = 'trialing'
+   AND (SELECT count(*) FROM calls c
+         WHERE c.business_id = b.id AND c.connected_seconds > 0) >= $threshold
+   AND NOT EXISTS (SELECT 1 FROM appointments a WHERE a.business_id = b.id);
+```
 
-#### 2.5.4.3 The two ways out
+**It replaces a checkbox.** The old checklist asked the owner to confirm a test
+call had worked, which gated the Activate button and produced this signal as a
+side effect. It depended on the business telling Ringly, and the business having
+the worst time is the least likely to say anything.
 
-[F1.13b](Ringly_PRD_v3.md#f1-13b), and which one applies is a query, not a judgement.
+**Calls but no bookings is the shape of a broken agent** — a mishearing prompt, a
+wrong service menu, a calendar refusing every slot ([§2.6.4](#264-fail-closed-concretely)) — and
+it catches the business that never noticed. **It is a soft signal and will
+sometimes be wrong**; a tax office in a quiet fortnight is not broken. That is
+accepted, because the cost of a false positive is one look at a dashboard and the
+cost of a false negative is a business converting to paying for something that
+never worked.
 
-| Condition                                     | Route                                                                                                                                             |
-| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `test_call_confirmed_at` set, other two green | Activate still works. The charge runs, and step 4 of [§2.5.2.2](#2522-the-sequence-and-the-one-transaction-in-it) is a rebind rather than a no-op |
-| `test_call_confirmed_at` null                 | Cannot activate. Operator investigates, pauses the clock ([F9.1b](Ringly_PRD_v3.md#f9-1b)), resets and rebinds ([F9.1c](Ringly_PRD_v3.md#f9-1c))  |
+**The remedy is [F9.1c](Ringly_PRD_v3.md#f9-1c)**: the operator extends the trial, which moves
+`trials.ends_at` **and** `stripe.subscriptions.update({ trial_end })` in the same
+action, so the two never disagree about when billing starts.
 
-**Activating with a spent allowance takes the identical path as activating with
-allowance to spare**, and this falls out of [§2.5.3.1](#2531-intended-bind-state-is-derived-never-stored) rather than being coded
-twice: `should_answer` becomes true the instant `billing_status` becomes
-`active`, so the same "make the provider agree" step that is a verified no-op
-for one business is a verified rebind for the other. **Running out of test calls
-is not a bar to activating** ([F1.13b](Ringly_PRD_v3.md#f1-13b)), and the reason it cannot accidentally
-become one is that no branch in the activation path asks about the allowance.
-
-**The ten-day clock keeps running through all of it unless an operator pauses
-it** ([F9.1](Ringly_PRD_v3.md#f9-1), [§2.13.1](#2131-deadlines-and-the-sweeper)). The two limits are independent and bite in either order.
-
-### 2.5.5 Decisions this section makes, and one correction
+### 2.5.5 Decisions this section makes
 
 Collected so they are reviewable as decisions rather than discovered as
 implementation:
 
-| #   | Decision                                                                                                                                                                         | Because                                                                                                                                                                                                                                                             |
-| --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1   | Commit the business row **before** checking granted scopes (steps 5 and 6 swapped)                                                                                               | [F1.7b](Ringly_PRD_v3.md#f1-7b)'s "the draft is kept" is only durable if it is a row                                                                                                                                                                                |
-| 2   | `enrichment_requests` and `test_call_confirmed_at` are tables/columns in `005`; `billing_events` sits there too, with the rest of the foundations                                | Each lands where the things that depend on it can reach it — [N9.1](Ringly_PRD_v3.md#n9-1), [F1.12](Ringly_PRD_v3.md#f1-12), and a money ledger that must predate the first payment fact. **Ratified 2026-08-01: delivery order does not get to decide the schema** |
-| 3   | Provisioning waits for the calendar credential                                                                                                                                   | [F4.1](Ringly_PRD_v3.md#f4-1) makes a calendar-less business unable to become a customer; [N9.3](Ringly_PRD_v3.md#n9-3)'s argument, one step on                                                                                                                     |
-| 4   | The activation idempotency key is the **business**, not the business plus payment method. **Revised 2026-08-03**                                                                 | With an invoice, a key that moves when the card does raises a _second_ activation invoice, and two open invoices for period 1 could both be paid. Paying again with a different card is a genuine retry ([§2.5.2.1](#2521-one-press-and-what-makes-it-exactly-one)) |
-| 5   | Activate is submit-and-poll                                                                                                                                                      | [F1.12a-i](Ringly_PRD_v3.md#f1-12a-i)'s "never press it again" cannot survive the state living in a response                                                                                                                                                        |
-| 6   | An `activation_charge_attempted` ledger row precedes the charge                                                                                                                  | Makes the charge-without-record window repairable from Ringly's own data                                                                                                                                                                                            |
-| 7   | `starts_on` comes from the charge's timestamp, not from the clock at repair time                                                                                                 | A late repair must compute the same period boundary or it moves every one after it                                                                                                                                                                                  |
-| 8   | Intended bind state is derived from `billing_status` and never stored                                                                                                            | A stored intent has a crash window; a derived one has none, and it is what makes a failed unbind retryable                                                                                                                                                          |
-| 9   | The lifecycle sweeper owns bind reconciliation                                                                                                                                   | It already owns every other bind and unbind ([§2.13.2](#2132-unbinding-is-the-one-mechanism-for-stopping-service)); two components issuing binds for one number is worse than an hour of latency                                                                    |
-| 10  | An address carrying Google's `email_verified` claim needs no second link. **Ratified 2026-08-01**                                                                                | The proof already happened in the token exchange. The test is the claim, not a string comparison                                                                                                                                                                    |
-| 11  | **Nothing about the card is stored.** The card item asks Stripe on every render ([§2.10.10a](#21010a-the-card-is-stripes-fact-and-is-read-from-stripe)). **Ratified 2026-08-03** | A column is a second copy of a Stripe fact and drifts toward a green checklist over a dead card — the one state the checklist exists to prevent                                                                                                                     |
-| 12  | `test_call_confirmed_at` is a nullable timestamp, not a boolean                                                                                                                  | Every "has this happened" in this schema is a nullable `*_at`; a second idiom costs a reader more than seven bytes saves. Nothing reads the value today, and that is stated rather than dressed up ([§2.4](#24-data-model)/005)                                     |
+| #   | Decision                                                                                              | Because                                                                                                                                                                                                     |
+| --- | ----------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | Commit the business row **before** checking granted scopes (steps 5 and 6 swapped)                    | [F1.7b](Ringly_PRD_v3.md#f1-7b)'s "the draft is kept" is only durable if it is a row                                                                                                                        |
+| 2   | The checklist holds **no state of its own**: one local column, one credential lookup, one Stripe read | Three facts with three owners ([§2.4](#24-data-model)/005). A local mirror of any of the last two drifts toward a green checklist over a dead card or a revoked grant                                       |
+| 3   | Provisioning waits for **all three** checklist items, not just the calendar                           | A number costs rent from purchase ([F8.9](Ringly_PRD_v3.md#f8-9)). Requiring the card too means every rented number belongs to a business that has proved it can be served and can pay                      |
+| 4   | The trial clock starts when the **number is live**, not when the checklist goes green                 | Steps 1–2 depend on a third party. A business must never lose trial days to Ringly's provisioning, and the day count is meaningless before the phone can ring ([F1.12a-i](Ringly_PRD_v3.md#f1-12a-i))       |
+| 5   | Ringly decides `trial_end` and tells Stripe; it does not read it back                                 | The trial length comes from `pricing_policy`, so Ringly is its origin. The **billing anchor** points the other way and is read from Stripe ([§2.4](#24-data-model)/007)                                     |
+| 6   | The subscription is created **after** the local commit                                                | A crash between them leaves a trialing business with no subscription — free service, repaired by a sweep, and invisible to the customer. The reverse leaves a subscription with no trial row                |
+| 7   | Reaching the call allowance **does not unbind the agent**                                             | The business that used its trial hardest is the one relying on the number. Ending the trial and taking the phone away are different acts and only one of them is wanted ([F1.13a](Ringly_PRD_v3.md#f1-13a)) |
+| 8   | Intended bind state is derived from `service_state` and never stored                                  | A stored intent has a crash window; a derived one has none, and it is what makes a failed unbind retryable                                                                                                  |
+| 9   | The lifecycle sweeper owns bind reconciliation                                                        | It already owns every other bind and unbind ([§2.13.2](#2132-unbinding-is-the-one-mechanism-for-stopping-service)); two components issuing binds for one number is worse than an hour of latency            |
+| 10  | An address carrying Google's `email_verified` claim needs no second link                              | The proof already happened in the token exchange. The test is the claim, not a string comparison                                                                                                            |
+| 11  | The failing-trial signal is **derived from calls and bookings**, not self-reported                    | A checkbox depends on the business telling Ringly, and the business having the worst time says nothing ([§2.5.4.1](#2541-the-failing-trial-signal))                                                         |
+| 12  | Extending a trial moves `trials.ends_at` **and** Stripe's `trial_end` in one action                   | Two sources for when billing starts is two answers, and the one that raises the invoice would win silently                                                                                                  |
 
 **Testing this section**
 
 _Observable_ — what the draft contains after enrichment; which fields can be
-edited; whether enrichment ran at all; what the checklist shows; whether the
-Activate button is available; whether pressing it twice charges twice; whether
-the number answers; what the business is charged; what arrives in its inbox;
+edited; whether enrichment ran at all; what the checklist shows; whether a number
+was bought; whether the number answers; how many trial days and calls remain;
+when billing begins; what the business is charged; what arrives in its inbox;
+what the operator queue holds.
 what the operator queue holds.
 
 _Internal_ — the provisioning sequence, the OAuth flow's shape, the idempotency
@@ -3164,1181 +3034,585 @@ _Behaviours owed to the catalogue_
 
 ## 2.10 Billing
 
-The most intricate part of the product, and the part where an error is a wrong
-charge on a real card. [F6](Ringly_PRD_v3.md#f6--billing-and-payments) is long because the failure paths are; this section
-follows the same order.
+The part of the product where an error is a wrong charge on a real card.
 
-**How to read it.** [§2.10.1](#2101-states)–[§2.10.7](#2107-cancellation) are the rules and the code that implements
-them; [§2.10.8](#2108-the-division-with-the-payment-provider) is the split with Stripe; [§2.10.9](#2109-the-stripe-object-lifecycle-end-to-end)–[§2.10.13](#21013-what-24-must-gain) are the mechanics those
-earlier sections stand on — the Stripe object lifecycle, the webhook endpoint,
-the transaction boundaries, the arithmetic, and what [§2.4](#24-data-model) has to gain before any
-of it can be written. An implementer reading top to bottom will meet forward
-references to those five; they are deliberate, because the rules are what the
-mechanics are answerable to and not the other way round.
+**Ringly runs no billing engine.** A Stripe subscription owns the cycle, raises
+each invoice, attempts the card, retries a failure and sends the dunning mail.
+What Ringly owns is the part no provider can express — **usage priced by call
+outcome, which is a judgement about what happened on a call rather than a
+quantity** — and **the decision to stop serving**, which Stripe cannot make
+because it cannot see a phone.
 
-### 2.10.1 States
+**How to read it.** [§2.10.1](#2101-service-state-is-four-values)–[§2.10.6](#2106-stopping-service) are the lifecycle: the four
+states and the transitions between them. [§2.10.7](#2107-outstanding-is-asked-of-stripe)–[§2.10.9](#2109-the-webhook-endpoint) are the three
+mechanisms every transition rests on — asking Stripe what is owed, writing to
+Stripe idempotently, and the webhook endpoint. [§2.10.10](#21010-coming-back)–[§2.10.16](#21016-what-this-section-decides-that-the-prd-does-not) are
+recovery, cancellation, crash behaviour and the arithmetic.
 
-A transition table rather than a diagram, because the side effects are the part
-an implementation gets wrong:
+### 2.10.1 Service state is four values
 
-| From         | Event                      | To           | Side effects                                                                                                                    |
-| ------------ | -------------------------- | ------------ | ------------------------------------------------------------------------------------------------------------------------------- |
-| —            | Onboarding commits         | `unbilled`   | `unactivated_deletion` deadline at +10d                                                                                         |
-| `unbilled`   | **Activate pressed**       | `active`     | Charge $100, open period 1, bind agent, clear the deadline                                                                      |
-| `unbilled`   | Day 10 elapses             | _deleted_    | Teardown ([§2.13.4](#2134-teardown-in-order))                                                                                   |
-| `active`     | A charge fails             | `grace`      | `grace_expiry` +7d **and** `nonpayment_deletion` +60d, both from today                                                          |
-| `grace`      | Nothing owed               | `active`     | Clear both deadlines                                                                                                            |
-| `grace`      | Day 7 elapses              | `suspended`  | **Unbind the agent**, verified ([§2.5.3](#253-bind-and-unbind-are-verified-by-reading-provider-state-back)). No new charge ever |
-| `suspended`  | Nothing owed               | `active`     | Rebind, email, open a period **only if none is running** ([F6.11b-iii](Ringly_PRD_v3.md#f6-11b-iii))                            |
-| `suspended`  | Day 60 elapses             | _deleted_    | Teardown; debt recorded on the departure record                                                                                 |
-| `active`     | Operator marks cancelled   | `cancelling` | `cancellation_window_close` at min(+7d, period end). Usage stops being billed                                                   |
-| `cancelling` | **Operator marks revoked** | **`active`** | Clear the deadline; the window's usage **becomes billable again** ([F6.12a](Ringly_PRD_v3.md#f6-12a))                           |
-| `cancelling` | Window closes              | `dormant`    | Settle early, clamp, stop service, closing statement, `dormancy_deletion` +60d                                                  |
-| `dormant`    | Business returns           | `active`     | Rebind, open a new period, charge $100 that day ([F6.12e](Ringly_PRD_v3.md#f6-12e))                                             |
-| `dormant`    | 60 days elapse             | _deleted_    | Teardown                                                                                                                        |
+`businesses.service_state` replaces the old `billing_status`. The rename is the
+design: every caller of the old column wanted to know whether the phone answers,
+and answered it by inferring from a fact about money.
 
-**Exactly four callers may write `businesses.billing_status`**, and naming them
-is what keeps the table above a specification rather than a diagram someone
-drew afterwards:
+| State      | The agent is | Meaning                                                                 |
+| ---------- | ------------ | ----------------------------------------------------------------------- |
+| `pending`  | unbound      | Checklist incomplete, or the number is still being provisioned          |
+| `trialing` | **bound**    | Full service, free, inside the trial ([F1.13](Ringly_PRD_v3.md#f1-13))  |
+| `serving`  | **bound**    | Full service, on a subscription, invoiced monthly                       |
+| `dormant`  | unbound      | Service stopped; a `dormancies` row exists ([§2.4](#24-data-model)/008) |
 
-| Caller                                                           | Transitions it may cause                                   |
-| ---------------------------------------------------------------- | ---------------------------------------------------------- |
-| The **activation route**                                         | `unbilled → active` — the only one, by 2.1.4               |
-| `settleAndAdvance()` ([§2.10.3](#2103-settlement-and-the-clamp)) | `active → grace` on a decline                              |
-| `reevaluate()` ([§2.10.6](#2106-coming-back))                    | `grace → active`, `suspended → active`                     |
-| The **lifecycle sweeper**                                        | `grace → suspended`, `cancelling → dormant`, and deletions |
-
-Operator controls ([§2.12](#212-the-operator-surface)) create and clear `lifecycle_deadlines` rows; the
-sweeper is what turns those rows into transitions. **The operator never writes a
-status directly**, because a control that both records an intention and effects
-it is a control whose two halves can disagree.
-
-**Every one of those writes is guarded on the state it expects**, so a repeated
-worker tick or a redelivered webhook is a no-op rather than a second effect
-([N2.3](Ringly_PRD_v3.md#n2-3), [§2.2.2](#222-request-paths-and-background-work)):
-
-```sql
-UPDATE businesses SET billing_status = 'grace'
- WHERE id = $1 AND billing_status = 'active'
-RETURNING id;                 -- no row → somebody got here first; do nothing more
-```
-
-The `RETURNING` is load-bearing: the deadline rows, the email and the operator
-alert are all conditional on a row coming back, exactly as [§2.6.4](#264-fail-closed-concretely) makes the
-incident email conditional on the insert.
-
-**`cancelling → active` is the transition most likely to be got wrong**, and it
-is not the same as never having cancelled. Revoking makes the free usage served
-during the window retroactively billable ([F6.12a](Ringly_PRD_v3.md#f6-12a)), so the transition rewrites
-`usage_records.period_id` for the window's rows rather than merely clearing a
-flag ([§2.10.7](#2107-cancellation)). A `cancelling → active` implemented as "unset cancelled" silently
-gives the business a free week it was only ever lent.
-
-**`grace` is not a state a business can be in twice for one debt.** The two
-deadlines are created together at the first decline ([§2.4](#24-data-model)/008) and cleared
-together when nothing is owed; a second decline while already in `grace` starts
-no second clock ([F6.11c](Ringly_PRD_v3.md#f6-11c)). The `WHERE billing_status = 'active'` guard above is
-what enforces it — the second decline's update matches nothing.
-
-**`unbilled` is not a trial.** It is the state before any commercial relationship
-exists. No path leads from it to `active` except the button (2.1.4).
-
-**No test asserts on these names.** Every state above is observable through its
-consequences — does the number answer, is anything owed, what arrived in the
-inbox — and that is what the Testing block below permits.
-
-### 2.10.2 A period
-
-**Rolling 30 days from activation, never a calendar month, never extended**
-([F6.11b](Ringly_PRD_v3.md#f6-11b)). `starts_on` and `ends_on` are written when the period opens and never
-move.
-
-**They are `date` columns, not timestamps, and that is the DST answer** ([N5.2](Ringly_PRD_v3.md#n5-2),
-[§2.14.1](#2141-timezone-n5)). A period that opens on 3 March ends on 1 April in the business's own
-timezone whether or not the clocks moved in between; a `timestamptz` boundary
-would drift by an hour twice a year and [R14](#r14)'s "timezone changes re-interpret
-every period boundary" would become true of ordinary daylight saving as well.
-The instant a period ends is derived at read time:
-
-```sql
-(p.ends_on + 1)::timestamp AT TIME ZONE b.timezone   -- local midnight, ending ends_on
-```
-
-**Thirty days inclusive**: `ends_on = starts_on + 29`. Period 1 of a business
-activating on the 3rd runs the 3rd to the 1st; period 2 opens on the 2nd.
-
-**At most one period is open, and periods never overlap — both enforced by the
-database, not by the worker** ([F6.11f](Ringly_PRD_v3.md#f6-11f), [I2](Ringly_PRD_v3.md#i2)). This is [§2.6.4](#264-fail-closed-concretely)'s argument applied to
-money: forty concurrent calls could not be trusted to produce one incident row,
-and two overlapping worker ticks cannot be trusted to produce one period.
-
-```sql
-CREATE UNIQUE INDEX one_open_period_per_business
-    ON billing_periods (business_id) WHERE usage_settled_at IS NULL;
-
-ALTER TABLE billing_periods ADD CONSTRAINT periods_never_overlap
-  EXCLUDE USING gist (business_id WITH =,
-                      daterange(starts_on, ends_on, '[]') WITH &&);
-```
-
-**"Open" is `usage_settled_at IS NULL` and nothing else.** There is deliberately
-no boolean beside it: a settled period is finished ([F6.16](Ringly_PRD_v3.md#f6-16)) and a second column
-saying so is a second thing that can be wrong. `billing_periods.status` earns its
-place by recording **which** of [F6.9a](Ringly_PRD_v3.md#f6-9a)'s three moments closed the period —
-`settled`, `settled_early`, `settled_at_deletion` — which is not derivable and
-which the closing statement and the departure record both need.
-
-**Opening a period is one statement and it is idempotent:**
-
-```sql
-INSERT INTO billing_periods
-       (business_id, policy_id, starts_on, ends_on, fixed_fee_state,
-        billable_seconds, usage_charge_cents, total_cents, was_suspended_during)
-SELECT $1, $2, $3::date, $3::date + 29, 'pending', 0, 0, 0, false
- WHERE NOT EXISTS (SELECT 1 FROM billing_periods
-                    WHERE business_id = $1 AND usage_settled_at IS NULL)
-   AND NOT EXISTS (SELECT 1 FROM lifecycle_deadlines
-                    WHERE business_id = $1 AND kind = 'cancellation_window_close')
-ON CONFLICT DO NOTHING
-RETURNING id;
-```
-
-Three requirements are in that one statement. The first `NOT EXISTS` is F6.11f.
-The second is [F6.10](Ringly_PRD_v3.md#f6-10) — **a business that has asked to cancel is never charged
-again**, and the cancellation is durable as a deadline row ([§2.10.7](#2107-cancellation)), so the
-check is a join rather than a flag. The `ON CONFLICT DO NOTHING` against the
-partial index is what survives two ticks racing; the `WHERE NOT EXISTS` is what
-makes the common case cheap.
-
-**`policy_id` is pinned at open and never re-read** ([F6.16](Ringly_PRD_v3.md#f6-16)). The rate, the cap,
-the fee and the billable-outcome set that settle this period are the ones in
-force on the day it opened, so a policy change lands on the next period and
-rewrites nothing ([§2.4](#24-data-model)/007).
-
-**Usage accrues on productive calls only** ([F6.6](Ringly_PRD_v3.md#f6-6)) — a booking, a reschedule that
-produced a booking, or a cancellation of a real appointment. Enquiries, wrong
-numbers, dropped calls and pre-activation test calls are not billable. **Who is
-calling is irrelevant**: the owner, a customer and Ringly's own developer are
-billed identically, because the outcome is the only test ([F6.7](Ringly_PRD_v3.md#f6-7)). **The whole call
-is billable, not the minutes up to the booking** ([F6.7](Ringly_PRD_v3.md#f6-7)).
-
-**A `usage_records` row is written for every non-test call at call end; whether
-it is billable is `period_id`, not the row's existence.** [§2.6.2.3](#2623-call-end)'s step 3 reads
-"if the period is open" and this is the precise form of it:
-
-```sql
-INSERT INTO usage_records (business_id, period_id, call_id, connected_seconds, created_at)
-SELECT b.id,
-       CASE WHEN b.billing_status = 'cancelling' THEN NULL
-            ELSE (SELECT p.id FROM billing_periods p
-                   WHERE p.business_id = b.id AND p.usage_settled_at IS NULL) END,
-       $2, $3, now()
-  FROM businesses b
- WHERE b.id = $1
-ON CONFLICT (call_id) DO NOTHING;
-```
-
-- **`period_id` is stamped at call end and never derived afterwards**, for the
-  same reason `is_test_call` is ([§2.4](#24-data-model)/005): billing state changes and a call's
-  history must not. Deriving it later would move usage between periods every time
-  a business's status moved.
-- **Null when no period is open** is [F6.11c-ii](Ringly_PRD_v3.md#f6-11c-ii)'s case (b) grace — recorded,
-  never charged ([§2.4](#24-data-model)/007).
-- **Null when the business is `cancelling`** is [F6.12](Ringly_PRD_v3.md#f6-12)'s free window.
-- **`ON CONFLICT (call_id)`** makes a redelivered call-end webhook a no-op rather
-  than a double-metered call, matching the `calls` insert beside it.
-
-**The outcome is not known yet at this moment and that is fine** — classification
-is hourly and asynchronous ([§2.9.1](#291-outcome-classification)), and the settlement query is what applies the
-outcome filter. Nothing here waits on a model call.
-
-**"The two charges never fall on the same day" is delivered by ordering, not by
-the calendar — and this is a deliberate reading of [F6](Ringly_PRD_v3.md#f6--billing-and-payments) that needs ratifying.**
-A period's usage cannot be summed until the period is over, and the instant it is
-over is the instant its successor begins; so the settlement of _N_ and the fee
-for _N+1_ are inherently adjacent, and [F6b](Ringly_PRD_v3.md#f6b--one-business-end-to-end)'s "day 30 … day 31" is not achievable
-without either losing the last hours of _N_'s usage or extending _N_, both of
-which [F6](Ringly_PRD_v3.md#f6--billing-and-payments) forbids elsewhere ([F6.7a](Ringly_PRD_v3.md#f6-7a), [F6.11b](Ringly_PRD_v3.md#f6-11b)/I1). What [F6](Ringly_PRD_v3.md#f6--billing-and-payments) says the separation exists
-to produce is preserved exactly: _"a card that has gone bad therefore fails one
-charge at a time, and there is only ever one grace clock."_ The design produces
-that by making the second charge **conditional on the first having cleared** —
-[§2.10.3](#2103-settlement-and-the-clamp)'s ordered worker settles _N_, and opens and charges _N+1_ only if nothing
-is then outstanding ([F6.11c](Ringly_PRD_v3.md#f6-11c)). Two charges minutes apart with the second
-conditional on the first can still only start one clock, which is stronger than
-calendar separation and does not depend on a worker's cadence.
-
-### 2.10.3 Settlement and the clamp
-
-Settlement happens at exactly three moments ([F6.9a](Ringly_PRD_v3.md#f6-9a)), and the $500 clamp is
-applied at each:
-
-1. **Normal period end.**
-2. **A cancellation window closing** ([F6.12](Ringly_PRD_v3.md#f6-12)), which settles the period early.
-3. **Final deletion for non-payment** ([F9.3](Ringly_PRD_v3.md#f9-3)), where the clamped figure is what
-   the business is recorded as owing ([F9.9](Ringly_PRD_v3.md#f9-9)) even though it is never collected.
-
-**All three call the same function, and only the third does not raise an
-invoice.** `settle(period, mode)` computes and writes; whether Stripe is asked
-for money is a parameter. Three separate implementations of the clamp is three
-places for it to be wrong on the one path — deletion — where nobody would notice,
-because nothing is collected there and the only consumer is a departure record
-read years later.
-
-**What the worker selects.** Hourly ([§2.2.2](#222-request-paths-and-background-work)), bounded by due rows rather than by
-platform size ([N2.3](Ringly_PRD_v3.md#n2-3)):
-
-```sql
-SELECT p.id, p.business_id, p.policy_id
-  FROM billing_periods p
-  JOIN businesses    b ON b.id = p.business_id
- WHERE p.usage_settled_at      IS NULL
-   AND p.settlement_claimed_at IS NULL
-   AND now() >= ((p.ends_on + 1)::timestamp AT TIME ZONE b.timezone)
- ORDER BY p.ends_on
-   FOR UPDATE OF p SKIP LOCKED
- LIMIT 200;
-```
-
-`FOR UPDATE ... SKIP LOCKED` is what stops two overlapping ticks selecting the
-same period; `settlement_claimed_at` is what stops a tick that started after the
-first one committed. **Both are needed and they answer different questions** —
-the lock covers concurrent runs, the column covers sequential ones, and a design
-with only the lock double-charges the moment a deploy overlaps a run.
-
-**The sum, once, in integer seconds** ([F6.7a](Ringly_PRD_v3.md#f6-7a)):
-
-```sql
-SELECT COALESCE(SUM(u.connected_seconds), 0)::bigint AS billable_seconds
-  FROM usage_records u
-  JOIN calls        c ON c.id = u.call_id
- WHERE u.period_id  = $1
-   AND c.is_test_call = false
-   AND c.outcome = ANY($2::text[]);   -- policy.billable_outcomes, from the pinned policy
-```
-
-**An unclassified call has `outcome IS NULL` and is excluded by `= ANY`**, which
-is [R24](#r24)'s mitigation arriving for free: the business is under-billed rather than
-guessed at ([§2.9.1.4](#2914-failure-is-safe-by-construction)). Classification is hourly and settlement is hourly, so a
-call in the last minutes of a period may not be labelled when its period settles;
-**it is then not billed, permanently**, because [N10.4](Ringly_PRD_v3.md#n10-4) forbids reopening a settled
-period. That is a known, bounded leak in the business's favour and it is the
-right direction to be wrong in.
-
-**The clamp, in integers, applied before Stripe sees anything** ([F6.9](Ringly_PRD_v3.md#f6-9), [F6.12d](Ringly_PRD_v3.md#f6-12d)):
+**Two states answer calls and two do not, and nothing else about a business
+changes what the number does.** That is the whole reason the column exists in
+this shape: the call path reads one value ([§2.6.6](#266-configuration-on-the-call-path)), and no
+part of it needs to know whether an invoice is open.
 
 ```
-minutes     = (billable_seconds + 59) / 60              -- integer division: one rounding, at close
-raw_cents   = minutes * policy.per_minute_rate_cents
-usage_cents = max(0, min(raw_cents, policy.cap_cents - policy.fixed_fee_cents))
-total_cents = policy.fixed_fee_cents + usage_cents
+pending ──checklist green, number live──▶ trialing
+                                             │
+                            trial ends (days or calls)
+                                             ▼
+                                          serving ◀──────────┐
+                                             │               │
+                    retries exhausted, or the business cancels │ settles / resumes
+                                             ▼               │
+                                          dormant ───────────┘
+                                             │
+                                     60 days ▼
+                                         teardown
 ```
 
-- **`cap_cents - fixed_fee_cents` and not "cap minus what was collected".** The
-  fee is part of the period's total whether or not it cleared, which is why [F6c](Ringly_PRD_v3.md#f6c--invariants)'s
-  case (a) reaches $500 and case (b) reaches $400 — the difference is what was
-  collected, not what was clamped.
-- **Stripe is only ever told `usage_cents`.** The unclamped `raw_cents` never
-  leaves Ringly; `billable_seconds` and `usage_charge_cents` are both stored, so
-  the absorbed difference is a subtraction the operator can run per business ([F8](Ringly_PRD_v3.md#f8--operator-dashboard-ringly-internal),
-  [R8](#r8)) and is not lost.
-- **Tax is added by Stripe on top of the clamped figure** ([F6.18](Ringly_PRD_v3.md#f6-18), [F6c](Ringly_PRD_v3.md#f6c--invariants)): the cap
-  clamps Ringly's own charges, and the departure record holds the figure
-  exclusive of tax ([F9.9](Ringly_PRD_v3.md#f9-9)).
+**There is no `suspended` and no `past_due`.** A business whose card has just
+declined is still `serving` — the provider is retrying and the phone is still
+answering ([F6.11](Ringly_PRD_v3.md#f6-11)) — so a state for it would be a state that changes nothing.
+Whether an invoice is open is asked of Stripe, live, by the one function that
+needs it ([§2.10.7](#2107-outstanding-is-asked-of-stripe)).
 
-**Then, in order, in one worker pass over one business:**
+**`serving` never returns to `trialing`.** The operator extending a trial
+([F9.1c](Ringly_PRD_v3.md#f9-1c)) moves `trials.ends_at` and Stripe's `trial_end` while the business is
+still `trialing`; once billing has begun the extension is a credit, not a state
+change, and it is issued by hand.
 
-```
-1  claim the period                                    T1, local
-2  compute billable_seconds, minutes, usage_cents      local, no I/O
-3  raise and pay the usage invoice (§2.10.9)           external      ← skipped in mode=deletion
-4  record: usage_settled_at, figures, billing_events   T2, local
-5  if nothing is now outstanding (§2.10.6):
-     open the successor period                         local
-     raise and pay its fixed fee (§2.10.9)             external
-6  else: this decline is a failure — §2.10.4
-```
+### 2.10.2 Ending the trial on the call bound
 
-**Step 5's condition is [F6.11c](Ringly_PRD_v3.md#f6-11c) in one line**, and it is the same predicate the
-restore path uses. A settlement that declines therefore cannot be followed by a
-successor in the same pass, which is case (b) falling out of the code rather than
-being special-cased in it.
+The day bound needs no Ringly code — the subscription's own `trial_end` fires it
+([F1.13b](Ringly_PRD_v3.md#f1-13b)), and it fires whether or not Ringly is running that morning. The
+call bound is Ringly's, and it runs in the post-call worker
+([§2.6.2](#262-three-webhooks)) after the usage record is written.
 
-**Usage keeps accruing past the cap and is recorded in full** ([F6.9](Ringly_PRD_v3.md#f6-9)), because
-Ringly needs the true number for cost and margin ([F8](Ringly_PRD_v3.md#f8--operator-dashboard-ringly-internal)). The cap is applied at
-settlement, not during the period.
+```ts
+const t = await sql`
+  UPDATE trials SET calls_used = calls_used + 1
+   WHERE business_id = ${businessId} AND ended_at IS NULL
+   RETURNING calls_used, call_allowance`;
 
-**The cap notice is detected by the same worker, on open periods, and is made
-once-only by the email registry rather than by a new column** ([F6.9b](Ringly_PRD_v3.md#f6-9b)):
-
-```sql
--- open periods whose accrued, unclamped usage has reached the clamp ceiling
-SELECT p.id, p.business_id
-  FROM billing_periods p
-  JOIN pricing_policy  pol ON pol.id = p.policy_id
- WHERE p.usage_settled_at IS NULL
-   AND accrued_cents(p.id) >= pol.cap_cents - pol.fixed_fee_cents;
+if (t && t.calls_used === t.call_allowance) {
+  await stripe.subscriptions.update(
+    business.stripe_subscription_id,
+    { trial_end: "now", proration_behavior: "none" },
+    { idempotencyKey: `trial-end:calls:${businessId}` },
+  );
+}
 ```
 
-A `reason_key` of `cap_reached:{period_id}` is unique in `email_sends`
-([§2.4](#24-data-model)/010), and [F7.5](Ringly_PRD_v3.md#f7-5) makes that key "at most one reason per business per billing
-period" — so the second hourly tick that sees the same period raises no second
-email and no second operator alert. **A `cap_notified_at` column would be a
-second copy of a fact the email table already holds**, and [§2.6.4](#264-fail-closed-concretely)'s removed
-incident flag is the precedent for not adding it. On crossing, Ringly continues
-to serve, absorbs the excess, alerts the operator with cost-to-serve and margin
-([F7.13](Ringly_PRD_v3.md#f7-13)), and emails the business to say the rest of the period is on Ringly.
-Hitting the cap is good news for the business and reads that way.
+**The `UPDATE ... RETURNING` is the concurrency control.** Two calls ending in
+the same second must not both read "one left" and both try to end the trial. The
+increment is atomic, exactly one worker sees the value equal the allowance, and
+`=== ` rather than `>=` means a later call cannot re-fire it.
 
-**The dashboard's live accrued figure uses the identical query** ([F5.10](Ringly_PRD_v3.md#f5-10), [F6.13](Ringly_PRD_v3.md#f6-13)),
-outcome filter included, so the number a business watches during the period is
-the number it is charged at the end of it. A dashboard that counted unclassified
-calls and an invoice that did not would differ by a few pounds every month with
-nothing on the page to explain it.
+**`ended_at IS NULL` in the predicate is the second guard**, for the case the
+day bound got there first: the row is already closed, no row is returned, and
+nothing happens.
 
-### 2.10.4 When a charge fails
+**The idempotency key is derived, not random** ([§2.10.8](#2108-every-write-to-stripe-carries-a-key-ringly-can-recompute)) — a
+worker that dies after Stripe accepted the update replays the same key and gets
+the same answer rather than ending a trial twice.
 
-| Day  | What happens                                                                                     |
-| ---- | ------------------------------------------------------------------------------------------------ |
-| 0    | Charge fails. Service continues, usage keeps accruing, business emailed                          |
-| 0–7  | **Grace.** Calls answered normally. Follow-up emails. This usage **is** billable                 |
-| 7    | **Suspended.** The agent is unbound. Number and all data retained                                |
-| 7–60 | **Charged nothing whatsoever.** Fully recoverable — paying restores service that day             |
-| ~58  | 48-hour final warning                                                                            |
-| 60   | Number released, data deleted, the period settled for what was served, debt recorded permanently |
+**Ringly does not raise the invoice.** Setting `trial_end: 'now'` makes Stripe do
+it, on its own schedule, through the same `invoice.created` path as every other
+period ([§2.10.3](#2103-the-rollover-one-webhook-does-the-whole-thing)). **The first period is not a special
+case anywhere in this design**, which is the single largest simplification the
+subscription buys: the old model had an activation charge that was a `PaymentIntent`
+where everything else was an invoice, and every property that held for ordinary
+periods had to be re-argued for period 1.
 
-**Not every error is a failed charge, and treating them alike would suspend a
-business for Ringly's outage.** [F6.11](Ringly_PRD_v3.md#f6-11) says "a failed charge"; the design reads
-that as _the customer's money did not move_, never _Ringly could not reach
-Stripe_. The taxonomy is explicit because the wrong branch here is a
-customer-visible catastrophe with no other symptom:
+**Ringly does send the email** ([F1.13a](Ringly_PRD_v3.md#f1-13a)), because Stripe was told only that the
+trial ended and never why.
 
-| Class                                                                  | Ringly's response                                                                                                                       | Clocks  |
-| ---------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- | ------- |
-| `card_error` — declined, expired, insufficient funds                   | The invoice stays `open` and enters Smart Retries. `active → grace`, both deadlines, payment-failed email                               | **Yes** |
-| `invoice.payment_action_required` (SCA)                                | Same as a decline — an off-session charge that needs the cardholder is a charge that did not happen                                     | **Yes** |
-| `charge.dispute.created` (chargeback, [F6.17](Ringly_PRD_v3.md#f6-17)) | Treated exactly as non-payment. The disputed amount becomes outstanding ([§2.10.6](#2106-coming-back))                                  | **Yes** |
-| `api_connection_error`, `rate_limit_error`, Stripe 5xx                 | **Nothing changes.** The claim is released and the next hourly tick retries. No email, no clock, no state change                        | No      |
-| `idempotency_error`, `invalid_request_error`                           | A Ringly defect. Operator alert, claim left in place so it cannot loop, no state change                                                 | No      |
-| "Invoice is already paid" / `invoice_no_payment_required`              | **Success.** Stripe's own automatic attempt won the race ([§2.10.9](#2109-the-stripe-object-lifecycle-end-to-end)); record and continue | No      |
+### 2.10.3 The rollover: one webhook does the whole thing
 
-**A transient error must never be allowed to look like a decline**, because the
-two differ in who has to act and [F1.12a-i](Ringly_PRD_v3.md#f1-12a-i) is built entirely on that distinction:
-a declined card is the business's to fix and everything else is Ringly's.
-
-Three rules do the work, and they are the ones easiest to get wrong:
-
-**No new period ever opens while the business owes anything** ([F6.11c](Ringly_PRD_v3.md#f6-11c)). Not
-during grace, not during suspension. It lives in exactly one place — step 5 of
-[§2.10.3](#2103-settlement-and-the-clamp)'s ordering, shared with [§2.10.6](#2106-coming-back) — because a rule written twice is a rule
-that will be true in one of the two places. This is the single rule that stops a
-failing account accumulating $100 fees for periods it never asked for and mostly
-did not receive. A business in trouble is only ever dealing with one period and
-one debt, and **the debt never grows while it is unpaid** — a business deciding
-on day 55 whether to come back owes exactly what it owed on day 8.
-
-**The period clock never stops, and a suspended business loses service days it
-has already paid for** ([F6.11b](Ringly_PRD_v3.md#f6-11b)). That is the intended outcome. `starts_on` and
-`ends_on` are never updated after insert — there is no code path that writes
-them, which is what makes [I1](Ringly_PRD_v3.md#i1) structural rather than a discipline. On the
-`grace → suspended` transition the open period, if any, is stamped
-`was_suspended_during = true` in the same transaction, because [F5.9](Ringly_PRD_v3.md#f5-9) requires the
-billing history row to say so or a period with low usage and a full $100 looks
-like a mistake.
-
-**What pauses is the meter, not the collection** ([F6.11b-i](Ringly_PRD_v3.md#f6-11b-i)). The outstanding
-invoice stays open and due, Stripe keeps retrying the card, and Ringly keeps
-sending follow-ups — a suspended business is chased as hard as any other debtor.
-What it must never receive is a _new_ charge for a service it is not getting.
-**The mechanism that makes both true at once is [§2.10.8](#2108-the-division-with-the-payment-provider)**, and it is R21.
-
-### 2.10.5 Two failure cases that are not symmetric
-
-[F6.11d](Ringly_PRD_v3.md#f6-11d) works both through in full. The design must produce both — and, worth
-saying plainly, **it produces them without a branch**. Nothing in [§2.10.3](#2103-settlement-and-the-clamp) or
-[§2.10.6](#2106-coming-back) asks which charge failed; the asymmetry comes entirely from whether a
-period happens to be open at the moment of failure, which is the state the
-`WHERE usage_settled_at IS NULL` predicate is already reading.
-
-**(a) The fixed fee fails**, on day 1 of period _N_. Period _N_ runs to its own
-end; usage in days 1–8 accrues to it and is billable, because the call-end insert
-found an open period and stamped `period_id`. If the business is still suspended
-on day 30, _N_ settles on time for what was served and **no _N+1_ opens** — step
-5's predicate is false. Paying inside _N_ resumes it with nothing new charged,
-because the open-period insert's first `NOT EXISTS` is false. Paying after _N_
-has ended opens a fresh period that day with its own $100.
-
-**(b) The usage settlement fails**, on the last day of _N_. _N_ closes that same
-day — `usage_settled_at` is stamped in T2 whether or not the invoice was paid,
-because a settlement is a computation Ringly performed and [F6.16](Ringly_PRD_v3.md#f6-16) says it never
-reopens. **No successor ever opens.** The grace week that follows runs with no
-period open, so the call-end insert stamps `period_id = NULL` and **that usage is
-not billed** ([F6.11c-ii](Ringly_PRD_v3.md#f6-11c-ii)) — there is nothing to bill it to, and inventing a period
-to hold it would manufacture exactly the $100 charge [F6.11c](Ringly_PRD_v3.md#f6-11c) refuses. **The cost is
-still recorded** in `cost_records`, which do not belong to a period ([§2.4](#24-data-model)/009),
-because what Ringly absorbs, Ringly measures.
-
-**Ceilings differ because the fee was collected in one case and not the other**:
-case (a) tops out at $500, case (b) at $400 ([F6c](Ringly_PRD_v3.md#f6c--invariants)). Both fall out of
-`usage_cents = min(raw, cap − fee)` with nothing case-specific in it.
-
-### 2.10.6 Coming back
-
-**Payment clearing is the trigger; restoration is the consequence** ([F6.10b](Ringly_PRD_v3.md#f6-10b)).
-Ringly does not charge a suspended business to bring it back — it is already
-being charged, continuously, by retries that never stopped. **The moment nothing
-is outstanding, service resumes that day**: the agent is rebound (and verified,
-[§2.5.3](#253-bind-and-unbind-are-verified-by-reading-provider-state-back)) and the business is emailed.
-
-**"Outstanding" is a question about Stripe, answered against the invoices Ringly
-raised.** Ringly is the authority on what was asked for; Stripe is the authority
-on whether money moved ([N10.7](Ringly_PRD_v3.md#n10-7)). The predicate is one function, and everything in
-this section calls it:
+`invoice.created` on a subscription invoice is the only rollover trigger. One
+handler, one transaction, one Stripe call:
 
 ```
-outstanding(business) =
-    Σ invoice.amount_remaining
-      for invoices in stripe.invoices.list({ customer, status: 'open' })
-      whose metadata.ringly_business_id matches
-  + Σ dispute.amount
-      for billing_events of kind 'dispute_opened' with no matching 'dispute_closed(won)'
+on invoice.created (subscription invoice, draft):
+
+  BEGIN
+    1  close the open period:
+         usage_seconds     ← SUM(connected_seconds) over its usage_records
+         usage_charge_cents← clamp(round_up_to_minute(usage_seconds) × rate)
+         closed_at         ← now(), closed_by ← 'rollover'
+    2  open the new period, with Stripe's own boundaries:
+         starts_at, ends_at ← invoice.lines.data[].period
+         fee_invoice_ref    ← invoice.id
+    3  billing_events += usage_invoiced   (idempotency_key = key below)
+  COMMIT
+
+  4  for every closed period with usage_invoiced_at IS NULL and a
+     non-zero charge:
+       stripe.invoiceItems.create({ customer, invoice: invoice.id,
+                                    amount, currency, description },
+                                  { idempotencyKey: key })
+       stamp usage_invoiced_at, usage_invoice_ref
 ```
 
-- **A part payment cannot clear it**, because a Stripe invoice stays `open` with
-  `amount_remaining > 0` until it is paid in full. That behaviour is structural
-  rather than a check Ringly performs, which is why it cannot be forgotten.
-- **Chargebacks have to be added by hand**, because a dispute withdraws funds
-  without reopening the invoice — an implementation that asked Stripe only about
-  invoices would silently restore a business that had just charged back ([F6.17](Ringly_PRD_v3.md#f6-17),
-  [R15](#r15)).
-- **Clearing one of two debts leaves it suspended**, and the follow-up email says
-  what remains ([F6.10b](Ringly_PRD_v3.md#f6-10b)).
-- **It does not matter how it cleared** — an automatic retry, a new card, or the
-  business paying the invoice by hand all produce the same `invoice.paid` event
-  and the same answer here.
+**Step 4 sweeps every uninvoiced closed period, not just the one it closed.**
+This is what makes [F6.1a](Ringly_PRD_v3.md#f6-1a)'s "if Ringly misses the window the usage lands on the
+next invoice" true rather than aspirational: the loop has no notion of _last_
+month, only of _not yet billed_, so a month whose invoice item failed to attach
+is picked up by the next rollover with no repair path and no operator involved.
 
-**`reevaluate(business)` is the whole of restoration, and it is the only thing
-that performs it.** The webhook handler calls it and the daily reconciliation
-worker calls it; **the webhook is not a different path, only a faster one**:
+**The window is real and it is short.** Stripe drafts a subscription invoice and
+finalises it roughly an hour later. An invoice item added after finalisation
+attaches to the _next_ invoice instead, which is the failure this design absorbs
+rather than prevents — and absorbing it is why `usage_invoiced_at` is a nullable
+stamp rather than an assumed consequence of the period closing.
 
-```
-reevaluate(business):
-  0  if outstanding(business) > 0 → return                            read-only, no writes
-  1  T1: UPDATE businesses SET billing_status = 'active'
-           WHERE id = $1 AND billing_status IN ('grace','suspended')
-         RETURNING billing_status AS previous
-         DELETE FROM lifecycle_deadlines
-           WHERE business_id = $1 AND kind IN ('grace_expiry','nonpayment_deletion')
-      └─ no row returned → already active → return. This is the idempotency.
-  2  if previous = 'suspended': rebind the agent, read provider state back   external (§2.5.3)
-      └─ failure → alert (F7.13a); the business is active and unanswered — retried next tick
-  3  open a period, only if none is running and no cancellation stands  local (§2.10.2)
-      └─ no row returned → the original period is still running → nothing more is charged
-  4  raise and pay that period's fixed fee                             external (§2.10.9)
-      └─ a decline here is a fresh failure with a fresh clock (F6.11b-iv)
-  5  enqueue the service-restored email, naming the new period end date
-```
+**Steps 1–3 commit before step 4 runs**, and the order matters. If the Stripe
+call is made inside the transaction and the transaction then rolls back, the
+invoice item exists and Ringly has no record of it — a charge with no reasoning
+behind it, which is the one outcome [N10.1](Ringly_PRD_v3.md#n10-1) forbids. Committing first means the
+worst case is a period marked closed with `usage_invoiced_at` still null, which
+the next rollover fixes by design.
 
-**Steps 1 and 3–4 are [F6.11b-iii](Ringly_PRD_v3.md#f6-11b-iii)'s ordering as code: the debt clears, then the
-new period's fee is charged.** The order is not cosmetic — step 0 is the gate, so
-the new period cannot exist until the old debt is settled, and a business paying
-its way out on a day a new period opens is charged twice that day, both movements
-appearing separately in its billing history ([F5.9](Ringly_PRD_v3.md#f5-9)).
+**Idempotency is the `unique (business_id, starts_at)` on `billing_periods`.**
+Stripe delivers at least once; a redelivered `invoice.created` tries to open a
+period that already exists, the insert conflicts, the transaction aborts, and
+step 4 is not reached — except that step 4 is separately keyed, so a redelivery
+that gets that far still cannot double-bill.
 
-**Step 2 comes before step 4 deliberately.** Service resumes the same day
-([F6.10b](Ringly_PRD_v3.md#f6-10b)) and the new fee is a consequence of resuming, not a condition of it; if
-that fee then declines, [F6.11b-iv](Ringly_PRD_v3.md#f6-11b-iv) gives the business a full fresh grace during
-which it must be _served_. Charging first and rebinding second would leave a
-business unanswered inside a grace period it is entitled to.
+### 2.10.4 The clamp
 
-**Step 4's failure re-enters [§2.10.4](#2104-when-a-charge-fails) from the top** — new deadlines, new
-7-day clock, new 60-day clock — because the previous ones were deleted in step 1.
-A business is never carried straight from suspension back into suspension without
-the full grace it is owed.
-
-**A business that has paid and is still not answered is the worst state in the
-system** ([F6.10b-i](Ringly_PRD_v3.md#f6-10b-i)), so recovery does not depend on a single message arriving.
-**The daily reconciliation worker runs `reevaluate()` over every business in
-`grace` or `suspended`** — the same function, the same writes, the same
-idempotency. A lost webhook may cost such a business hours; it must never cost it
-days, and it must never cost it the account.
-
-**It also reconciles in the other direction**, which is the half a dropped
-webhook makes necessary and which no requirement would notice missing: for every
-business, any Stripe invoice carrying `metadata.ringly_business_id` that has no
-corresponding `billing_events` row is logged and raised, because that is what a
-crash between [§2.10.11](#21011-transaction-boundaries-and-what-a-crash-leaves)'s T1 and T2 leaves behind and it is otherwise invisible.
-
-### 2.10.7 Cancellation
-
-**A short reconsideration window, then settlement** ([F6.12](Ringly_PRD_v3.md#f6-12)). The window runs
-from the request until whichever comes first: 7 days later, or the end of the
-current period.
-
-**The cancellation is durable as a `lifecycle_deadlines` row of kind
-`cancellation_window_close`, and that row is the fact** — `requested_at` when the
-business sent the email, `due_at` at `min(requested_at + 7d, period end)`. Two
-requirements need the request instant and neither can use the row's absence:
-[F9.2](Ringly_PRD_v3.md#f9-2) judges a revocation **by when the business sent it, not when Ringly read
-it**, so `requested_at` is operator-supplied and may be earlier than the row's
-creation; and [F6.12a](Ringly_PRD_v3.md#f6-12a) needs it to identify which usage records the window covers.
-
-- **Service continues unchanged** through it. A business that changes its mind
-  finds everything as it was.
-- **Usage stops being billed** from the request onward, though the service is
-  still given. Ringly absorbs it. The mechanism is `period_id = NULL` at call
-  end ([§2.10.2](#2102-a-period)), not a filter at settlement — so the free window is visible in
-  the data as it accrues rather than inferred at the end.
-- **Revoking erases the window retroactively** ([F6.12a](Ringly_PRD_v3.md#f6-12a)) and the usage served
-  during it **becomes billable after all**. This is the one write-back in the
-  money tables and it is bounded to an unsettled period, which is what keeps it
-  inside [N10.4](Ringly_PRD_v3.md#n10-4):
-
-  ```sql
-  UPDATE usage_records u
-     SET period_id = p.id
-    FROM billing_periods p
-   WHERE p.business_id = $1 AND p.usage_settled_at IS NULL
-     AND u.business_id = $1
-     AND u.period_id IS NULL
-     AND u.created_at >= $2;              -- the deadline row's requested_at
-  ```
-
-  **`period_id IS NULL` makes it idempotent** — a second run matches nothing —
-  and the `usage_settled_at IS NULL` join is what makes it legal: no settled
-  figure moves, so [F6.16](Ringly_PRD_v3.md#f6-16) holds. The guard is safe because a business behind on
-  payment never reaches `cancelling` at all ([F6.11a](Ringly_PRD_v3.md#f6-11a)), so the only null-period
-  rows a `cancelling` business has are the window's.
-
-- **A revocation actioned after the window closed must unwind the settlement**
-  ([F9.2](Ringly_PRD_v3.md#f9-2)). The early settlement is not deleted — [N10.4](Ringly_PRD_v3.md#n10-4) forbids that — so the
-  unwind is: refund or void the settlement invoice by hand in Stripe, write the
-  reversing `billing_events` rows, reopen nothing, and let the period run to its
-  original `ends_on` under a fresh settlement claim. **It is deliberately the one
-  operator-assisted path in billing**, because it is rare, it is the only case
-  where a settled figure must change, and a code path for it would be the least
-  exercised and most dangerous in the system.
-- **When it closes**, the sweeper calls `settle(period, 'settled_early')` for
-  usage up to the request, clamped. **The $100 is not refunded, in whole or in
-  part** ([F6.12b](Ringly_PRD_v3.md#f6-12b), [F6.11e](Ringly_PRD_v3.md#f6-11e), [I6](Ringly_PRD_v3.md#i6)). There is no proration arithmetic anywhere in the
-  design; Stripe's proration is left off ([§2.17](#217-verified-vendor-capabilities)) so that none can arrive by
-  accident.
-- **If that settlement charge fails, it is recorded and let go** ([F6.12f](Ringly_PRD_v3.md#f6-12f)). No
-  grace clock, no suspension, no retry loop of Ringly's own — the amount is
-  written to the departure record as owed ([F9.9](Ringly_PRD_v3.md#f9-9)). Service has already stopped and
-  there is nothing left to withhold. **This is the one decline that does not
-  enter [§2.10.4](#2104-when-a-charge-fails)**, and the branch is on the business's state (`dormant`), not on
-  which charge it was.
-- **Then 60 days dormant**, fully recoverable, number and every record retained
-  ([F6.12e](Ringly_PRD_v3.md#f6-12e)). A business returning inside it resumes on its own number with its own
-  history, on a new period charged that day.
-- **A business already behind on payment cannot cancel into free service**
-  ([F6.11a](Ringly_PRD_v3.md#f6-11a)). The status guard `WHERE billing_status = 'active'` is what enforces
-  it: the operator's action still records the cancellation deadline row, so
-  [F6.10](Ringly_PRD_v3.md#f6-10)'s "never charged again" holds, but the row is written with
-  `due_at = requested_at` — a zero-length window — and the grace and deletion
-  clocks are untouched. It is treated as non-paying, and the suspension clock
-  keeps running.
-
-### 2.10.8 The division with the payment provider
-
-**Stripe invoices, charges and retries; Ringly decides the amounts and writes
-every message except the three Stripe already sends well** ([F6.20](Ringly_PRD_v3.md#f6-20)).
-
-| Function                                    | Owner                                               |
-| ------------------------------------------- | --------------------------------------------------- |
-| Tax calculation                             | **Stripe Tax** — Ringly stores the amounts          |
-| Invoices, receipts, payment-succeeded email | **Stripe**, carrying Ringly branding                |
-| Retrying failed payments                    | **Stripe** — Ringly builds no retry loop            |
-| Every failure-path email                    | **Ringly**                                          |
-| The $500 cap and the clamp                  | **Ringly** computes, Stripe executes                |
-| Refunds                                     | Neither automatically — goodwill, by hand           |
-| End-of-dunning behaviour and teardown       | **Ringly**                                          |
-| Billing thresholds                          | Neither — deliberately not configured               |
-| Self-service portal                         | **Disabled** ([§1.9](Ringly_PRD_v3.md#19-deferred)) |
-
-**The account-level settings that make that table true**, all of which are
-configuration rather than code and all of which must be asserted by the
-integration's own start-up check, because a dashboard toggle nobody owns is a
-toggle that drifts:
-
-| Setting                                 | Value              | Because                                                                                                             |
-| --------------------------------------- | ------------------ | ------------------------------------------------------------------------------------------------------------------- |
-| Smart Retries                           | **On, 2 months**   | The longest window Stripe offers, matching [F9.3](Ringly_PRD_v3.md#f9-3)'s 60 days                                  |
-| End-of-dunning action                   | **Leave past due** | Teardown is Ringly's ([F6.19](Ringly_PRD_v3.md#f6-19)); nothing Stripe does may end it                              |
-| "Email customers about failed payments" | **Off**            | [F6.21](Ringly_PRD_v3.md#f6-21), [F6.11b-ii](Ringly_PRD_v3.md#f6-11b-ii) — Ringly writes every failure-path message |
-| Receipts and finalised-invoice emails   | **On**             | [F7.3a](Ringly_PRD_v3.md#f7-3a) — the three things Stripe sends well                                                |
-| Customer portal                         | **Off**            | [§1.9](Ringly_PRD_v3.md#19-deferred) — cancellation is not self-serve ([F9.2](Ringly_PRD_v3.md#f9-2))               |
-| Automatic tax                           | **On**             | [F6.18](Ringly_PRD_v3.md#f6-18)                                                                                     |
-| Billing thresholds                      | **Not configured** | [F6.20](Ringly_PRD_v3.md#f6-20)                                                                                     |
-| Proration                               | **Off**            | [F6.11e](Ringly_PRD_v3.md#f6-11e), [I6](Ringly_PRD_v3.md#i6) — no path may produce a prorated figure                |
-
-**Stripe's dunning is switched off throughout, including during suspension**
-([F6.21](Ringly_PRD_v3.md#f6-21), [F6.11b-ii](Ringly_PRD_v3.md#f6-11b-ii)). Stripe's email can say a card was declined; it cannot say
-that service continues for seven days, that nothing has been deleted yet, or
-what is destroyed in 48 hours. Those are Ringly's timelines and Ringly's data,
-and two differently-worded messages from what looks like one company is the
-failure this prevents.
-
-#### 2.10.8.1 R21, and the decision that dissolves it
-
-**[R21](#r21) is that suspension must stop new invoices while preserving retries on the
-open one, and that these are usually configured together.** The verified
-behaviour of the control they are usually configured through:
-
-| `pause_collection.behavior` | New invoices                       | The already-open invoice         |
-| --------------------------- | ---------------------------------- | -------------------------------- |
-| `void`                      | Voided                             | **Also voided — kills the debt** |
-| `mark_uncollectible`        | Marked uncollectible               | Continues to be retried          |
-| `keep_as_draft`             | Stay `draft`, `auto_advance=false` | **Continues to be retried**      |
-
-So `keep_as_draft` is the correct setting and `void` is the trap — but
-`keep_as_draft` leaves draft invoices **accumulating** for every cycle spent
-suspended, and resuming collection requires setting `auto_advance = true` on the
-drafts you want. **A restore that forgot to void them would raise exactly the
-charge [F6.11b](Ringly_PRD_v3.md#f6-11b) forbids**, silently, for a phone nobody answered.
-
-<a id="d1"></a>**Decision D1, ratified 2026-08-01 — Ringly uses no Stripe `Subscription`
-object. Every charge is a standalone invoice raised by the settlement worker
-([§2.10.9](#2109-the-stripe-object-lifecycle-end-to-end)).**
-
-**The decisive reason is structural and was confirmed against Stripe's
-documentation, not assumed.** A subscription bills the recurring fee **one
-service interval in advance** and combines it with the closing period's metered
-usage **on a single invoice at the period boundary** — Stripe's own wording is
-that at the end of the period it "sends an invoice that combines the flat fee
-with any usage". [F6](Ringly_PRD_v3.md#f6--billing-and-payments) requires the opposite, deliberately: the fee on day 1, that
-period's usage on day 30, the next fee on day 31, **so that a card which has gone
-bad fails one charge at a time and there is only ever one grace clock**. Under a
-subscription a single decline is both charges failing together, and [F6.11d](Ringly_PRD_v3.md#f6-11d)'s two
-asymmetric cases — fee-fails with a $500 ceiling, settlement-fails with a $400
-one — collapse into a third case the PRD does not describe.
-
-**None of the ways out are cheaper than not using one:**
-
-| Way out                                         | Why it is worse                                                                |
-| ----------------------------------------------- | ------------------------------------------------------------------------------ |
-| Two subscriptions with offset anchors           | Two dunning states, two things to pause, [R21](#r21) doubled                   |
-| Subscription for the fee, manual usage invoices | The manual path **plus** a subscription, not instead of one                    |
-| Prebilling the fee                              | Stripe: "Prebilling doesn't apply to any usage-based prices in a subscription" |
-
-**The second reason is that [R21](#r21)'s mitigation rests on behaviour Stripe does not
-document unambiguously.** Suspension needs two things pulled apart that are
-normally set together — stop raising new invoices ([F6.11b](Ringly_PRD_v3.md#f6-11b)) while the outstanding
-one keeps being retried ([F6.11b-i](Ringly_PRD_v3.md#f6-11b-i)). `pause_collection.behavior = 'keep_as_draft'`
-was the candidate, and the pause guide says both of these:
-
-> "All invoices created before the `resumes_at` date remain in `draft` status and
-> `auto_advance` is set to `false`."
-
-> "Invoices created before subscriptions are paused continue to be retried unless
-> you void them."
-
-Those cannot both hold for the already-finalised, already-open invoice, and the
-API reference does not distinguish it — it says only "Keep all invoices as
-`draft` while collection is paused". **If `keep_as_draft` reaches back and sets
-`auto_advance: false` on the open invoice, retries stop and the entire recovery
-path dies silently**, which is the failure [R21](#r21) exists to warn about. `void`
-stops retries by definition and `mark_uncollectible` stops collection, so if that
-reading is the true one, **no pause behaviour satisfies [F6.11b](Ringly_PRD_v3.md#f6-11b) and [F6.11b-i](Ringly_PRD_v3.md#f6-11b-i) at
-once** and a subscription cannot meet the requirements at all.
-
-**[D1](#d1) removes [R21](#r21) rather than mitigating it.** With no recurring-invoice generator
-there is nothing to pause: "no new invoice during suspension" becomes "the
-worker's step 5 predicate is false", which is [F6.11c](Ringly_PRD_v3.md#f6-11c), which is already tested.
-Retries on the open invoice are untouched because nothing touches them. **Both of
-[R21](#r21)'s failure modes are silent, and the best mitigation for a silent failure is a
-design in which it is unreachable.**
-
-**Third, `billing_periods` becomes the only clock.** With a subscription there
-are two — Stripe's cycle anchor and Ringly's period — and [F6.11b-iii](Ringly_PRD_v3.md#f6-11b-iii)'s "a new
-period opens on the day service is restored" becomes a `billing_cycle_anchor`
-reset with `proration_behavior: 'none'`, on a system where two clocks silently
-disagreeing is a wrong charge.
-
-**Two smaller things a subscription cannot express anyway.** [F6.9](Ringly_PRD_v3.md#f6-9)'s $500 clamp is
-inclusive of the fee and applied at settlement; under a subscription it means
-intercepting `invoice.created` and injecting a negative line before finalisation,
-mutating Stripe's own invoice inside a webhook. And [F6.12b](Ringly_PRD_v3.md#f6-12b)'s cancellation wants
-**no** proration — the fee is not refunded and usage to the request date is
-charged — which is most of what a subscription offers at cancellation.
-
-**What [D1](#d1) costs, stated plainly.** Ringly raises every invoice on time itself,
-and gives up Stripe's dashboard analytics — MRR, churn, subscriber counts — which
-is the one real loss, partly covered by the operator dashboard ([F8.2a](Ringly_PRD_v3.md#f8-2a), [F8.4](Ringly_PRD_v3.md#f8-4)). The
-customer portal is already disabled ([§1.9](Ringly_PRD_v3.md#19-deferred)), proration and plan changes are out of
-scope, and billing thresholds are deliberately unconfigured ([F6.20](Ringly_PRD_v3.md#f6-20)). The invoice
-scheduling it gives up is work the hourly settlement worker does anyway, driven
-by rows that have come due ([§2.2.2](#222-request-paths-and-background-work)), and a period that opens late is visible as a
-due row rather than as a missing charge.
-
-**Consequential edits, now made rather than proposed:** [§2.13.4](#2134-teardown-in-order)'s step 2 is an
-_assertion_ that no subscription exists for the customer rather than a
-cancellation — kept as a step, because one created by hand during support would
-otherwise survive teardown and bill a deleted business. [F6.19](Ringly_PRD_v3.md#f6-19) carries the same
-wording. [R21](#r21) is recorded as dissolved rather than mitigated, and **its acceptance
-test is unchanged and remains the criterion**: suspend, cross a would-be period
-boundary, restore, then assert that no new invoice was raised and that the
-original was retried throughout.
-
-**What [D1](#d1) does not settle, and what still needs a test account ([A4](Ringly_PRD_v3.md#a4)).** Ringly
-depends on Stripe retrying **one standalone open invoice for as long as
-suspension lasts**, and that is a longer window than it first appears: in
-[F6.11d](Ringly_PRD_v3.md#f6-11d)'s case (a) the fee fails on day 1 and deletion is at day 60, so the
-invoice must be retried for **59 days** against a Smart Retries window of roughly
-two months. [F6.11b-i](Ringly_PRD_v3.md#f6-11b-i)'s "retries that never stopped" is the whole recovery path,
-and it is running very close to the edge of what Stripe will do unprompted. This
-question exists under [D1](#d1) exactly as it would have under a subscription.
-
-**A chargeback is treated exactly as non-payment** ([F6.17](Ringly_PRD_v3.md#f6-17)): same grace, same
-suspension, same 60 days. No dispute workflow, no pausing of the deletion clock,
-contested or conceded by hand.
-
-### 2.10.9 The Stripe object lifecycle, end to end
-
-**Four objects and no others**: `Customer`, `SetupIntent`, `Invoice`,
-`InvoiceItem`. Every one Ringly creates carries
-`metadata.ringly_business_id`, and every invoice also carries
-`metadata.ringly_period_id` and `metadata.ringly_kind` — because reconciliation
-([§2.10.6](#2106-coming-back)) has to be able to ask Stripe "what have you got for this business" and
-get an answer that does not depend on Ringly's own rows being intact.
-
-**At card-add — a `SetupIntent`, and no charge** ([F6.2](Ringly_PRD_v3.md#f6-2), [F6.3](Ringly_PRD_v3.md#f6-3)):
-
-```
-1  create-or-get Customer { email, name, address, metadata }        idempotency key: customer:{business_id}
-     └─ address is required, because Stripe Tax needs a US 5-digit postal code (F6.18)
-2  SetupIntent { customer, usage: 'off_session', payment_method_types: ['card'] }
-3  return client_secret to the browser; Stripe Elements confirms it
-4  on confirmation — from the browser's return AND from setup_intent.succeeded, whichever first —
-     Customer.invoice_settings.default_payment_method = si.payment_method
-5  store the customer id locally (§2.10.13). Nothing else about the card is stored.
+```ts
+const chargeable = Math.min(
+  Math.ceil(usageSeconds / 60) * policy.perMinuteRateCents,
+  isFinalInvoice
+    ? policy.usageCapCents
+    : policy.invoiceCapCents - policy.fixedFeeCents,
+);
 ```
 
-**Card details never reach Ringly's servers or logs** ([F6.3](Ringly_PRD_v3.md#f6-3), a hard
-requirement): the confirmation happens browser-to-Stripe and Ringly sees a
-`SetupIntent` id and a `PaymentMethod` id. **The brand and last four digits are
-deliberately not stored either** — the dashboard reads them from Stripe when it
-renders, because a copy of them is a copy that goes stale when the card is
-replaced and there is no requirement that survives the network being down.
+**Seconds are summed across the whole period and rounded up once**
+([F6.7a](Ringly_PRD_v3.md#f6-7a)), not per call. Rounding each of forty short calls up to a minute
+would charge for roughly twice the time served.
 
-**Step 4 is written to be reached twice** — the browser's return and the webhook
-race, and out-of-order delivery means either can win ([§2.10.10](#21010-the-webhook-endpoint)). Setting a
-default payment method is idempotent, so the design does not choose between them.
+**Two ceilings, because there are two shapes of invoice** ([I3](Ringly_PRD_v3.md#i3)). A periodic
+invoice carries the fee and is bounded at $500, so its usage half is bounded at
+$400 by subtraction. A final invoice carries no fee ([§2.10.6](#2106-stopping-service)) and
+is bounded at $400 directly. The two arrive at the same number today and are
+computed from different columns on purpose, so that changing the fixed fee moves
+one and not the other.
 
-**At every charge — one invoice, built in a fixed order:**
+**Usage past the cap is recorded in full and charged at zero.** `usage_seconds`
+is the truth; `usage_charge_cents` is what was asked for. The operator's cost and
+margin figures read the first ([§2.9.5](#295-the-operator-dashboard)) — a business Ringly is
+subsidising is invisible if the record stops at the cap.
+
+**Crossing the cap is detected on the day, not at invoice time** ([F6.9b](Ringly_PRD_v3.md#f6-9b)). The
+post-call worker compares the running total against the ceiling after each usage
+record and enqueues the cap-reached email with a per-period reason key
+([§2.11.4](#2114-reason-keys-constructed-so-two-workers-agree)), so it is sent once however many calls cross it.
+
+### 2.10.5 When a charge fails
+
+**Nothing happens.** This section exists to say so, because the old design's
+largest component lived here.
+
+Stripe records the decline, emails the business, and schedules a retry from its
+own dunning configuration ([F6.11](Ringly_PRD_v3.md#f6-11)). Ringly stays `serving`: the agent stays
+bound, calls are answered, usage accrues to the open period and is billable.
+**Ringly writes a `billing_events` row and sends no email** ([F6.21](Ringly_PRD_v3.md#f6-21)) — there is
+no service change to report, and a message saying so would arrive alongside
+Stripe's saying something different.
+
+**The one thing Ringly watches for is the last retry:**
+
+```ts
+// invoice.payment_failed
+if (invoice.next_payment_attempt === null)
+  await stopService(businessId, "nonpayment");
+```
+
+**`next_payment_attempt === null` is the signal**, and it is Stripe's own
+statement that it has given up rather than a date Ringly computed. A window
+Ringly counted would drift from the provider's actual schedule the first time the
+dunning settings changed, and the drift would be invisible: a business served
+free for a week, or cut off while Stripe was still trying.
+
+**Dunning must be configured to leave the invoice open** — not to cancel the
+subscription, not to mark it unpaid. Stripe offers three end-of-dunning
+behaviours and all three are wrong here: `cancel` is terminal and destroys
+dormancy ([§2.10.6](#2106-stopping-service)), while `unpaid` and `past_due` both keep
+generating invoices at the next cycle. **Ringly acts before any of them matters**,
+which is only true while the retry window is shorter than a billing period — the
+constraint on `pricing_policy.retry_window_days` ([§2.4](#24-data-model)/007) is what keeps it
+true.
+
+**A chargeback enters here identically** ([F6.17](Ringly_PRD_v3.md#f6-17)). `charge.dispute.created`
+synthesises a debt in `billing_events` that `outstanding()` reads
+([§2.10.7](#2107-outstanding-is-asked-of-stripe)); the dormancy clock is not paused for it, and disputes
+are contested by hand.
+
+### 2.10.6 Stopping service
+
+One function, two callers — retries exhausted and the business cancelling — and
+it does the same thing for both ([F9.3](Ringly_PRD_v3.md#f9-3)).
 
 ```
-1  invoice = stripe.invoices.create({
-       customer, collection_method: 'charge_automatically', auto_advance: true,
-       automatic_tax: { enabled: true },
-       pending_invoice_items_behavior: 'exclude',        ← the important one
-       description, metadata: { ringly_business_id, ringly_period_id, ringly_kind } },
-     { idempotencyKey: `${kind}:${period_id}:v1` })
-2  stripe.invoiceItems.create({ customer, invoice: invoice.id, currency: 'usd',
-       amount: <clamped integer cents>, description }, { idempotencyKey: ... })
-3  stripe.invoices.finalizeInvoice(invoice.id)
-4  stripe.invoices.pay(invoice.id, { off_session: true })
+stopService(businessId, reason):
+
+  1  UNBIND the agent, and read the provider's record back  (§2.5.3)
+       └─ read-back fails → retry, then alert (F7.13a). Do not proceed.
+
+  2  close the open period:  closed_by ← 'service_stopped'
+     compute usage_charge_cents for the part-month  (§2.10.4, final ceiling)
+
+  3  if usage_charge_cents > 0:
+       raise a STANDALONE invoice for it and finalise it   ← before the pause
+       billing_events += final_usage_invoiced
+
+  4  PAUSE the subscription:
+       pause_collection: { behavior: 'void' }
+
+  BEGIN
+    5  service_state ← 'dormant'
+    6  INSERT dormancies (business_id, stopped_at, stopped_by, due_at)
+         VALUES (…, now(), reason, now() + 60 days)
+  COMMIT
+
+  7  enqueue the email  (Ringly's, not Stripe's — F7.3a)
 ```
 
-- **The invoice is created before the item, with `pending_invoice_items_behavior:
-'exclude'`.** Creating the item first and letting the invoice sweep up pending
-  items means any stray item on that customer lands on this invoice — and on a
-  product with a $500 clamp computed in advance, an invoice whose total is not
-  the number Ringly computed is the exact failure the clamp exists to prevent.
-  `exclude` is the API default; it is passed explicitly because a default is not a
-  decision anybody can see.
-- **Steps 3 and 4 are explicit because `auto_advance` alone is not prompt
-  enough.** Stripe finalises and attempts payment about **an hour** after the
-  invoice is created, and the Activate button must resolve now ([F1.12a-i](Ringly_PRD_v3.md#f1-12a-i)). So
-  Ringly finalises and pays synchronously.
-- **`auto_advance: true` is still set**, so that a decline in step 4 leaves the
-  invoice `open` and inside Smart Retries — which is the entire recovery path
-  ([F6.11b-i](Ringly_PRD_v3.md#f6-11b-i)) and the reason Ringly builds no retry loop of its own. Stripe's own
-  automatic attempt, an hour later, finds a paid invoice and does nothing; if it
-  should ever win the race, step 4 errors with "already paid", which [§2.10.4](#2104-when-a-charge-fails)
-  classifies as success.
-- **The idempotency key is derived, not generated.** For a period's charges it is
-  the period id, so two worker ticks racing produce the same key and Stripe
-  returns the first result. **Activation is the one case where no period exists
-  yet**, and it keys on the business instead
-  ([§2.5.2.1](#2521-one-press-and-what-makes-it-exactly-one)) — the same sequence,
-  a different key, because the thing being made unique is still "one invoice per
-  fixed fee".
-  **This protects a same-run retry only** — Stripe prunes v1 keys after about 24
-  hours — so it is the cheap outer guard and not the real one. The real one is
-  [§2.10.11](#21011-transaction-boundaries-and-what-a-crash-leaves)'s claim-then-record, plus:
+**Step 1 first, and it is the only step that can refuse to proceed.** Every other
+step is about money; this one is about a phone that is still answering calls
+Ringly has decided to stop metering ([F1.12a-ii](Ringly_PRD_v3.md#f1-12a-ii)). Pausing the subscription
+first would leave a business receiving free service with no invoice ever coming.
 
-  ```sql
-  CREATE UNIQUE INDEX one_fee_invoice_per_period
-      ON billing_events (period_id) WHERE kind = 'fixed_fee_invoiced';
-  CREATE UNIQUE INDEX one_usage_invoice_per_period
-      ON billing_events (period_id) WHERE kind = 'usage_invoiced';
-  ```
+**Step 3 before step 4, and this is the subtle one.** `pause_collection` with
+`behavior: 'void'` voids invoices the _subscription_ generates. Raising the final
+invoice while the subscription is still active keeps it unambiguously a
+standalone invoice against the customer, outside anything the pause governs.
+Raising it after would be relying on a distinction the vendor documents loosely,
+and the cost of being wrong is a debt that silently disappears.
 
-  **At most one invoice of each kind can ever be recorded against a period**, and
-  the constraint is in the database rather than in the worker for the same reason
-  [§2.6.4](#264-fail-closed-concretely)'s is: the worker is not the only thing that will ever run.
+**Step 3 is skipped entirely when nothing is owed** ([F6.12a](Ringly_PRD_v3.md#f6-12a)) — a business
+cancelling during its trial, or on the first day of a period. A $0 invoice is a
+confusing way to say "nothing to pay", and the email in step 7 says it in words
+instead.
 
-**At activation** the sequence above runs inside [§2.5.2](#252-activation-touches-three-systems-and-can-fail-at-each)'s charge → record → bind
-order, which is what makes [F1.12a-i](Ringly_PRD_v3.md#f1-12a-i)'s three rows independently reachable. The
-charge is attempted first precisely so that "the card was declined" is a clean
-state with nothing to unwind.
+**Steps 5 and 6 are one transaction** because they are the only two that are
+local. Every other step is an external call and cannot join one. A crash between
+them would leave a business that is neither serving nor dormant, which is the one
+state the sweeper cannot see.
 
-**At teardown** ([§2.13.4](#2134-teardown-in-order), [F6.19](Ringly_PRD_v3.md#f6-19)): capture lifetime totals from balance
-transactions **before** anything is deleted, then void open invoices, detach the
-payment method, delete the Customer. Deleting the Customer destroys the balance
-transactions the totals come from, which is why step 1 is step 1.
+**`pause`, never `cancel`.** Stripe cannot reactivate a cancelled subscription —
+_"You can't reactivate a canceled subscription"_ — and the whole of dormancy is
+the ability to resume this one ([F6.12b](Ringly_PRD_v3.md#f6-12b)). The single `cancel` call in the
+product is at teardown ([§2.13.4](#2134-teardown-in-order)).
 
-**The API version is pinned in code**, not inherited from the account's default.
-Stripe's recent versions have moved invoice fields (`invoice.subscription`,
-`invoice.payment_intent`) and a version that changes underneath a running
-integration changes what a webhook payload contains. The pin is asserted at
-start-up alongside the settings table in [§2.10.8](#2108-the-division-with-the-payment-provider).
+**Nothing here uses Stripe's cancel-time proration, in either direction**
+([F6.11e](Ringly_PRD_v3.md#f6-11e)). `prorate: true` would credit the unused fixed fee, which the
+commercial model forbids; `prorate: false` _discards metered usage_, which would
+throw away the thing step 3 exists to bill. Ringly meters in its own database and
+invoices the figure itself, so the provider prorates nothing.
 
-### 2.10.10 The webhook endpoint
+### 2.10.7 `outstanding()` is asked of Stripe
 
-`POST /api/webhooks/stripe`. It is on the webhook surface ([§2.2.1](#221-the-four-surfaces)): no session, a
-signature, and the service role — so every query names `business_id` explicitly
-([N1.2](Ringly_PRD_v3.md#n1-2), [§2.3.1](#231-row-level-security-is-the-floor-not-the-ceiling)).
+```ts
+async function outstanding(businessId: string): Promise<Cents> {
+  const b = await business(businessId);
+  const invoices = await stripe.invoices.list({
+    customer: b.stripe_customer_id,
+    status: "open",
+    limit: 100,
+  });
+  const openTotal = invoices.data.reduce((n, i) => n + i.amount_remaining, 0);
+  return openTotal + (await unresolvedDisputeTotal(businessId));
+}
+```
+
+**It is never answered from a local column**, and this is the single most
+important rule in the section. A cached "does this business owe anything" is the
+most dangerous stale value in the product: too high and a paying business stays
+dormant with its phone dead, too low and a debtor is served for free. Stripe is
+the system that took the money and it is the one asked.
+
+**Disputes are the one thing Stripe's open-invoice list cannot see.** A chargeback
+withdraws funds from a _paid_ invoice, so it leaves nothing open; Ringly holds it
+in `billing_events` as an opened dispute with no closing row, and adds it here.
+This is the entire reason `outstanding()` is not a single API call.
+
+**Two open invoices is the normal shape, not an error** ([I3a](Ringly_PRD_v3.md#i3a)) — the periodic
+one that declined and the final one raised when service stopped. `amount_remaining`
+summed over both is what the business must clear, and clearing one of two leaves
+it dormant with the email saying what remains ([F6.11c](Ringly_PRD_v3.md#f6-11c)).
+
+**Latency is acceptable because of where it is called**: the resume path, the
+daily reconciliation, and the operator dashboard. **It is not on the call path
+and not on the business dashboard's hot render** — the dashboard shows what
+Ringly last observed, labelled, and the one screen that must be exact is the one
+gating a resume.
+
+### 2.10.8 Every write to Stripe carries a key Ringly can recompute
+
+| Write                   | Idempotency key                     |
+| ----------------------- | ----------------------------------- |
+| End the trial on calls  | `trial-end:calls:{business_id}`     |
+| Usage invoice item      | `usage:{period_id}`                 |
+| Final usage invoice     | `final-usage:{period_id}`           |
+| Pause the subscription  | `pause:{business_id}:{stopped_at}`  |
+| Resume the subscription | `resume:{business_id}:{resumed_at}` |
+| Cancel, at teardown     | `teardown-cancel:{business_id}`     |
+
+**Derived from state, never random.** A worker that dies after Stripe accepted a
+write and before Ringly recorded it must replay the _same_ key on retry, or the
+retry becomes a second charge. A UUID generated per attempt guarantees the
+opposite, which is why none is used.
+
+**`{period_id}` rather than a date** — a period is the thing being billed, and it
+already has an identity that survives a clock change, a timezone question and a
+month with two rollovers in it.
+
+**Keys carrying a timestamp are the exception and are deliberate**: pausing a
+business that was already paused, resumed, and paused again is a different
+operation each time, so the key has to distinguish them.
+
+**The `billing_events` unique index on `idempotency_key` is the second half**
+([§2.4](#24-data-model)/007). Stripe's key protects the provider from a duplicate; the index
+protects Ringly's ledger from recording one twice.
+
+### 2.10.9 The webhook endpoint
+
+`POST /api/webhooks/stripe`. On the webhook surface ([§2.2.1](#221-the-four-surfaces)): no
+session, a signature, and the service role — so every query names `business_id`
+explicitly ([N1.2](Ringly_PRD_v3.md#n1-2)).
 
 ```
-1  raw = await req.text()                                   ← the raw body, never the parsed one
+1  raw = await req.text()                      ← the raw body, never the parsed one
 2  event = stripe.webhooks.constructEvent(raw, sig, endpointSecret)
      └─ throws → 400, no side effect, nothing logged from the body
 3  INSERT INTO provider_events (id, provider, type, created_at, received_at)
      VALUES (event.id, 'stripe', event.type, to_timestamp(event.created), now())
      ON CONFLICT (id) DO NOTHING RETURNING id
      └─ no row → already handled → 200 immediately
-4  business_id ← event's object metadata.ringly_business_id
+4  business_id ← event object metadata.ringly_business_id
                  (fall back to a lookup on the customer id; miss → 200 and alert)
-5  reevaluate(business_id)  — plus the per-type work in the table below
+5  the per-type work below, then reevaluate(business_id)
 6  return 200
 ```
 
 **`stripe.webhooks.constructEvent` is the only signature check** (CLAUDE.md):
-never a hand-rolled HMAC comparison, and never on a body that has already been
-JSON-parsed and re-serialised, because the signature covers the exact bytes.
-Next.js will hand back a parsed body if asked for one, so the route reads
-`req.text()` and parses nothing itself. This is a different helper from Retell's
-(`Retell.verify`, [§2.6.2](#262-three-webhooks)) and the two are not interchangeable.
-
-**Step 3 is the idempotency, and it is a unique constraint rather than a check.**
-Stripe delivers at least once, and a redelivery after a timeout is the common
-case rather than an exotic one.
+never a hand-rolled HMAC, and never on a body that has been parsed and
+re-serialised, because the signature covers the exact bytes. Next.js hands back a
+parsed body if asked, so the route reads `req.text()` and parses nothing itself.
 
 **Step 5 is why out-of-order delivery is not a problem this design has.** Stripe
-does not guarantee ordering. **A webhook is a trigger to re-evaluate, never a
-fact to apply**: the handler does not read "paid" out of the event and mark
-something paid — it asks `outstanding()` what is true right now ([§2.10.6](#2106-coming-back)) and
-acts on the answer. An `invoice.paid` overtaking an `invoice.payment_failed`
-therefore cannot re-suspend a business, because the later-processed failure event
-still leads to a live reading in which nothing is outstanding.
+does not guarantee ordering. **A webhook is a trigger to re-evaluate, never a fact
+to apply**: the handler does not read "paid" out of the event and mark something
+paid — it asks `outstanding()` what is true right now and acts on the answer. An
+`invoice.paid` overtaking an `invoice.payment_failed` cannot re-stop a business,
+because the later-processed failure still leads to a live reading in which
+nothing is outstanding.
 
-**It is also why the reconciliation backstop is credible** ([F6.10b-i](Ringly_PRD_v3.md#f6-10b-i)): the daily
-worker and the webhook handler run the same function over the same state. The
-backstop is not a second implementation that might disagree with the first — it
-is the first one, on a timer.
+**It is also why the daily reconciliation is credible** ([F6.11c-i](Ringly_PRD_v3.md#f6-11c-i)): the
+backstop and the handler run the same function over the same state. It is not a
+second implementation that might disagree — it is the first one, on a timer.
 
-**Events subscribed, and what each adds beyond `reevaluate()`:**
-
-| Event                             | Additional work                                                                                                                                                                                                                |
-| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `invoice.paid`                    | `billing_events` row; stamp `fixed_fee_state`/`usage_*` observed state                                                                                                                                                         |
-| `invoice.payment_failed`          | `billing_events` row; enter [§2.10.4](#2104-when-a-charge-fails) if the cause is a card error                                                                                                                                  |
-| `invoice.payment_action_required` | Treated as a decline ([§2.10.4](#2104-when-a-charge-fails))                                                                                                                                                                    |
-| `invoice.finalized`               | Record `provider_ref` if T2 never landed ([§2.10.11](#21011-transaction-boundaries-and-what-a-crash-leaves))                                                                                                                   |
-| `invoice.voided`                  | `billing_events` row — teardown and hand-corrections both produce it                                                                                                                                                           |
-| `invoice.marked_uncollectible`    | `billing_events` row; should not occur, so it also alerts                                                                                                                                                                      |
-| `charge.refunded`                 | `billing_events` row. Goodwill only; no rule produces one ([F5.9](Ringly_PRD_v3.md#f5-9))                                                                                                                                      |
-| `charge.dispute.created`          | `billing_events` row; enters [§2.10.4](#2104-when-a-charge-fails) exactly as a decline ([F6.17](Ringly_PRD_v3.md#f6-17))                                                                                                       |
-| `charge.dispute.closed`           | `billing_events` row; a win clears the synthesised debt ([§2.10.6](#2106-coming-back))                                                                                                                                         |
-| `setup_intent.succeeded`          | Set the customer's default payment method ([§2.10.9](#2109-the-stripe-object-lifecycle-end-to-end), step 4). No ledger row — the card is Stripe's fact ([§2.10.10a](#21010a-the-card-is-stripes-fact-and-is-read-from-stripe)) |
-| `payment_method.detached`         | Alert only: an activated business with no card cannot be charged next period                                                                                                                                                   |
+| Event                             | Additional work                                                                                                                                                |
+| --------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `invoice.created`                 | **The rollover** ([§2.10.3](#2103-the-rollover-one-webhook-does-the-whole-thing)) — close, open, attach usage                                                  |
+| `invoice.paid`                    | `billing_events` row                                                                                                                                           |
+| `invoice.payment_failed`          | `billing_events` row; **if `next_payment_attempt` is null, stop service** ([§2.10.6](#2106-stopping-service))                                                  |
+| `invoice.payment_action_required` | Treated as a decline                                                                                                                                           |
+| `invoice.marked_uncollectible`    | `billing_events` row — teardown produces it; anywhere else it also alerts                                                                                      |
+| `customer.subscription.updated`   | Detect a trial that ended on the day bound; reconcile `service_state`                                                                                          |
+| `charge.refunded`                 | `billing_events` row. Goodwill only ([F5.9](Ringly_PRD_v3.md#f5-9))                                                                                            |
+| `charge.dispute.created`          | `billing_events` row; enters [§2.10.5](#2105-when-a-charge-fails) exactly as a decline                                                                         |
+| `charge.dispute.closed`           | `billing_events` row; a win clears the synthesised debt                                                                                                        |
+| `setup_intent.succeeded`          | Set the customer's default payment method. **No ledger row** — the card is Stripe's fact ([§2.10.11](#21011-the-card-is-stripes-fact-and-is-read-from-stripe)) |
+| `payment_method.detached`         | Alert only: a serving business with no card cannot be charged next month                                                                                       |
 
 **Nothing outside that list is subscribed to.** An endpoint receiving events it
 does not handle is an endpoint whose logs cannot be read for what went wrong.
 
-**Every state the handler writes, it writes as an observation.** `fixed_fee_state`
-and the settled figures on `billing_periods` are the last thing Stripe said, kept
-locally because [N10](Ringly_PRD_v3.md#n10--durability-of-money-records) requires the money record to survive Stripe being
-unreachable — but **`outstanding()` is never answered from them**. A cached
-answer to "does this business owe anything" is the single most dangerous stale
-value in the product: too high and a paying business stays suspended, too low and
-a debtor is served for free.
+### 2.10.10 Coming back
 
-### 2.10.10a The card is Stripe's fact, and is read from Stripe
-
-**"Does this business have a card" is asked of Stripe, every time it is asked.**
-Not of a column ([§2.5.1.7](#2517-the-checklist-step-8)), and not of a ledger row
-standing in for one. Stripe owns payment methods; anything Ringly keeps about them
-is a copy of somebody else's state, and a copy with several writers and a repair
-sweep is still a copy.
+**Two routes in, one function** ([F6.11c](Ringly_PRD_v3.md#f6-11c)). A business paused for non-payment is
+restored the moment it settles, without asking; a business that cancelled owes
+nothing, so there is no event to trigger on and it asks from its dashboard.
 
 ```
-checklist render
-  ├─ items 1 and 2  ← one local row read              (Ringly's own facts)
-  └─ item 3         ← stripe.paymentMethods.list({ customer, limit: 1 })
-                       AbortSignal.timeout(3000), issued in parallel with the above
+resume(businessId):
+  1  if await outstanding(businessId) > 0 → refuse, and say what remains
+  2  stripe.subscriptions.resume(sub, {
+       billing_cycle_anchor: 'now',
+       proration_behavior:   'none',
+     })
+  3  REBIND the agent, and read the provider's record back  (§2.5.3)
+  BEGIN
+    4  service_state ← 'serving'
+    5  DELETE FROM dormancies WHERE business_id = …
+  COMMIT
+  6  enqueue the service-restored email
 ```
 
-**What that costs, measured rather than assumed:**
+**Step 1 is the same `outstanding()` both routes go through**, which is what makes
+"a business in debt cannot resume" ([F6.11c](Ringly_PRD_v3.md#f6-11c)) one rule rather than two. The
+self-serve control is disabled by the same reading that stops the automatic path.
 
-|                       |                                                                                                                                       |
-| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| Per-request fee       | **None.** Stripe prices per transaction, not per API call                                                                             |
-| Rate limit            | 100 req/s live, 25 req/s per endpoint — not the binding constraint                                                                    |
-| Read allocation       | Average **≤500 reads per transaction**, floor **10,000/month**                                                                        |
-| Ringly's transactions | ~2 per business per month (fee, settlement) — 20,000/month at [N2.1](Ringly_PRD_v3.md#n2-1)'s 10⁴ businesses, so a 10M read allowance |
-| Latency               | One same-region round trip. Bounded by the 3s timeout, not by Stripe's median                                                         |
+**`billing_cycle_anchor: 'now'` resets the anchor to the day of return**
+([F6.10c](Ringly_PRD_v3.md#f6-10c)), and Stripe raises the new period's invoice immediately. The old
+anchor is not kept: restoring a business to a billing date it chose months ago
+would charge it for days it spent dormant, or hand it a part-month free,
+depending only on which day it happened to come back.
 
-**The allocation floor is what to watch, not the rate limit.** Early on, 10,000
-reads a month is the ceiling regardless of how few transactions there are, and it
-is comfortable only because **the checklist is seen by unactivated businesses
-alone** — a population bounded by the ten-day clock ([F9.1](Ringly_PRD_v3.md#f9-1))
-and by onboarding volume that [N9](Ringly_PRD_v3.md#n9--cost-control-on-the-unauthenticated-surface)
-already describes as a handful of businesses a day.
+**`proration_behavior: 'none'`** because there is nothing to prorate — no service
+was given while paused, and the fixed fee is never refunded ([I6](Ringly_PRD_v3.md#i6)).
 
-**Which makes one implementation detail load-bearing: the card is read on page
-load, never on a timer.** The activation screen does poll —
-[§2.5.2](#252-activation-touches-three-systems-and-can-fail-at-each)'s
-submit-and-poll needs it — but it polls **Ringly's own activation state**, not
-Stripe. A five-second poll that included the card read would turn one ten-minute
-session into 120 reads and put a handful of businesses through the monthly
-allocation on their own.
+**Step 3 after step 2, and the failure is loud.** A business that has paid and is
+still not being answered is the worst state in the system ([F6.11c-i](Ringly_PRD_v3.md#f6-11c-i)), so a
+bind whose read-back fails is retried and then alerted, and the business is left
+visibly mid-restore rather than silently `serving` with a dead number.
 
-**Stripe being slow or down degrades one item, never the page.** Items 1 and 2 are
-Ringly's facts and always render. On timeout item 3 reads _"can't check right
-now"_ and Activate stays unavailable — which is not a degradation at all, because
-a business cannot add a card while Stripe is down, and Ringly could not charge one
-either. **The screen was always Stripe-dependent; this makes the dependency
-visible instead of pretending a local row had escaped it.**
+**The daily reconciliation is the backstop**: any business with a `dormancies`
+row, no pause, and `outstanding() == 0` is resumed. A lost webhook may cost such
+a business hours; it must never cost it days.
 
-**Nothing about the card is written to `billing_events` either.** An earlier
-revision recorded attach and detach there as history. Nothing read them, Stripe's
-dashboard already holds that history in full, and they forced the ledger's
-uniqueness rule down from `(provider_ref)` to `(kind, provider_ref)` — because
-attach and detach share a payment-method id. That traded the index which stops a
-retried charge becoming a second charge for rows no one consults
-([§2.4](#24-data-model)/005). They are gone and the stronger index stands.
+### 2.10.11 The card is Stripe's fact, and is read from Stripe
 
-### 2.10.11 Transaction boundaries, and what a crash leaves
+The checklist's third item and the dashboard's payment-method panel both ask
+whether a usable card is on file. **Neither reads a Ringly column**, because
+there is no honest way to keep one: a card can be removed, expire or be replaced
+in Stripe's own hosted flows without Ringly being told first, and a mirror that is
+wrong is worse than a call that is slow.
 
-**The rule is [§2.13.4](#2134-teardown-in-order)'s rule, applied to charging: a database transaction may
-never contain an external call.** Every charge is therefore three parts, and the
-design's job is to make the middle one recoverable rather than to pretend it is
-atomic.
-
-| Part            | Contents                                                                                         | Kind        |
-| --------------- | ------------------------------------------------------------------------------------------------ | ----------- |
-| **T1 — claim**  | `settlement_claimed_at`, the computed figures, the deterministic key                             | Transaction |
-| **X — charge**  | Invoice create + item + finalise + pay ([§2.10.9](#2109-the-stripe-object-lifecycle-end-to-end)) | External    |
-| **T2 — record** | `usage_settled_at`, `*_invoice_ref`, `billing_events`, status, deadline rows                     | Transaction |
-
-**T1 commits before X begins.** The alternative — hold the transaction open
-across the Stripe call — takes a row lock and a connection for the duration of
-somebody else's HTTP request, and a Stripe timeout then rolls back a charge that
-did happen.
-
-**What a crash leaves, per boundary:**
-
-| Crash point            | State left behind                                           | Who fixes it                                                                            |
-| ---------------------- | ----------------------------------------------------------- | --------------------------------------------------------------------------------------- |
-| Before T1              | Nothing                                                     | Next tick selects the period again                                                      |
-| T1 committed, before X | A claimed, unsettled period; no invoice                     | Next tick: claim is stale past a threshold → re-drive X                                 |
-| During X               | Possibly an invoice at Stripe with no local row             | The idempotency key within 24h; **`metadata.ringly_period_id` after**                   |
-| X done, before T2      | Money may have moved with no local record — **the bad one** | Reconciliation ([§2.10.6](#2106-coming-back)) searches Stripe by metadata and writes T2 |
-| After T2               | Correct                                                     | —                                                                                       |
-
-**The row that matters is the fourth**, because it is the only one where the
-business's money and Ringly's record disagree, and 2.1.3 says the record is the
-strictest thing in the system. Three things make it recoverable and they are
-listed in the order they are reached:
-
-1. **The idempotency key is deterministic**, so a retry inside 24 hours returns
-   the same invoice rather than raising a second.
-2. **The metadata is deterministic**, so past 24 hours the invoice can still be
-   found: `stripe.invoices.search({ query: "metadata['ringly_period_id']:'…'" })`.
-   This is why every object created in [§2.10.9](#2109-the-stripe-object-lifecycle-end-to-end) carries it — not for reporting,
-   for this.
-3. **The partial unique indexes in [§2.10.9](#2109-the-stripe-object-lifecycle-end-to-end)** make a second `billing_events` row
-   for the same period and kind impossible, so a recovery that runs twice cannot
-   double-record what it could not double-charge.
-
-**T2 is one transaction and it must be**, for the same reason [§2.13.4](#2134-teardown-in-order)'s step 8
-is: the period's settled figures, the ledger row and the state change describe
-one event, and a business that is settled but has no ledger row is a business
-whose billing history disagrees with its invoice.
-
-**Nothing in the money tables is deleted or updated in place once settled**
-([N10.4](Ringly_PRD_v3.md#n10-4), 2.1.3). Corrections are new `billing_events` rows. The two writes to
-already-existing money rows in the whole design are `usage_settled_at` and the
-figures beside it (writing a row that was open), and [§2.10.7](#2107-cancellation)'s revoke back-fill
-(bounded to an unsettled period). Both are stated here so that a third one is
-visible as a change of rule rather than as a patch.
-
-### 2.10.12 Money is integer cents
-
-**Every amount in the design is an integer number of cents, in a column named
-`*_cents`, and no float touches any of it.** Not as a style preference: a
-binary float cannot represent a hundredth exactly, and the one place the error
-shows is the place a clamp compares two amounts and picks the wrong one.
-
-- **Columns are `bigint`.** `integer` would hold every figure this product can
-  produce — the cap is 50,000 cents — but lifetime revenue on the departure
-  record accumulates, and a money column that has to be widened later is a
-  migration on the one table [N10.6](Ringly_PRD_v3.md#n10-6) forbids rewriting.
-- **`numeric` is not used either.** It is exact, but it admits fractional cents,
-  and a fractional cent that reaches Stripe is a rounding decision made by
-  whichever layer truncates first.
-- **There is exactly one division in the whole of billing**, and it is integer:
-  `minutes = (billable_seconds + 59) / 60`. That is [F6.7a](Ringly_PRD_v3.md#f6-7a)'s "rounded up to a
-  whole minute **once**, at period close" written so that it cannot be done
-  twice — there is no per-call rounding anywhere to sum up.
-- **Comparisons are integer comparisons.** `min`/`max` in the clamp,
-  `amount_remaining > 0` in `outstanding()`, `>= cap_cents − fixed_fee_cents` in
-  the cap notice.
-- **Stripe agrees**, which removes the last conversion: its amounts are integer
-  minor units, so `usage_charge_cents` is passed through unchanged and no
-  `× 100` or `÷ 100` exists on any path that decides anything.
-- **Division by 100 happens once, in the renderer**, for display, and never
-  upstream of a comparison or a stored value.
-
-### 2.10.13 What §2.4 must gain
-
-Collected here rather than scattered, so the migration is reviewable as one
-thing. None of `005`–`011` has run anywhere, so amending them breaks no
-forward-only rule; **where each table lands is a question of what depends on it,
-never of when it is scheduled to be built.**
-
-**Two tables 007 does not currently declare:**
-
-```
-billing_customers(business_id pk fk, provider, provider_customer_id unique,
-                  default_payment_method_ref null, created_at)
-
-provider_events(id pk, provider, type, created_at, received_at)
+```ts
+const c = await stripe.customers.retrieve(id, {
+  expand: ["invoice_settings.default_payment_method"],
+});
+const card = c.invoice_settings.default_payment_method;
 ```
 
-- **`billing_customers` is the missing home for the Stripe customer id.**
-  [§2.4](#24-data-model)/007 stores invoice refs on `billing_periods` but nothing holds the
-  customer, and without it a business cannot be charged twice. It is a separate
-  table rather than columns on `businesses` because 005 is the foundations
-  migration and billing is 007 — one concern per file — and because `provider`
-  earns its column here for the same reason it does on
-  `scheduling_credentials` ([§2.4](#24-data-model)/006).
-- **`provider_events` is a delivery log and is deliberately _not_ a money
-  table.** [N10.1](Ringly_PRD_v3.md#n10-1) names the money tables and this is not one: it holds no amount,
-  and losing it costs at most one redelivered webhook being processed twice,
-  which `reevaluate()` is already safe against. Saying so explicitly keeps
-  [N10.1](Ringly_PRD_v3.md#n10-1)'s list definite rather than growing by association.
+**One round trip, on a screen the business is already waiting on**, cached for
+the render and not beyond it. There is no `payment_method_attached_at` column,
+and no `billing_events` row standing in for one — attach and detach rows were
+written when the checklist read them and removed when it stopped, because nothing
+read them, Stripe's dashboard already holds that history, and keeping both meant
+weakening the `provider_ref` unique index to `(kind, provider_ref)`: trading the
+guarantee that protects charge idempotency for rows nobody consults.
 
-**One column 008 needs:** `lifecycle_deadlines.requested_at timestamptz null` —
-operator-supplied, for `cancellation_window_close` only. [F9.2](Ringly_PRD_v3.md#f9-2) judges a
-revocation by when the business sent it and [F6.12a](Ringly_PRD_v3.md#f6-12a) needs the instant to identify
-the window's usage records; the row's own creation time is when Ringly read the
-email, which is the wrong instant and would cost a business its account to
-Ringly's inbox latency.
+### 2.10.12 Cancellation
 
-**Columns 007 needs on `billing_periods`:** `settlement_claimed_at timestamptz
-null` ([§2.10.3](#2103-settlement-and-the-clamp)), and value domains for two columns it already declares —
-`fixed_fee_state ∈ ('pending','invoiced','paid','failed','void')` and
-`status ∈ ('open','settled','settled_early','settled_at_deletion')`, the latter
-recording which of [F6.9a](Ringly_PRD_v3.md#f6-9a)'s three moments closed the period.
+Self-serve, immediate, and mechanically identical to the non-payment stop
+([F6.12](Ringly_PRD_v3.md#f6-12)). `POST /api/billing/cancel` on the authenticated surface, and its
+body is one call to `stopService(businessId, 'cancelled')`
+([§2.10.6](#2106-stopping-service)).
 
-**`billing_events.kind` is a closed set**, so that the append-only ledger can be
-summed without a `LIKE`: `fixed_fee_invoiced`, `fixed_fee_paid`,
-`fixed_fee_failed`, `usage_invoiced`, `usage_paid`, `usage_failed`,
-`invoice_voided`, `refunded`, `dispute_opened`, `dispute_closed`.
+**What is not shared is the screen in front of it.** The confirmation shows,
+computed live before the business commits: **what today's final invoice will be**
+(the open period's usage to the minute, clamped), that **the fixed fee already
+paid is not refunded**, the date the number and data are deleted, and that
+returning inside the 60 days restores everything. An immediate irreversible
+action is only defensible if the person taking it has been told what it costs.
 
-**Constraints and indexes, gathered:**
+**The estimate is computed by the same function that raises the invoice**
+([§2.10.4](#2104-the-clamp)), not by a second implementation for display. A screen that
+quotes one figure and charges another is worse than a screen with no figure.
 
-```sql
-CREATE UNIQUE INDEX one_open_period_per_business
-    ON billing_periods (business_id) WHERE usage_settled_at IS NULL;
+**There is no revocation endpoint.** The old flow needed one because cancellation
+opened a reconsideration window; there is no window, and a business that changes
+its mind resumes ([§2.10.10](#21010-coming-back)).
 
-ALTER TABLE billing_periods ADD CONSTRAINT periods_never_overlap
-  EXCLUDE USING gist (business_id WITH =, daterange(starts_on, ends_on, '[]') WITH &&);
+### 2.10.13 Transaction boundaries, and what a crash leaves
 
-CREATE UNIQUE INDEX one_fee_invoice_per_period
-    ON billing_events (period_id) WHERE kind = 'fixed_fee_invoiced';
-CREATE UNIQUE INDEX one_usage_invoice_per_period
-    ON billing_events (period_id) WHERE kind = 'usage_invoiced';
+**Ringly never holds a database transaction open across a Stripe call.** Stripe
+is a network call with a multi-second tail; a transaction spanning one holds row
+locks for that long and, worse, can roll back after the money has moved. The
+pattern everywhere in this section is the same: **call Stripe, then commit** —
+or, where the local write must come first for correctness, **commit, then call
+Stripe with a key that makes the call replayable**.
 
-CREATE UNIQUE INDEX one_usage_record_per_call ON usage_records (call_id);
-```
+| Crash point                               | What is left                                    | What repairs it                                                                             |
+| ----------------------------------------- | ----------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| Rollover, after commit, before the item   | Period closed, `usage_invoiced_at` null         | The next rollover's sweep ([§2.10.3](#2103-the-rollover-one-webhook-does-the-whole-thing))  |
+| Stop, after unbind, before the invoice    | Phone dead, nothing invoiced                    | Retry — the period is still open and `stopService` is keyed                                 |
+| Stop, after the invoice, before the pause | Invoice raised, subscription live               | Retry; `pause` is keyed and the next cycle is at least a fortnight away                     |
+| Stop, after the pause, before the commit  | Paused at Stripe, `serving` locally, phone dead | The daily reconciliation: paused subscription, no `dormancies` row                          |
+| Resume, after Stripe, before the rebind   | Billing live, phone dead                        | Alerted immediately ([§2.10.10](#21010-coming-back)); the worst state, so it is the loudest |
 
-`usage_records (business_id, period_id)` is already in [§2.3.3](#233-physical-layout) and is what makes
-the settlement sum and the dashboard's live accrued figure bounded by the
-tenant's own size ([N2.2](Ringly_PRD_v3.md#n2-2)).
+**Every row of that table is recoverable and none of them charges twice**, which
+is the property the whole design is arranged around. The one asymmetry is
+deliberate: a crash that leaves a phone answering when it should not is a revenue
+leak nothing else would notice ([F7.13a](Ringly_PRD_v3.md#f7-13a)); a crash that leaves a phone dead
+when it should answer is caught within a day and alerted within minutes.
 
-**Testing this section**
+### 2.10.14 Money is integer cents
 
-_Observable_ — what a business is charged and when; what it owes; the billing
-history rows and their status; whether the number answers; what arrives in the
-inbox; what the operator queue shows; the departure record; what exists in the
-payment provider's own records for that business.
+Every amount in the schema and in the code is an integer number of cents. No
+floats, no decimals, no currency library. `usage_charge_cents`, `fixed_fee_cents`,
+`amount_remaining` — all integers, all the same unit, and Stripe's API speaks the
+same one, so no conversion happens at the boundary.
 
-_Internal_ — `billing_status` and every other state name, the settlement
-worker, Stripe object ids, invoice mechanics, idempotency and metadata keys,
-webhook routes and event names, table and column names, the constraints above.
+Rounding occurs at exactly one place — `Math.ceil(seconds / 60)` in
+[§2.10.4](#2104-the-clamp) — and it rounds _time_, not money. There is no second
+place where a fraction could appear, so there is no rounding policy to state.
 
-_Behaviours owed to the catalogue_
+### 2.10.15 The Stripe object lifecycle, end to end
 
-- Activation charges $100 once and opens period 1.
-- Usage accrues only on productive calls; enquiries, dropped calls and wrong
-  numbers cost nothing.
-- The whole call is billed, not the part before the booking.
-- Seconds are summed across the period and rounded up once, not per call.
-- The fixed fee and the usage settlement never fall on the same day.
-- A period is exactly 30 days and is never extended, by anything.
-- $470 of usage in a period produces a $500 charge and $70 absorbed.
-- Crossing the cap keeps the business served, emails it, and alerts the operator.
-- Crossing the cap twice in one period emails once.
-- A failed charge starts one 7-day grace, and a second decline does not start a
-  second clock.
-- Grace usage is billable when a period is open, and free when the failed charge
-  was itself a settlement.
-- No new period opens while anything is owed.
-- A suspended business accrues nothing and is charged nothing new; its debt does
-  not grow between day 8 and day 55.
-- Paying inside the original period resumes it with nothing new charged.
-- Paying after it ended opens a new period that day, charged that day, with the
-  debt clearing first.
-- A decline on that new period gets a full fresh grace period.
-- A dropped payment webhook is caught by reconciliation and the business is
-  restored.
-- The same webhook delivered twice restores once.
-- A payment-succeeded notification arriving before the failure it followed does
-  not suspend the business.
-- A part payment does not clear the debt or restore service.
-- Two settlement runs over the same due period produce one invoice and one
-  ledger row.
-- A settlement interrupted after the charge and before the record is completed by
-  reconciliation, and the business is not charged twice.
-- The payment provider being unreachable delays a charge and starts no grace
-  clock; a declined card starts one.
-- An unclassified call at the end of a period is not billed, and is never billed
-  later.
-- The amount the dashboard shows accruing is the amount the period is charged.
-- Cancelling continues service, stops billing usage, and settles early when the
-  window closes.
-- Revoking inside the window makes the free usage billable again.
-- Revoking twice makes it billable once.
-- A revocation sent inside the window but actioned after it closed is honoured,
-  and the early settlement is unwound.
-- A departing business whose settlement charge fails is recorded as owing it and
-  is neither suspended nor chased.
-- The $100 is never refunded or prorated on any path.
-- A business behind on payment cannot cancel into free service, and its clocks
-  keep running.
-- A cancelled business that later clears its debt is not charged for a new
-  period.
-- A chargeback follows the non-payment path exactly, and a chargeback won clears
-  the debt.
-- A period during which service was suspended says so in its billing-history row.
-- Policy is data: changing the fee, the cap, the rate or the billable outcome set
-  affects the next period and no settled one.
-- No unsigned or wrongly-signed payment webhook has any effect.
+| #   | When                      | Ringly calls                                                                                   | Object              |
+| --- | ------------------------- | ---------------------------------------------------------------------------------------------- | ------------------- |
+| 1   | Contact email verified    | `customers.create({ email, metadata.ringly_business_id })`                                     | Customer            |
+| 2   | Card entered              | `setupIntents.create({ customer, usage: 'off_session' })`, confirmed client-side               | SetupIntent         |
+| 3   | SetupIntent succeeds      | `customers.update({ invoice_settings.default_payment_method })`                                | —                   |
+| 4   | Number goes live          | `subscriptions.create({ customer, items:[fee], trial_end, metadata })`                         | **Subscription**    |
+| 5   | Trial ends (either bound) | — Stripe raises it                                                                             | Invoice (draft)     |
+| 6   | Each `invoice.created`    | `invoiceItems.create({ invoice, amount })`                                                     | Invoice item        |
+| 7   | Service stops             | `invoices.create` + `finalizeInvoice`, then `subscriptions.update({ pause_collection })`       | Invoice, paused sub |
+| 8   | Business returns          | `subscriptions.resume({ billing_cycle_anchor: 'now' })`                                        | —                   |
+| 9   | Teardown                  | `subscriptions.cancel`, `invoices.markUncollectible`, `paymentMethods.detach`, `customers.del` | —                   |
+
+**Step 2 is a check, not a charge** ([F6.2](Ringly_PRD_v3.md#f6-2)). A confirmed SetupIntent with
+`usage: 'off_session'` proves the card exists and will accept charges from
+Ringly. It is not a guarantee that a charge in March will succeed, which is why
+[§2.10.5](#2105-when-a-charge-fails) exists regardless and the first invoice is not a special
+case of it.
+
+**Step 4 is the only place a subscription is created, and it happens after the
+number is confirmed live** ([F1.12a](Ringly_PRD_v3.md#f1-12a)) — so `trial_end` and `trials.started_at`
+are the same instant and neither is corrected afterwards.
+
+**`metadata.ringly_business_id` is set on the customer and the subscription**, and
+it is what step 4 of the webhook endpoint resolves. Every Stripe object Ringly
+creates carries it; the customer-id lookup is a fallback for objects Stripe minted
+itself.
+
+### 2.10.16 What this section decides that the PRD does not
+
+- **`invoice.created` is the rollover trigger**, and one handler does close, open
+  and attach in one pass. The PRD says a period rolls over; it does not say what
+  observes it.
+- **The rollover sweeps every uninvoiced closed period**, which is what turns
+  [F6.1a](Ringly_PRD_v3.md#f6-1a)'s late-usage tolerance into a mechanism instead of a hope.
+- **`next_payment_attempt === null` is the retries-exhausted signal**, taken from
+  the provider rather than counted locally.
+- **The final invoice is raised before the pause**, because `pause_collection`
+  voids subscription invoices and the distinction is worth not relying on.
+- **`outstanding()` is asked of Stripe on every call**, never cached, and disputes
+  are the one component held locally.
+- **Idempotency keys are derived from `period_id` and `business_id`**, so a
+  retried worker replays rather than duplicates.
+- **`service_state` replaces `billing_status`**, four values, and two of them
+  answer calls.
 
 ## 2.11 Email
 
@@ -5138,95 +4412,120 @@ _Behaviours owed to the catalogue_
 
 ---
 
-## 2.13 Lifecycle, suspension and teardown
+## 2.13 Lifecycle, dormancy and teardown
 
-### 2.13.1 Deadlines and the sweeper
+### 2.13.1 One clock, and the sweeper that runs it
 
-Every lifecycle deadline is a row in `lifecycle_deadlines` with a `due_at` and a
-nullable `paused_at` ([§2.4](#24-data-model)/008). The sweeper acts on rows that are **due and not
-paused**. There are three clocks and they start from different events ([F6c](Ringly_PRD_v3.md#f6c--invariants)):
+A business is dormant if and only if it has a `dormancies` row
+([§2.4](#24-data-model)/008). There is **one deadline in the product** — 60 days from the day
+service stopped ([F9.3](Ringly_PRD_v3.md#f9-3)) — so the sweeper has one query for deleting and one
+for warning, both given in [§2.4](#24-data-model)/008, and neither has a `kind` to branch on.
 
-- **10 days** for a business that never activated ([F9.1](Ringly_PRD_v3.md#f9-1)), pausable by the
-  operator.
-- **60 days from the first failed charge** for non-payment and chargebacks
-  ([F9.3](Ringly_PRD_v3.md#f9-3)).
-- **60 days after service stops** for a business that cancelled — which is itself
-  up to 7 days after the request, so up to 67 days from it ([F6.12e](Ringly_PRD_v3.md#f6-12e)).
+**The sweeper is the only thing that deletes a business**, and it runs hourly.
+Hourly rather than nightly because the 48-hour warning has to land 48 hours out
+and not 48-to-72; hourly rather than per-minute because nothing here is urgent to
+the minute and a cheap job that runs often is easier to reason about than a
+precise one.
 
-**An unactivated business is bounded twice and the two limits are independent**
-([F9.1](Ringly_PRD_v3.md#f9-1)): five test calls, and ten days. A business can exhaust its calls on day
-one and sit unbound for nine more, or never call at all and be deleted on day ten
-with its allowance untouched.
+**It does two things, in this order:** warn any row falling due within 48 hours
+that has not been warned, then tear down any row that is due. **The order is not
+cosmetic.** A row whose `due_at` is already inside 48 hours — which
+[F9.1b](Ringly_PRD_v3.md#f9-1b)'s pause-and-resume can produce — must be warned before it is deleted,
+and putting the warning second would delete it in the same pass.
+
+**A paused row is invisible to both queries** because the index excludes it
+([§2.4](#24-data-model)/008). Pausing is therefore not a check the sweeper performs; it is a
+row the sweeper cannot see, which is a stronger guarantee than a condition
+somebody might forget to write.
 
 ### 2.13.2 Unbinding is the one mechanism for stopping service
 
-Used at three moments for three reasons ([F1.13a](Ringly_PRD_v3.md#f1-13a), [F9.3](Ringly_PRD_v3.md#f9-3), [F6.12b](Ringly_PRD_v3.md#f6-12b)). The number stays
-rented to the business; it simply stops being answered. Rebinding restores
-service on the same number, which is the whole point of holding it.
+There is exactly one way service stops: the agent is unbound from the number
+([§2.10.6](#2106-stopping-service)). Not a flag the call path consults, not a refusal the agent
+speaks, not a rule in the telephony provider.
 
-| Unbind when                            | Rebind when                                        |
-| -------------------------------------- | -------------------------------------------------- |
-| The 5th test call ends, still unbilled | It activates, or the operator resets the allowance |
-| Suspension, day 7 of non-payment       | It pays ([§2.10.6](#2106-coming-back))             |
-| The cancellation window closes         | It returns inside the dormant window               |
+**A refusal would still be a connected call**, costing Ringly telephony and model
+minutes for a business it has decided not to serve — the cost the stop exists to
+end. The call must not reach the agent at all.
 
-**Every one of these is verified by reading provider state back** ([§2.5.3](#253-bind-and-unbind-are-verified-by-reading-provider-state-back)). A
-failed unbind is the silent one: it leaves a number answering calls Ringly has
-stopped metering, and it has no other symptom.
+**Intended bind state is derived from `service_state`, never stored**
+([§2.5.5](#255-decisions-this-section-makes)): `trialing` and `serving` are bound, `pending` and
+`dormant` are not. A stored intent has a crash window between writing the intent
+and acting on it; a derived one has none, and it is what makes a failed unbind
+retryable — the reconciler asks what the state implies and compares it to what the
+provider reports ([§2.5.3](#253-bind-and-unbind-are-verified-by-reading-provider-state-back)).
+
+**The sweeper owns reconciliation.** Once an hour it reads the provider's record
+for every business whose bind state could have drifted and corrects it. Two
+components issuing binds for one number is worse than an hour of latency.
 
 ### 2.13.3 A number leaves a business only at deletion
 
-**Never during suspension or dormancy, however idle it looks** ([F9.4a](Ringly_PRD_v3.md#f9-4a)). A
-suspended business's number is unbound, which makes it look unused; it is not.
-The reusable-number query is built from **every business row that holds a
-number, whatever its billing status** — filtering that query by status is the
-mistake to guard against, and it would hand a suspended salon's number, the one
-printed on its van, to a stranger.
+Dormancy stops the number being answered, which makes it look unused; it is not
+([F9.4a](Ringly_PRD_v3.md#f9-4a)). The number stays rented and stays reserved for the whole 60 days,
+and the only step that releases it is step 7 of teardown.
 
-**At deletion the number goes back to the provider, not into a Ringly pool**
-([F9.4b](Ringly_PRD_v3.md#f9-4b)): there is no purchase price to save, a departed business's customers keep
-ringing its number, and handing it back makes the carrier's 45-day quarantine the
-carrier's responsibility.
+**Nothing reassigns a number, ever** ([F9.4b](Ringly_PRD_v3.md#f9-4b)). It is handed back to the
+telephony provider and Ringly keeps no pool: pooling costs the same rent while
+idle, sends a departed business's callers to somebody else's receptionist, and
+takes on a carrier quarantine that is the provider's to bear.
 
 ### 2.13.4 Teardown, in order
 
 ```
-1  capture lifetime net revenue and outstanding balance   ← from Stripe
-2  assert no subscription exists  (D1 — never created; a hand-made one would
-                                  otherwise survive teardown and bill a deleted
-                                  business)
-3  void open invoices
-4  detach payment method
-5  delete Stripe customer
-6  EMAIL the business, and the operator (enqueue, do not await)
-7  HAND THE NUMBER BACK to the provider (rental ends)     ← before the row goes
-8  delete Ringly's rows AND write departed_businesses     ← ONE transaction
+1  capture lifetime net revenue AND the outstanding balance   ← from Stripe
+2  stripe.subscriptions.cancel(sub)                           ← the only cancel
+3  mark unpaid invoices UNCOLLECTIBLE  (not voided)
+4  detach the payment method
+5  delete the Stripe customer
+6  EMAIL the business, and the operator     (enqueue, do not await)
+7  HAND THE NUMBER BACK to the provider     (rental ends)     ← before the row goes
+8  delete Ringly's rows AND write departed_businesses         ← ONE transaction
 ```
 
 **Every step is load-bearing** ([F6.19](Ringly_PRD_v3.md#f6-19), [F9.10](Ringly_PRD_v3.md#f9-10)):
 
-- **1 before 5** — net revenue comes from balance transactions that deleting the
-  customer destroys.
+- **1 before 3 and 5.** Net revenue comes from balance transactions that deleting
+  the customer destroys, and `owed_at_departure_cents` comes from the open
+  invoices step 3 closes. **The owed figure is read here rather than carried
+  forward from the day service stopped** ([F9.9](Ringly_PRD_v3.md#f9-9)), because Stripe went on
+  collecting through all 60 dormant days and a business that settled on day 50
+  must not be recorded as a debtor forever.
+- **2 is the only `subscriptions.cancel` in the product.** Every earlier stop is a
+  pause ([§2.10.6](#2106-stopping-service)), because a pause can be undone and this cannot.
+  **It raises no invoice** — the subscription was paused, nothing has accrued, and
+  `invoice_now` is not passed. An invoice against a customer being deleted in the
+  same minute is a receivable nobody can collect.
+- **3 is `markUncollectible`, not `void`.** Void means the invoice was issued in
+  error and erases it from Stripe's revenue reporting; uncollectible means Ringly
+  gave up collecting a real debt. `departed_businesses` says the business owed
+  money and the provider's books should agree with it ([N10.6](Ringly_PRD_v3.md#n10-6)).
 - **2–7 before 8** — deleting Ringly's rows first orphans everything upstream: a
-  saved card belonging to nobody, a rented number belonging to nobody.
+  live subscription billing a business that no longer exists, a saved card
+  belonging to nobody, a rented number belonging to nobody.
 - **6 before 8** — the contact address lives on the tenant row and
-  `departed_businesses` deliberately keeps none ([F9.9](Ringly_PRD_v3.md#f9-9)). Send after the delete and
-  there is nobody to send to.
+  `departed_businesses` deliberately keeps none ([F9.9](Ringly_PRD_v3.md#f9-9)). Send after the delete
+  and there is nobody to send to.
 - **6 before 7** — releasing the number is the first irreversible step. Emailing
   first means a send that fails outright halts teardown while the business is
   still whole. **Step 6 enqueues and moves on**: the message is rendered and
-  stored at that point ([§2.4](#24-data-model)/010), so it survives step 8 deleting the very row it
-  describes, and teardown never holds a rented number open while the mail
-  provider retries. A template that resolved the business at send time would fail
-  on the one path where it matters most.
+  stored at that point ([§2.4](#24-data-model)/010), so it survives step 8 deleting the very row
+  it describes, and teardown never holds a rented number open while the mail
+  provider retries.
 - **7 before 8** — while the row exists the number cannot be reassigned. Release
   first and a crash leaves a row whose number is gone: visible, recoverable,
-  harmless. Release after and there is a window where an unprotected number can
-  be handed to a business provisioning in it.
+  harmless. Release after and there is a window where an unprotected number can be
+  handed to a business provisioning in it.
 - **8 is one transaction**, and these are the only two steps that can be — every
   other is an external call. Writing the record first leaves a business both
-  present and departed; deleting first risks losing a money record permanently
-  (2.1.3). Committed together there is no window and no third state.
+  present and departed; deleting first risks losing a money record permanently.
+  Committed together there is no window and no third state: either the business is
+  gone and its record exists, or neither happened and teardown runs again.
+
+**Teardown is idempotent at every step**, because a crash halfway through must be
+resumable rather than repaired by hand. Steps 2–5 are Stripe calls that are no-ops
+the second time; step 7 tolerates a number already released; step 8 is the
+transaction that makes the whole thing done.
 
 ### 2.13.5 Customer PII
 
@@ -5287,7 +4586,7 @@ because requirements keep wanting to depend on it: **call content older than 30
 days is not retrievable by anyone**, Ringly included ([F9.7](Ringly_PRD_v3.md#f9-7)).
 
 Everything Ringly does hold is destroyed when the relationship ends, on the clock
-the ending sets ([§2.13.1](#2131-deadlines-and-the-sweeper)).
+the ending sets ([§2.13.1](#2131-one-clock-and-the-sweeper-that-runs-it)).
 
 **Ringly offers no export, deliberately** ([N1.3](Ringly_PRD_v3.md#n1-3)). Every appointment already lives
 in the business's own calendar, which it keeps. Transcripts and recordings were
@@ -5657,25 +4956,40 @@ _Verified 2026-07-30, and carried forward unchanged: no vendor in this design is
 new, because [N7](Ringly_PRD_v3.md#n7--third-party-dependencies-and-degradation) fixes the dependency list. Re-verify before anything
 commits to Stripe's configuration surface._
 
-- **Stripe** _(billing model re-verified 2026-08-01 for [D1](#d1))_ — a subscription
-  bills the recurring fee **one service interval in advance** and combines it
-  with the closing period's metered usage **on one invoice at the period
-  boundary**, which is why [§2.10.8](#2108-the-division-with-the-payment-provider) uses none; prebilling "doesn't apply to any
-  usage-based prices in a subscription", so it is not a way out.
-  **`pause_collection` is documented ambiguously** on the case that matters: the
-  guide says invoices "created before the `resumes_at` date remain in `draft`…
-  and `auto_advance` is set to `false`" and also that invoices "created before
-  subscriptions are paused continue to be retried unless you void them", and the
-  API reference does not distinguish an already-open invoice at all. **Unresolved
-  and deliberately not depended upon** ([D1](#d1), [R21](#r21)).
-  **Not verified: whether one open invoice is still retried on day 59** — Smart
-  Retries runs about two months and suspension needs 59 days ([A4](Ringly_PRD_v3.md#a4), [R27](#r27)).
-- **Stripe** — `SetupIntent` stores a card off-session; usage-based billing via
-  Meters; billing thresholds exist and are deliberately unused; dunning,
-  receipts, proration and the customer portal are each independently
-  configurable, which is what makes [§2.10.8](#2108-the-division-with-the-payment-provider) possible. Disputes: **$15 fee,
-  non-refundable in the US**, 7–21 days to submit evidence, 2–3 months to
-  resolve.
+- **Stripe — the subscription model** _(re-verified 2026-08-03)_. A subscription
+  bills the recurring fee **one service interval in advance**, and an invoice item
+  added to the open draft is combined with it **on one invoice at the period
+  boundary** — which is exactly the shape [§2.10.3](#2103-the-rollover-one-webhook-does-the-whole-thing) needs, and it
+  is why usage reaches the invoice as an item Ringly computes rather than as a
+  metered price Stripe totals ([§2.4](#24-data-model)/007).
+  - **Cancellation is terminal**: _"You can't reactivate a canceled subscription…
+    You must create a new subscription."_ This is the single fact the whole
+    dormancy design turns on, and why every stop before teardown is a pause
+    ([§2.10.6](#2106-stopping-service)).
+  - **`pause_collection` is what a resumable stop uses**, and `subscriptions.resume`
+    with `billing_cycle_anchor: 'now'` restarts the cycle from the return date
+    ([§2.10.10](#21010-coming-back)).
+  - **End-of-dunning offers three behaviours and all three are wrong for Ringly**:
+    `cancel` is terminal, and `unpaid` ("invoices continue to be generated and
+    stay in a draft state") and `past_due` ("invoices continue to be generated and
+    charge the customer") both keep raising fees for a business that is being
+    stopped. **Ringly acts on `next_payment_attempt === null` before any of them
+    applies** ([§2.10.5](#2105-when-a-charge-fails)), which is sound only while the retry window is
+    shorter than a period — the constraint on `pricing_policy.retry_window_days`.
+  - **Cancel-time proration is unusable in both directions**: `prorate: true`
+    credits the unused fixed fee, which [F6.11e](Ringly_PRD_v3.md#f6-11e) forbids, and without it _"all
+    metered usage gets discarded"_. Ringly invoices the metered figure itself and
+    lets Stripe prorate nothing ([§2.10.6](#2106-stopping-service)).
+  - **Unverified, and the subject of [A4](Ringly_PRD_v3.md#a4)**: how reliably an invoice item can be
+    attached before a draft finalises, and whether a standalone invoice raised
+    while a subscription is active is untouched by a subsequent `pause_collection`.
+    [§2.10.3](#2103-the-rollover-one-webhook-does-the-whole-thing) and [§2.10.6](#2106-stopping-service) are both written to survive the
+    unfavourable answer.
+- **Stripe — the rest.** `SetupIntent` stores and authorises a card off-session
+  without charging it; Stripe Tax computes per US state; billing thresholds exist
+  and are deliberately unused; dunning, receipts, proration and the customer
+  portal are each independently configurable. Disputes: **$15 fee, non-refundable
+  in the US**, 7–21 days to submit evidence, 2–3 months to resolve.
 - **Retell** — ~600ms end-to-end budget; `speak_during_execution` and
   configurable backchannelling cover tool latency ([F2.6](Ringly_PRD_v3.md#f2-6)); retention is
   **per-agent, 1 day to 2 years**; recording URLs are **signed and expire**, so
@@ -5778,77 +5092,111 @@ freeing it.
   dropped call and a lost customer, with no transfer and no message taken. The
   `dropped` metric ([F5.4](Ringly_PRD_v3.md#f5-4)) exists to show how often; revisit when it is measured
   rather than guessed.
-- <a id="r21"></a>**R21 — Retired, dissolved by [D1](#d1) (2026-08-01).** It held that suspension must
-  stop one payment-provider behaviour ([F6.11b](Ringly_PRD_v3.md#f6-11b), no new invoices) while preserving
-  another ([F6.11b-i](Ringly_PRD_v3.md#f6-11b-i), the open invoice still retried), that the two are normally
-  configured together, and that **both failure directions are silent**. It was
-  the strongest argument for [D1](#d1): `pause_collection` is the only lever, and
-  Stripe's documentation does not state unambiguously whether `keep_as_draft`
-  disables `auto_advance` on an invoice that was already open — while `void` and
-  `mark_uncollectible` stop collection by definition. With no subscription there
-  is nothing to pause and neither failure is reachable. **The acceptance test
-  survives the risk** and stays in the catalogue: suspend, cross a would-be period
-  boundary, restore, then assert that no new invoice was raised and that the
-  original was retried throughout.
-- <a id="r27"></a>**R27 — Stripe stops retrying before suspension ends, and Ringly has to finish
-  the job.** [F6.11b-i](Ringly_PRD_v3.md#f6-11b-i) makes "the retries that never stopped" the entire recovery
-  path, and [F6.11d](Ringly_PRD_v3.md#f6-11d) case (a) needs one invoice attempted from a day-1 decline to a
-  day-60 deletion — **59 days against a Smart Retries window of roughly two
-  months**. If the window closes first, a recoverable business is quietly
-  un-chased for exactly the days when chasing matters most, and **nothing in the
-  system notices**: the invoice is still open, the business is still suspended,
-  and every component is behaving correctly on its own terms. That is the same
-  silent shape [R21](#r21) had, relocated.
-  - **The window question is not caused by [D1](#d1)** — it would be identical under a
-    subscription. **The remedy is**: with no subscription, the only thing that can
-    take over is Ringly ([F6.20a](Ringly_PRD_v3.md#f6-20a)).
-  - **It contradicts [F6.20](Ringly_PRD_v3.md#f6-20) as originally written** ("Ringly builds no retry
-    loop"), which is why [F6.20a](Ringly_PRD_v3.md#f6-20a) now carves out the tail of suspension explicitly
-    rather than leaving the design quietly at odds with the requirement.
-  - **Ringly retries only after Stripe has stopped, never alongside it.** The
-    trigger is provider state — an invoice `open`, unpaid, with
-    `next_payment_attempt` null, on a business still inside suspension — not a
-    date Ringly computes. Two systems charging one card is a double charge, which
-    is worse than the gap it closes.
-  - Answered by **[A4](Ringly_PRD_v3.md#a4)** with a test clock. If the window already covers day 59,
-    [F6.20a](Ringly_PRD_v3.md#f6-20a) never fires and this risk closes.
+- <a id="r21"></a>**R21 — Stopping service depends on `pause_collection` doing two things at
+  once.** A pause must stop new invoices being raised ([F6.11b](Ringly_PRD_v3.md#f6-11b)) while leaving the
+  already-open one collectible ([F6.11c](Ringly_PRD_v3.md#f6-11c)) — the debt is the entire reason the
+  business is dormant and paying it is the only way out. Stripe's guide describes
+  `behavior: 'void'` as voiding invoices created before `resumes_at`, and
+  separately says invoices created before the pause "continue to be retried
+  unless you void them"; the API reference does not distinguish an already-open
+  invoice at all.
+  - **Both failure directions are silent.** If the open invoice stops being
+    retried, a recoverable business is quietly un-chased. If new invoices are
+    still raised, a dormant business accumulates $100 a month for a phone nobody
+    is answering — the accumulation [I2](Ringly_PRD_v3.md#i2) exists to forbid.
+  - **The design does not rely on the ambiguity resolving favourably.** The final
+    usage invoice is raised **before** the pause ([§2.10.6](#2106-stopping-service)), so the
+    one invoice Ringly minted is outside anything the pause governs, and
+    `outstanding()` reads Stripe live rather than assuming what a pause did
+    ([§2.10.7](#2107-outstanding-is-asked-of-stripe)).
+  - **Answered by [A4](Ringly_PRD_v3.md#a4)** against a test clock. The acceptance test is in the
+    catalogue either way: stop a business, cross a would-be period boundary,
+    settle, and assert that no new fee was raised and the original invoice was
+    collectible throughout.
 
-- <a id="r28"></a>**R28 — [D1](#d1) puts Ringly's own scheduler on the billing critical path.** Under a
-  subscription Stripe raises the invoice whether or not Ringly is healthy; under
-  [D1](#d1) a settlement worker that stops means nobody is charged and no period opens.
-  **Bounded rather than unbounded**: periods and deadlines are stored rows, not
-  computed offsets ([§2.4](#24-data-model)/008), so a late run catches up and computes the same
-  boundaries — [F6.16](Ringly_PRD_v3.md#f6-16) and [§2.5.5](#255-decisions-this-section-makes-and-one-correction)'s decision 7 both depend on that already. The
-  residual is **delayed revenue and a silence nobody hears** until someone looks
-  at the operator dashboard, which is the argument for the worker's own failure
-  alerting rather than for a subscription.
+- <a id="r27"></a>**R27 — The retry window is a commercial knob with a correctness bound, and
+  nothing about it looks dangerous.** [§2.10.5](#2105-when-a-charge-fails) hands the whole grace
+  period to Stripe's dunning configuration, which is set in a vendor dashboard by
+  a person, not in code under review. **Set it past one billing period and the
+  subscription raises a second fee behind the retries**, breaking [I2](Ringly_PRD_v3.md#i2) and
+  removing the ceiling on what a business can owe ([I3a](Ringly_PRD_v3.md#i3a)).
+  - **The failure is silent and slow.** Nothing errors; a business simply
+    accumulates a charge it should never have received, and it surfaces as a
+    complaint rather than as an alert.
+  - **Mitigated in two places, neither sufficient alone.** The
+    `retry_window_days BETWEEN 1 AND 27` constraint ([§2.4](#24-data-model)/007) makes Ringly's
+    record of the setting checkable, and a startup assertion compares it against
+    what Stripe actually reports. **Neither prevents someone changing the
+    dashboard setting and not the row**, which is the residual.
+  - This is the replacement for the risk the previous design carried here, which
+    was the mirror image: Stripe stopping its retries *before* Ringly's own
+    60-day suspension window ended, leaving Ringly to finish the job. Ringly no
+    longer runs a suspension window and builds no retry loop, so that risk and
+    the requirement carved out for it are both gone.
 
-- <a id="r29"></a>**R29 — Stripe becomes less legible to anyone not reading Ringly's dashboard.**
-  Without a subscription object a customer in Stripe is a list of invoices with
-  no recurring relationship, so "is this business active, and on what terms" is
-  answerable only from Ringly. That is fine for the operator ([F8](Ringly_PRD_v3.md#f8--operator-dashboard-ringly-internal) exists) and
-  costs something for everyone else: Stripe's dashboard analytics — MRR, churn,
-  subscriber counts — and revenue-recognition schedules a subscription would
-  generate on its own. **Not a v3 problem; a real one the first time somebody
-  does accrual accounting or reads the account in diligence.** Accepted as the
-  known price of D1.
+- <a id="r28"></a>**R28 — Stripe's schedule is now on the billing critical path, and Ringly
+  cannot make it run.** The rollover happens because `invoice.created` arrives
+  ([§2.10.3](#2103-the-rollover-one-webhook-does-the-whole-thing)); if that webhook is lost and never redelivered, a
+  period never closes and its usage is never billed.
+  - **Bounded rather than unbounded.** The next rollover sweeps every uninvoiced
+    closed period, so a single missed attachment self-heals. The unrecoverable
+    case is a period that never *closed*, which requires the event to be lost
+    entirely rather than merely late.
+  - **The backstop is a daily job** that compares Stripe's subscription
+    `current_period_start` against the newest `billing_periods` row and opens what
+    is missing. It is the same reconciliation shape as [§2.10.10](#21010-coming-back)'s and it
+    exists for the same reason: a webhook is a trigger, never the only path.
+  - **This is a better position than the design it replaces**, which put Ringly's
+    own scheduler on that path — a settlement worker that stopped meant nobody was
+    charged at all. Stripe raises the invoice whether or not Ringly is healthy;
+    what is at risk now is only the usage line, not the fee.
 
-- <a id="r30"></a>**R30 — a later move to plans, tiers or annual billing is a migration, not a
-  setting.** [§1.9](Ringly_PRD_v3.md#19-deferred) rules out plan changes and coupons for v3, but [F6.15](Ringly_PRD_v3.md#f6-15) expects the
-  commercial terms to change once real usage is observed. If that change is ever
-  "plans" rather than "different numbers", adopting subscriptions then means doing
-  it with live paying customers and open invoices. **Accepted**: [F6.15](Ringly_PRD_v3.md#f6-15)'s own list
-  of what does not change — 30-day periods, the two-phase lifecycle — is the shape
-  [D1](#d1) is built for, and designing for a pivot that may never come is what [§1.9](Ringly_PRD_v3.md#19-deferred)
-  forbids.
+- <a id="r29"></a>**R29 — Retired.** It held that without a subscription object a customer in
+  Stripe was a list of invoices with no recurring relationship, so "is this
+  business active, and on what terms" was answerable only from Ringly's own
+  dashboard — costing Stripe's MRR and churn analytics and any
+  revenue-recognition schedule. There is a subscription now, and all of it comes
+  back for free.
 
-- <a id="r31"></a>**R31 — Retired before it was written: Stripe's Card Account Updater is not
-  subscription-only.** The worry was that dropping the subscription would worsen
-  involuntary churn from expired and reissued cards. It does not: Stripe updates
-  **saved payment method details** whenever a network reports a replacement,
-  independently of what charges them, and support is widest in the US — which is
-  the only market Ringly serves ([§1.4](Ringly_PRD_v3.md#14-scope)). Recorded because it is the first thing a
-  reviewer will reasonably fear about [D1](#d1), and the answer is no.
+- <a id="r30"></a>**R30 — Retired.** It held that a later move to plans, tiers or annual billing
+  would be a migration rather than a setting, because adopting subscriptions with
+  live paying customers and open invoices is a different exercise from starting
+  with them. That migration has been done, before there were any paying customers
+  to do it to. Plan changes and annual billing are deferred by [§1.9](Ringly_PRD_v3.md#19-deferred) rather
+  than blocked by the design.
+
+- <a id="r31"></a>**R31 — Retired.** It recorded that Stripe's Card Account Updater is not
+  subscription-only, answering the fear that dropping the subscription would
+  worsen involuntary churn from expired and reissued cards. The question is moot;
+  the answer is unchanged and now uninteresting.
+
+- <a id="r32"></a>**R32 — Two systems both believe they know when a trial ends.** Ringly holds
+  `trials.ends_at` and Stripe holds `trial_end`, written from it
+  ([§2.5.2](#252-provisioning-and-the-start-of-the-trial)). Any path that moves one without the other —
+  the operator extending a trial ([F9.1c](Ringly_PRD_v3.md#f9-1c)) is the only one that should — produces
+  a business whose dashboard and whose invoice disagree about when it starts
+  paying.
+  - **Stripe wins in practice**, because it raises the invoice, so the failure is
+    a business charged on a day its dashboard said was still free. That is a
+    complaint, not a silent loss.
+  - **Mitigated by making the extension one action** across both systems
+    ([§2.5.5](#255-decisions-this-section-makes)) and by the daily reconciliation flagging any
+    disagreement. **Not mitigated by removing the local copy**, which was
+    considered: the dashboard's trial banner is on the hot render path and a
+    Stripe round trip there is a worse trade than a value that is checked daily.
+
+- <a id="r33"></a>**R33 — The trial gives away full service, and the call bound is the only
+  thing sizing that gift.** A trialing business gets real bookings on its real
+  calendar at Ringly's cost ([F1.13](Ringly_PRD_v3.md#f1-13)), and the day bound does nothing to limit it.
+  If `trial_call_allowance` is set generously, a busy salon can consume more in
+  telephony and model minutes during one trial than its first month's fee
+  recovers.
+  - **The exposure is measured, not assumed**: trial calls produce `cost_records`
+    like any other ([§2.5.4](#254-the-trials-two-bounds)), so the operator dashboard shows what
+    trials cost per business and in aggregate ([F8.5](Ringly_PRD_v3.md#f8-5)).
+  - **Accepted for v3**, because a trial that withheld anything would be testing a
+    different product than the one being sold. Revisit when the first month's
+    conversion figures exist rather than by guessing the allowance now ([Q7](Ringly_PRD_v3.md#q7)).
 - <a id="r22"></a>**R22 — Every backup of the money records lives in one provider account**
   ([N10.2](Ringly_PRD_v3.md#n10-2)). A credential compromise or an account closure takes point-in-time
   recovery and the cross-region copies together. **Accepted for v3 and deferred**
