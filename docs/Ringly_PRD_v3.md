@@ -128,7 +128,7 @@ _(Carried from v2; renumbered. v2 FR1–FR10 map to [F1.1](#f1-1)–F1.10.)_
 - <a id="f1-7a"></a>**F1.7a** **Calendar scope may be declined independently of sign-in.** Google
   offers granular consent, so a user can grant sign-in and refuse calendar in the
   same dialog. Ringly checks the scopes actually granted rather than assuming.
-- <a id="f1-7b"></a>**F1.7b** **Declining calendar access blocks activation, not the account.**
+- <a id="f1-7b"></a>**F1.7b** **Declining calendar access blocks provisioning, not the account.**
   Sign-in completes and the enriched draft is kept, so declining costs a click
   rather than the work already done. Onboarding stops at a screen that
   **explains, in plain language, why calendar access is required** — Ringly
@@ -137,7 +137,10 @@ _(Carried from v2; renumbered. v2 FR1–FR10 map to [F1.1](#f1-1)–F1.10.)_
 - <a id="f1-7c"></a>**F1.7c** The reason for every scope Ringly requests is stated on the consent
   screen **before** the user is sent to Google, not only after they decline.
 - <a id="f1-8"></a>**F1.8** The user is told their Google login is now their Ringly login.
-- <a id="f1-9"></a>**F1.9** Number purchase and agent provisioning run in the background.
+- <a id="f1-9"></a>**F1.9** Number purchase and agent provisioning run in the background, and
+  **only once the whole checklist is green** ([F1.12](#f1-12)) — a verified email, calendar
+  access, and a payment method that has been checked and works. Before that
+  Ringly has bought nothing and owes nobody rent.
 - <a id="f1-10"></a>**F1.10 — Retired.** The number is left unused so references in earlier
   documents and commits still resolve.
 - <a id="f1-11"></a>**F1.11** Onboarding collects and verifies a **business contact email**,
@@ -146,177 +149,174 @@ _(Carried from v2; renumbered. v2 FR1–FR10 map to [F1.1](#f1-1)–F1.10.)_
   unverified address is a silent single point of failure.
 - <a id="f1-12"></a>**F1.12** **Getting ready is a checklist of three tasks, presented
   together and completed in any order the business likes:**
-  1. **verify the contact email** ([F1.11](#f1-11));
-  2. **make a test call and confirm it worked** — the owner's judgement, not
-     something Ringly infers, because only they know whether the agent sounded
-     right;
-  3. **add a payment method.**
 
-  Nothing is sequenced. A business that wants to hear its receptionist before
+  1. **verify the contact email** ([F1.11](#f1-11));
+  2. **grant calendar access** ([F1.7a](#f1-7a));
+  3. **add a payment method, which Ringly checks actually works** ([F6.2](#f6-2)).
+
+  Nothing is sequenced. A business that wants its calendar connected before
   giving anyone a card can; one that wants everything done in a minute can. The
   screen shows all three with their state, and what remains.
 
-  **The screen also shows test calls remaining** ([F1.13](#f1-13)), because the allowance
-  is small and running out of it stops the phone answering. A counter a business
-  discovers only by hitting zero is a trap.
+  **Completing all three is what buys the number and starts the trial**
+  ([F1.12a](#f1-12a)), and nothing is provisioned before then. A number costs rent from
+  the day it is bought and a calendar Ringly cannot read is a product that cannot
+  book, so both gates exist to stop Ringly spending money on a business that has
+  not yet shown it can be served. **The card is a gate for the same reason and no
+  other** — it is not charged here ([F6.2](#f6-2)), only stored and verified.
 
-- <a id="f1-12a"></a>**F1.12a** **Activation is one deliberate act by the business owner: pressing
-  a button.** When all three checklist items are green an **Activate** button
-  becomes available. Pressing it — and nothing else, ever — charges the $100,
-  starts period 1, and flips the account from `unbilled` to `active`. The
-  business is then told plainly that it is **now taking customer calls** and
-  that billing has begun. There is no separate activation fee ([F7.1](#f7-1)); this charge
-  is period 1's.
-- <a id="f1-12a-i"></a>**F1.12a-i** **Activation touches three systems, and the business is told the
-  truth at each of them.** Taking money and connecting a phone are separate acts
-  that can fail separately (EDD [§2.5.2](Ringly_EDD_v3.md#252-activation-touches-three-systems-and-can-fail-at-each)), and the one thing a business must never
-  be left with is a charge and no explanation.
+  **The screen states the trial's two bounds before the business commits to
+  anything** ([F1.13](#f1-13)) — how many days and how many calls — because a trial whose
+  ending is discovered by hitting it is not a trial, it is a surprise.
 
-  **The owner presses Activate exactly once.** Everything after that press is
-  Ringly's problem to finish. **No failure is ever handed back as "press it
-  again"** — the one moment a business must not be asked to press a payment
-  button a second time is the moment it cannot tell whether the first press took.
+- <a id="f1-12a"></a>**F1.12a** **The trial starts the moment the checklist is complete, and it
+  starts by itself.** Ringly buys the number, binds the agent, opens a
+  payment-provider subscription with the trial length of [F1.13](#f1-13), and tells the
+  business its number is live and free until a stated date. **No further act is
+  required of the business at any point** — not to go live, and not to start
+  paying.
 
-  | If it fails at               | The business sees                                                                                                                                              | Charged?  |
-  | ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- |
-  | **The card**                 | Inline, immediately: the card was declined, try another. Nothing else changed                                                                                  | **No**    |
-  | **Recording the activation** | Nothing. **Ringly completes it itself** — the charge is the commitment, and finishing the record is a retry against Ringly's own database                      | Yes, once |
-  | **Connecting the number**    | "You're activated and your first period has started. Your number is being connected — we will email you the moment it is live." **Plus that email when it is** | Yes       |
-  - **Row two must never reach the screen.** A charge that succeeded and a record
-    that did not is Ringly's inconsistency to resolve, not a task to hand to the
-    person who just paid. The button shows progress until it resolves.
-  - **Row three is the one that will be seen**, because connecting a number
-    depends on a third party. The business has paid and its phone is not yet
-    ringing, and silence there is indistinguishable from having been charged for
-    nothing — so it is said plainly and raised to the operator ([F8.6](#f8-6)).
-  - **No message ever leaves the business guessing whether it was charged.**
+  **The business is told two dates at once**, in the same message: the day its
+  trial ends and the day its first invoice is raised. They are the same day
+  ([F1.12b](#f1-12b)), and saying so once at the start is worth more than saying it twice
+  at the end.
+
+- <a id="f1-12a-i"></a>**F1.12a-i** **Provisioning touches two systems and can fail at the second,
+  and the business is told the truth either way.** Opening the subscription and
+  connecting a phone are separate acts.
+
+  | If it fails at            | The business sees                                                                                                                               |
+  | ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+  | **The card check**        | Inline, immediately: the card was declined, try another. Nothing else changed, and **nothing has been charged** — this is a check, not a charge |
+  | **Connecting the number** | "Your trial has started. Your number is being connected — we will email you the moment it is live." **Plus that email when it is**              |
+  - **The second row is the one that will be seen**, because connecting a number
+    depends on a third party. **The trial clock does not start until the number
+    is live** ([F1.13](#f1-13)): a business must never lose trial days to Ringly's own
+    provisioning, and the day count is meaningless before the phone can ring.
+  - **It is raised to the operator** ([F8.6](#f8-6)), because a business sitting behind a
+    number that never connected has no way to tell whether it is waiting on
+    Ringly or on itself.
 
 - <a id="f1-12a-ii"></a>**F1.12a-ii** **Every bind and every unbind is verified by reading the
   telephony provider's own record back.** A write that returns success and does
   not take effect is otherwise invisible until it matters, and it matters in both
   directions:
-  - **A failed bind** — at provisioning ([F1.9](#f1-9)), at activation, or at any rebind
-    ([F1.13b](#f1-13b), [F6.10b](#f6-10b)) — leaves a business paying for a number that rings nowhere.
-    It is discovered by a customer.
-  - **A failed unbind** — at the test-call limit ([F1.13a](#f1-13a)), at suspension, or at
-    dormancy — leaves the number **answering calls Ringly has decided to stop
-    serving and stopped metering**. It is a revenue leak and a correctness
-    failure at once, and **nothing else in the system would ever notice it**,
-    because every other component believes service has stopped.
+  - **A failed bind** — at provisioning ([F1.12a](#f1-12a)), or at any rebind after a
+    business settles what it owes ([F6.11c](#f6-11c)) — leaves a business paying for a
+    number that rings nowhere. It is discovered by a customer.
+  - **A failed unbind** — when retries are exhausted ([F6.11b](#f6-11b)), on cancellation
+    ([F6.12](#f6-12)), or at teardown — leaves the number **answering calls Ringly has
+    decided to stop serving and stopped metering**. It is a revenue leak and a
+    correctness failure at once, and **nothing else in the system would ever
+    notice it**, because every other component believes service has stopped.
 
   **A verification that fails is treated as a failed operation**: retried, and
-  raised to the operator — a failed bind as an activation-stuck alert, a failed
+  raised to the operator — a failed bind under the provisioning alert, a failed
   unbind under its own alert ([F7.13a](#f7-13a)), because an unbind failure has no other
   symptom. The read-back is cheap, deterministic, and tests the thing that
   actually goes wrong.
 
   **It is a check against provider state, never a placed call.** Ringly does not
   dial its own number: a synthetic call costs telephony minutes on every bind and
-  unbind, lands in `calls` where it corrupts the test-call count ([F1.13](#f1-13)) and the
-  analytics ([F5.3](#f5-3)), and still proves only that something answered. Whether the
-  agent _sounds_ right is a human judgement, and checklist item 2 already exists
-  for exactly that ([F1.12](#f1-12)).
+  unbind, lands in `calls` where it corrupts the trial call count ([F1.13](#f1-13)) and
+  the analytics ([F5.3](#f5-3)), and still proves only that something answered.
 
-- <a id="f1-12b"></a>**F1.12b** **Nothing activates a business except that button.** Stated
-  negatively because it is the thing most likely to be assumed otherwise:
-  - **Call volume never activates anything.** Not the first call, not the fifth,
-    not the one that gets refused after it. The number of calls placed has no
-    bearing on billing status whatsoever.
-  - **Confirming the test call does not activate.** It ticks one of three boxes
-    ([F1.12](#f1-12)) and nothing more. A business can confirm its test call and sit there
-    for a week without being charged a penny.
-  - **Adding a card does not activate**, and the card is not charged when it is
-    added — only stored ([F6.2](#f6-2)).
-  - **Time never activates.** An unactivated business is deleted at day 10
-    ([F9.1](#f9-1)); it is never promoted into a paying one.
-  - **Ringly never activates a business on its behalf.** Not the operator, not a
-    background job, not a support action.
+- <a id="f1-12b"></a>**F1.12b** **Exactly two things end a trial and start billing, and nothing
+  else does.** Stated as a closed set because the old model's single deliberate
+  act has been replaced by an automatic one, and an automatic transition that
+  nobody can enumerate is a transition nobody trusts:
 
-  **Before that press: no charge is possible, ever.** After it: usage is billed
-  by outcome alone ([F6.6](#f6-6)). There is no third state and no gradual transition.
+  1. **the trial's last day arrives** ([F1.13](#f1-13)); or
+  2. **the trial's call allowance is used up** ([F1.13a](#f1-13a)).
 
-- <a id="f1-13"></a>**F1.13** **An unactivated business gets five free test calls, and then the
-  number stops answering.** Every pre-activation call costs Ringly real telephony
-  and LLM minutes against no revenue ([R8](Ringly_EDD_v3.md#r8)), and a business that will not activate
-  is a business Ringly is subsidising indefinitely. Five is enough to hear the
-  agent, try a booking, and try a reschedule; it is not enough to run a free
-  receptionist.
-  - **The allowance is five, and it is configuration, not a constant** — a
-    platform default, changeable without a deploy, on the same principle as every
-    other number in this document ([F6.15](#f6-15)).
-  - **Reaching five does not activate the business, charge it, or promote it in
-    any way.** It stops it, which is the opposite ([F1.12b](#f1-12b)).
-- <a id="f1-13a"></a>**F1.13a** **At the fifth call the agent is unbound from the number, and the
-  sixth call is not answered at all.** This is the same mechanism used for
-  suspension and dormancy (EDD [§2.10.1](Ringly_EDD_v3.md#2101-states)), applied for a different reason.
-  - **Not answering is the point.** A polite refusal recorded by the agent would
-    still be a connected call and would still cost Ringly minutes, which is the
-    cost the limit exists to bound. The call must not reach the agent.
-  - **The number stays rented and stays reserved to that business** ([F9.4a](#f9-4a)). It
-    is unbound, not released; nothing else can be given it while the business row
-    exists.
-  - **The business is emailed**, when the five test call limit is reached. Business is
-    told that its number has stopped
-    answering, why, and what turns it back on.
-  - **The operator is alerted only if the business _cannot_ activate** — that is,
-    if it never confirmed a working test call ([F8.12](#f8-12), "activation stuck"). A
-    business with all three boxes green that simply has not pressed the button is
-    **not stuck**; it is deciding, and raising it to a human every time would
-    make the queue meaningless.
-  - **The business is never charged.** Not for the five, not for the refused
-    calls, not for being stuck.
-- <a id="f1-13b"></a>**F1.13b** **There are two ways out, and which one applies depends on whether
-  the business ever heard a call that worked.**
-  1. **It can activate itself, and that rebinds the number immediately.** If all
-     three checklist items are green — including a confirmed test call — the
-     Activate button still works. Pressing it charges the $100, binds the agent
-     back, and the business is live ([F1.12a](#f1-12a)). **Running out of test calls is not
-     a bar to activating**; a business that has decided to pay should never be
-     held back by an allowance that exists to limit free usage.
-  2. **Otherwise it is genuinely stuck and recovery is operator-led.** A business
-     that never got a call it was happy with cannot tick box 2 and therefore
-     cannot activate. The operator investigates, **pauses the deletion clock**
-     ([F9.1b](#f9-1b)), and **resets the allowance and rebinds the agent** ([F9.1c](#f9-1c)) once
-     the fault is fixed.
+  **Whichever happens first ends the trial**, and the other bound is discarded.
+  There is no third trigger: not the operator, not a support action, not a
+  business asking to start early. **Confirming that the agent sounded right does
+  not start billing either** — that judgement is no longer collected, because it
+  no longer gates anything ([F1.13d](#f1-13d)).
 
-  In both cases the **10-day clock keeps running unless the operator pauses it**
-  ([F9.1](#f9-1)). An unactivated business is still deleted at day 10.
+  **Before that moment: no charge is possible, ever.** After it: usage is billed
+  by outcome alone ([F6.6](#f6-6)) and the fixed fee runs monthly ([F6.1](#f6-1)). There is no
+  third state and no gradual transition.
 
-- <a id="f1-13c"></a>**F1.13c** **A call is a test call if the business had not yet pressed Activate
-  when it arrived. That is the whole rule; there is no detection.** Ringly bought
-  the number minutes earlier and it is on no listing, no website, no sign and in
-  nobody's contacts. The only person who knows it exists is the owner Ringly just
-  gave it to, so before activation there is no other kind of call it could be.
-  - **Who is calling is not examined**, deliberately: caller ID would add a way
-    to be wrong about something the account state already settles. If a stranger
-    somehow dials the number it still counts against the five and the business is
-    still charged nothing, which is the right answer either way.
+- <a id="f1-13"></a>**F1.13** **A trial is bounded twice — by days and by calls — and ends at
+  whichever bound is reached first.** Both are stated to the business before it
+  starts ([F1.12](#f1-12)) and both are configuration, not constants in code, changeable
+  without a deploy on the same principle as every other number in this document
+  ([F6.15](#f6-15)).
+  - **The day bound** gives a business time to see the agent handle real calls
+    across a real week, including the quiet days. A trial measured only in calls
+    would be over before a Tuesday.
+  - **The call bound exists because days do not bound cost.** Every trial call
+    costs Ringly real telephony and LLM minutes against no revenue ([R8](Ringly_EDD_v3.md#r8)), and a
+    busy business can take more free calls in a fortnight than its first month's
+    fee would cover. **The call bound is the one that makes the trial safe to
+    offer**; the day bound is the one that makes it useful.
+  - **The trial clock starts when the number goes live**, not when the checklist
+    completes ([F1.12a-i](#f1-12a-i)).
+
+- <a id="f1-13a"></a>**F1.13a** **Reaching the call allowance ends the trial and starts billing.
+  The number keeps answering.** Ringly counts the calls, and on the one that
+  reaches the allowance it tells the payment provider to end the trial
+  immediately; the first period opens that day and the first invoice is raised
+  ([F6.1a](#f6-1a)).
+  - **Service is never interrupted.** The business that has used its trial hardest
+    is the one most likely to be relying on the number already, and taking its
+    phone away at the moment it proved the product would be the worst-timed
+    outage in the system. **The old behaviour — unbind the agent and stop
+    answering — is withdrawn**, and with it the whole idea that running out of
+    free calls is a punishment.
+  - **The business is emailed by Ringly**, saying the trial has ended because the
+    call allowance was used, that billing has begun, and on what terms
+    ([F7.3a](#f7-3a)). The payment provider cannot send this: it was told only that the
+    trial ended, never why.
+  - **The invoice that follows is the ordinary first one** ([F6.1a](#f6-1a)) and carries
+    no usage, because trial calls are free ([F1.13c](#f1-13c)).
+
+- <a id="f1-13b"></a>**F1.13b** **Reaching the last day ends the trial the same way, without
+  Ringly doing anything.** The subscription's own trial end is the mechanism, so
+  the transition happens at the payment provider whether or not Ringly is
+  running that morning ([F6.1a](#f6-1a)).
+  - **Ringly emails a reminder before it**, not the provider ([F7.3a](#f7-3a)). Only
+    Ringly knows both bounds, and a reminder that counts down the days while the
+    business is two calls from the other bound would be wrong in the way that
+    matters.
+  - **Ringly emails nothing when the day arrives.** The first invoice is a money
+    document and says everything there is to say ([F7.3a](#f7-3a)); a service statement
+    alongside it would be a second message about an event the business was
+    already warned of and can already see.
+
+- <a id="f1-13c"></a>**F1.13c** **A call is a trial call if the trial had not yet ended when it
+  arrived. That is the whole rule; there is no detection.** Trial calls are
+  **free** — they are not metered, not invoiced, and never appear on any invoice,
+  including the first.
+  - **Who is calling is not examined**, deliberately: caller ID would add a way to
+    be wrong about something the account state already settles. The number is
+    live and public from day one, so a real customer may well ring it during the
+    trial and get a real booking. **That booking stands**, and it is free.
   - **The classification is written at the time of the call, not derived later**
-    (EDD 005, `is_test_call`). Billing status changes; a call's history must not.
+    (EDD 005, `is_trial_call`). Billing status changes; a call's history must not.
     Deriving it from today's status would reclassify every one of a business's
-    test calls the instant it activated.
-  - **After activation there are no test calls.** The owner ringing their own
+    trial calls the instant the trial ended.
+  - **After the trial there are no trial calls.** The owner ringing their own
     number is billed on the same terms as anyone else, by outcome alone ([F6.6](#f6-6),
     [F6.7](#f6-7)).
+  - **Bookings taken during the trial outlive it**, and may fall as far ahead as
+    the booking horizon allows ([F2.9](#f2-9)). This is accepted: a business that has
+    taken real bookings is a business that has adopted the product, which is what
+    the trial is for.
 
-- <a id="f1-13d"></a>**F1.13d** **The lifecycle in full, so the boundary is unambiguous.** Three
-  businesses, same five calls; the only difference is the button:
+- <a id="f1-13d"></a>**F1.13d** **Ringly no longer asks the business whether the agent sounded
+  right.** The old checklist collected that judgement to gate an Activate button;
+  with no button it gates nothing, and a checkbox that gates nothing is
+  decoration that the businesses most in trouble are least likely to tick.
 
-  |                            | A — activates                               | B — could, doesn't                                                | C — never got a good call                                                     |
-  | -------------------------- | ------------------------------------------- | ----------------------------------------------------------------- | ----------------------------------------------------------------------------- |
-  | Signs up, gets a number    | `unbilled`                                  | `unbilled`                                                        | `unbilled`                                                                    |
-  | Places 5 test calls        | 5 test calls, **$0**                        | 5 test calls, **$0**                                              | 5 test calls, **$0**                                                          |
-  | Confirms one worked        | box 2 ticked                                | box 2 ticked                                                      | **cannot** — none sounded right                                               |
-  | Email verified, card added | all 3 green                                 | all 3 green                                                       | 2 of 3                                                                        |
-  | 5th call ends              | agent unbound; emailed                      | agent unbound; emailed                                            | agent unbound; emailed **and operator alerted** ([F1.13a](#f1-13a))           |
-  | **Presses Activate**       | → `active`, **$100**, period 1, **rebound** | can still do this at any time → rebinds, live ([F1.13b](#f1-13b)) | **button unavailable** — box 2 is not green                                   |
-  | Next call arrives          | answered, **production, billable**          | **not answered**                                                  | **not answered**                                                              |
-  | Where it ends up           | Paying customer                             | Its own choice; deleted at day 10 if it never presses             | Operator-led ([F9.1b](#f9-1b), [F9.1c](#f9-1c)); deleted day 10 unless paused |
-  | Total charged              | $100 + usage                                | **$0**                                                            | **$0**                                                                        |
-
-  **B and C are never charged anything, whatever happens**, because neither
-  pressed the button. There is no call count at which billing begins — only a
-  call count at which the phone stops being answered.
+  **The signal it existed to produce is now derived instead**: a trial business
+  that has taken calls and booked nothing is surfaced to the operator as a
+  failing trial ([F8.12](#f8-12)). That is a stronger test than the old one — it catches
+  a business that never noticed the agent was mishandling calls, which
+  self-reporting never would — and it asks nothing of the person who is already
+  having a bad time.
 
 ### F2 — Call handling and booking
 
