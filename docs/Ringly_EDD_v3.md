@@ -484,6 +484,20 @@ failures and chargebacks are rows; so are `setup_intent_succeeded`,
 and are what [§2.5.1.7](#2517-the-checklist-step-8) reads to answer "has this business added a card". Nothing
 in it is updated; corrections are new rows.
 
+**One event, one row, whoever observes it first.**
+
+```sql
+CREATE UNIQUE INDEX billing_events_provider_ref_per_kind
+    ON billing_events (kind, provider_ref) WHERE provider_ref IS NOT NULL;
+```
+
+A payment method attaching is observed by up to three paths — the browser's return
+and two Stripe webhooks ([§2.10.10a](#21010a-the-card-facts-and-what-a-dropped-webhook-costs))
+— and this index is what makes them idempotent rather than triplicated. Same
+technique as the calendar incident's partial index
+([§2.6.4](#264-fail-closed-concretely)): the writer does not check first, it writes
+and reads what came back.
+
 **Recording the whole payment lifecycle rather than only the money is the point.**
 A ledger that holds charges but not the card those charges will be made against
 forces every other part of the design to ask Stripe directly, which is how a
@@ -982,7 +996,11 @@ never activate are never rescued ([F9.1b](Ringly_PRD_v3.md#f9-1b), [F9.1c](Ringl
 **Item 3 is Stripe's fact, and Ringly stores no second copy of it.** _(Decision,
 ratified 2026-08-01, replacing an earlier `payment_method_attached_at` column.)_
 The checklist reads `billing_events` for a `payment_method_attached` row with no
-later `payment_method_detached` ([§2.4](#24-data-model)/005). A dedicated column would be a second
+later `payment_method_detached` ([§2.4](#24-data-model)/005). **What writes those
+rows, and what a lost webhook costs, is
+[§2.10.10a](#21010a-the-card-facts-and-what-a-dropped-webhook-costs)** — attach
+has three independent writers and detach has one, so the two fail differently and
+only one of them needs a sweep. A dedicated column would be a second
 copy of somebody else's state, and it drifts in exactly the direction that hurts:
 a card detached or a SetupIntent invalidated leaves the column saying "added", so
 the Activate button is available, the press charges, and the charge declines —
@@ -3859,19 +3877,20 @@ is the first one, on a timer.
 
 **Events subscribed, and what each adds beyond `reevaluate()`:**
 
-| Event                             | Additional work                                                                                                          |
-| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| `invoice.paid`                    | `billing_events` row; stamp `fixed_fee_state`/`usage_*` observed state                                                   |
-| `invoice.payment_failed`          | `billing_events` row; enter [§2.10.4](#2104-when-a-charge-fails) if the cause is a card error                            |
-| `invoice.payment_action_required` | Treated as a decline ([§2.10.4](#2104-when-a-charge-fails))                                                              |
-| `invoice.finalized`               | Record `provider_ref` if T2 never landed ([§2.10.11](#21011-transaction-boundaries-and-what-a-crash-leaves))             |
-| `invoice.voided`                  | `billing_events` row — teardown and hand-corrections both produce it                                                     |
-| `invoice.marked_uncollectible`    | `billing_events` row; should not occur, so it also alerts                                                                |
-| `charge.refunded`                 | `billing_events` row. Goodwill only; no rule produces one ([F5.9](Ringly_PRD_v3.md#f5-9))                                |
-| `charge.dispute.created`          | `billing_events` row; enters [§2.10.4](#2104-when-a-charge-fails) exactly as a decline ([F6.17](Ringly_PRD_v3.md#f6-17)) |
-| `charge.dispute.closed`           | `billing_events` row; a win clears the synthesised debt ([§2.10.6](#2106-coming-back))                                   |
-| `setup_intent.succeeded`          | Set the customer's default payment method ([§2.10.9](#2109-the-stripe-object-lifecycle-end-to-end), step 4)              |
-| `payment_method.detached`         | Alert: a business with no card on file cannot be charged next period                                                     |
+| Event                             | Additional work                                                                                                                                                                                          |
+| --------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `invoice.paid`                    | `billing_events` row; stamp `fixed_fee_state`/`usage_*` observed state                                                                                                                                   |
+| `invoice.payment_failed`          | `billing_events` row; enter [§2.10.4](#2104-when-a-charge-fails) if the cause is a card error                                                                                                            |
+| `invoice.payment_action_required` | Treated as a decline ([§2.10.4](#2104-when-a-charge-fails))                                                                                                                                              |
+| `invoice.finalized`               | Record `provider_ref` if T2 never landed ([§2.10.11](#21011-transaction-boundaries-and-what-a-crash-leaves))                                                                                             |
+| `invoice.voided`                  | `billing_events` row — teardown and hand-corrections both produce it                                                                                                                                     |
+| `invoice.marked_uncollectible`    | `billing_events` row; should not occur, so it also alerts                                                                                                                                                |
+| `charge.refunded`                 | `billing_events` row. Goodwill only; no rule produces one ([F5.9](Ringly_PRD_v3.md#f5-9))                                                                                                                |
+| `charge.dispute.created`          | `billing_events` row; enters [§2.10.4](#2104-when-a-charge-fails) exactly as a decline ([F6.17](Ringly_PRD_v3.md#f6-17))                                                                                 |
+| `charge.dispute.closed`           | `billing_events` row; a win clears the synthesised debt ([§2.10.6](#2106-coming-back))                                                                                                                   |
+| `setup_intent.succeeded`          | Set the customer's default payment method ([§2.10.9](#2109-the-stripe-object-lifecycle-end-to-end), step 4); write the attach row ([§2.10.10a](#21010a-the-card-facts-and-what-a-dropped-webhook-costs)) |
+| `payment_method.attached`         | Write a `payment_method_attached` ledger row ([§2.10.10a](#21010a-the-card-facts-and-what-a-dropped-webhook-costs))                                                                                      |
+| `payment_method.detached`         | Write a `payment_method_detached` ledger row; alert — a business with no card cannot be charged next period                                                                                              |
 
 **Nothing outside that list is subscribed to.** An endpoint receiving events it
 does not handle is an endpoint whose logs cannot be read for what went wrong.
@@ -3883,6 +3902,74 @@ unreachable — but **`outstanding()` is never answered from them**. A cached
 answer to "does this business owe anything" is the single most dangerous stale
 value in the product: too high and a paying business stays suspended, too low and
 a debtor is served for free.
+
+### 2.10.10a The card facts, and what a dropped webhook costs
+
+The checklist's third item is answered from the ledger rather than from a column
+([§2.5.1.7](#2517-the-checklist-step-8)), which moves the question from _can this
+drift?_ to _what writes these rows, and what happens when that fails?_ Attach and
+detach have different answers, because they have different numbers of sources.
+
+**Attach has two independent sources, and that is what makes it survivable.**
+
+```
+browser returns from Stripe Elements ─┐
+                                      ├─► INSERT INTO billing_events
+setup_intent.succeeded webhook       ─┤     (kind 'payment_method_attached', provider_ref = pm_id)
+payment_method.attached webhook      ─┘     ON CONFLICT (provider_ref, kind) DO NOTHING
+```
+
+Three paths, one row. The conflict target is the payment-method id, so **whichever
+arrives first writes and the others are no-ops** — the same shape as
+[§2.10.9](#2109-the-stripe-object-lifecycle-end-to-end)'s step 4, which is already
+written to be reached twice.
+
+That redundancy is the point. **A dropped webhook does not cost the business its
+checklist**, because the browser's own return already wrote the row before Stripe
+tried to tell us anything. A business that adds a card and immediately sees the
+item go green is seeing its own request's result, not a push feed's.
+
+**Detach has one source, and that is the exposure.** A card is detached inside
+Stripe — expiry, a support action, the customer's bank — with no Ringly request in
+flight to observe it. If `payment_method.detached` is lost, the ledger keeps
+saying "attached" and the checklist stays green over a card that is gone.
+
+**Which is the drift the column had, and it is bounded here in a way the column
+was not:**
+
+|               | The removed column       | The ledger                                         |
+| ------------- | ------------------------ | -------------------------------------------------- |
+| Attach missed | Green, wrongly           | **Cannot happen** — the browser return writes it   |
+| Detach missed | Green, wrongly, for ever | Green, wrongly, **until the next charge or sweep** |
+| Repaired by   | Nothing                  | The charge itself, and the unactivated sweep below |
+
+**Two things repair a missed detach, and neither is a new mechanism.**
+
+- **Every charge is the reconciliation.** The settlement worker's invoice goes to
+  Stripe, and a customer with no payment method declines — which is
+  [§2.10.4](#2104-when-a-charge-fails) exactly as any other decline. An activated
+  business therefore cannot stay wrong for longer than one period boundary.
+- **Unactivated businesses get a cheap sweep**, because for them there is no
+  charge to discover it and the checklist is the whole product surface. The set is
+  small and self-limiting — a business without a card is deleted at day ten
+  ([F9.1](Ringly_PRD_v3.md#f9-1)) — so the lifecycle sweeper, which already visits
+  them, asks Stripe once a day whether the customer still has a payment method and
+  writes the missing detach row if not. **Bounded by the number of unactivated
+  businesses, not by tenant count.**
+
+**What is deliberately not done: reading Stripe on every checklist render.** It
+would answer the question exactly, and it would put a third-party call on a screen
+a business refreshes while deciding, make the checklist unavailable whenever
+Stripe is ([N7.1](Ringly_PRD_v3.md#n7-1)), and still not help the far more
+important case — the Activate press — which already goes to Stripe and already
+declines. The ledger is the durable answer; Stripe is the authority at the moment
+money moves.
+
+**If both webhook and browser return are lost**, the row is absent, the checklist
+says no card, and the business adds one again. **The failure is visible and it is
+in the safe direction**: a business that cannot press Activate complains, where a
+business that presses it over a dead card is charged nothing and told its card
+declined — the state [§2.5.1.7](#2517-the-checklist-step-8) exists to avoid.
 
 ### 2.10.11 Transaction boundaries, and what a crash leaves
 
