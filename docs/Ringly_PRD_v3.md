@@ -248,7 +248,30 @@ _(Carried from v2; renumbered. v2 FR1–FR10 map to [F1.1](#f1-1)–F1.10.)_
   by outcome alone ([F6.6](#f6-6)) and the fixed fee runs monthly ([F6.1](#f6-1)). There is no
   third state and no gradual transition.
 
-- <a id="f1-13"></a>**F1.13** **A trial is bounded twice — by days and by calls — and ends at
+- <a id="f1-13"></a>**F1.13** **The trial is the whole product, free, and the only thing that
+  makes it a trial is that it ends.** Every capability a paying business has, a
+  trial business has, from the first minute its number is live:
+  - **The number is live, public and answering** — real customers ring it, and
+    Ringly does not know or care that the business is in a trial.
+  - **Bookings are made for real, in the business's own Google Calendar**
+    ([F2.2](#f2-2), [F4.1](#f4-1)). Not held, not simulated, not written to a sandbox. So are
+    reschedules and cancellations ([F2.5](#f2-5), [F2.6](#f2-6)), against the same availability
+    and conflict rules ([F2.3](#f2-3), [F2.7](#f2-7)) that apply to everyone.
+  - **The dashboard, the catalogue, the opening hours and the email are all the
+    real ones** ([F5](#f5--business-dashboard), [F3](#f3--service-catalogue-and-opening-hours), [F7](#f7--email)). There is no reduced tier and no feature held back.
+  - **Nothing is charged. Not usage, and not the $100 fixed fee**
+    ([F1.13c](#f1-13c)) — the fixed fee is charged for the first time when the trial ends
+    ([F6.1a](#f6-1a)), so the trial period itself carries no fee at all. **The business
+    pays Ringly nothing until it has had the entire product working on its own
+    calendar for its own customers**, which is the whole argument for offering
+    one.
+
+  **A trial that withheld anything would be testing a different product than the
+  one being sold**, and the business's decision at the end of it would be made on
+  the wrong evidence. This also decides what a trial is _not_: it is not a demo,
+  not a sandbox, and not a limited plan.
+
+- <a id="f1-13-i"></a>**F1.13-i** **It is bounded twice — by days and by calls — and ends at
   whichever bound is reached first.** Both are stated to the business before it
   starts ([F1.12](#f1-12)) and both are configuration, not constants in code, changeable
   without a deploy on the same principle as every other number in this document
@@ -299,6 +322,10 @@ _(Carried from v2; renumbered. v2 FR1–FR10 map to [F1.1](#f1-1)–F1.10.)_
   arrived. That is the whole rule; there is no detection.** Trial calls are
   **free** — they are not metered, not invoiced, and never appear on any invoice,
   including the first.
+  - **"Free" means both charges, not just usage** ([F1.13](#f1-13)). No fixed fee is
+    raised for the trial period either: the subscription is in its trial and
+    raises no invoice at all until it ends ([F6.1a](#f6-1a)). A business that used its
+    whole trial and cancelled on the last day has paid Ringly **nothing**.
   - **Who is calling is not examined**, deliberately: caller ID would add a way to
     be wrong about something the account state already settles. The number is
     live and public from day one, so a real customer may well ring it during the
@@ -728,6 +755,9 @@ bad fails one invoice rather than two.
 - <a id="f6-1"></a>**F6.1** A **$100 fixed fee** is charged **in advance** for every period,
   irrespective of usage. There is no separate activation fee; the first such
   charge is the one raised when the trial ends ([F1.12b](#f1-12b)).
+  - **The trial is not a period and carries no fee** ([F1.13](#f1-13)). A business
+    receives full service for the length of its trial and is invoiced for none of
+    it.
 - <a id="f6-1a"></a>**F6.1a** **Every invoice carries the coming month's fee and the past month's
   usage, and nothing else.** Period _N_'s invoice, raised on its first day, is:
 
@@ -742,6 +772,10 @@ bad fails one invoice rather than two.
     collects it, taxes it ([F6.18](#f6-18)), sends it, and retries it.
   - **Period 1's invoice has no usage line**, because the only calls that preceded
     it were trial calls and those are free ([F1.13c](#f1-13c)). A zero line is not printed.
+  - **No invoice is raised during the trial at all.** The subscription is in its
+    trial period, so the fee that would otherwise fall on the first of a month
+    simply does not arise ([F1.13](#f1-13)). Period 1's invoice — $100 and nothing else —
+    is the first the business ever receives.
   - **If Ringly fails to add the usage line before the invoice finalises**, the
     usage is not lost: it stays unbilled and lands on the next period's invoice,
     which is late but never wrong. **Ringly never issues a second invoice to
@@ -1162,9 +1196,14 @@ bad fails one invoice rather than two.
 **The trial.** A business signs up, verifies its email, connects its calendar and
 gives a card that Ringly checks works ([F1.12](#f1-12)). Only then is a number bought and
 an agent bound, and the trial starts. It runs for **a configured number of days
-or a configured number of calls, whichever comes first** ([F1.13](#f1-13)). Trial calls
-are free and the number is live and public throughout, so real bookings taken
-during it are real ([F1.13c](#f1-13c)).
+or a configured number of calls, whichever comes first** ([F1.13-i](#f1-13-i)).
+
+**It is the full product and it is entirely free** ([F1.13](#f1-13)). The number is live
+and public, real customers ring it, and the agent books, reschedules and cancels
+**in the business's own Google Calendar** — the same bookings a paying business
+gets, which stand after the trial ends. **No invoice is raised during it at all:
+no usage, and no $100 fixed fee** ([F1.13c](#f1-13c)). The fee is charged for the first
+time on the day the trial ends, for the month ahead.
 
 **The end of the trial is the start of billing, and nothing else is.** Whichever
 bound is reached first, the subscription's first period opens that day and the
@@ -1299,23 +1338,41 @@ change that breaks one is a change to the commercial model, not a detail._
 | <a id="i5"></a>**I5** | **No new charge arises while a business is paused** — no fee, no usage, no period ([F6.11b](#f6-11b)). Its debt is frozen at what it owed when service stopped              | The final usage invoice is raised **as service stops**, not during the pause ([F6.9a](#f6-9a)) — the last act of the old state, not the first of the new |
 | <a id="i6"></a>**I6** | **The $100 is never prorated or refunded** ([F6.11e](#f6-11e))                                                                                                              | Goodwill refunds, by hand, which no rule produces ([F5.9](#f5-9))                                                                                        |
 
-- <a id="i3a"></a>**I3a — The ceiling on what any business can owe is $900, and it takes a
-  specific sequence to reach.** A business holds at most two unpaid invoices
-  ([F6.11a](#f6-11a)): the periodic one that declined, clamped at **$500**, and the final
-  usage invoice raised when service stopped, clamped at **$400**. Both are needed
-  and neither is avoidable — the first is the debt that stopped the service, the
-  second is the service given while the provider was still retrying.
-  - **It is higher than the old model's $500**, and knowingly so. The old ceiling
-    held because only one period could ever be outstanding; a retry window during
-    which service continues necessarily produces a second, smaller bill.
+- <a id="i3a"></a>**I3a — The most a business can owe Ringly is $900**, and it is the sum of
+  the only two invoices that can be outstanding at once ([F6.11a](#f6-11a)).
+
+  | The invoice                                                         | What it can carry                     | Ceiling  |
+  | ------------------------------------------------------------------- | ------------------------------------- | -------- |
+  | **The periodic one that declined** — raised on the first of a month | $100 fee + that month's arrears usage | **$500** |
+  | **The final one** — raised when service stopped ([F6.9a](#f6-9a))   | Usage served since that month began   | **$400** |
+  |                                                                     |                                       | **$900** |
+
+  **Worked through, at the very worst:**
+
+  | Date          | Event                                                                                                                                 | Outstanding |
+  | ------------- | ------------------------------------------------------------------------------------------------------------------------------------- | ----------- |
+  | 1 March       | Invoice raised: $100 for March + February's usage, clamped so the invoice totals $500. **Declines**                                   | **$500**    |
+  | 1–20 March    | **Service continues** while the provider retries ([F6.11](#f6-11)). The business keeps taking calls, and March's usage keeps accruing | $500        |
+  | 20 March      | Last retry fails. Service stops, and March 1–20's usage is invoiced — up to **$400** ([F6.9a](#f6-9a))                                | **$900**    |
+  | 20 Mar–19 May | Dormant. **Nothing further is charged, ever** ([I5](#i5)). The figure does not move                                                   | $900        |
+  - **Both invoices are unavoidable and neither is a penalty.** The first is the
+    debt that stopped the service. The second is service Ringly actually gave
+    while the provider was still trying to collect — twenty days of a working
+    receptionist, which [F6.11](#f6-11) chose to keep providing rather than cut off at the
+    first decline.
+  - **$900 is a ceiling, not an expectation.** Reaching it needs a business at the
+    cap in two consecutive months whose card fails between them. The second
+    invoice is bounded by the retry window rather than by a month, so a business
+    with a two-week window and ordinary volume owes a few hundred, not $900.
+  - **It is higher than the old model's $500**, and knowingly so. That ceiling
+    held only because a suspended business was cut off on day 7 and billed nothing
+    after. Keeping service running through the retries buys a much better recovery
+    rate and costs exactly this: one extra, smaller invoice.
   - **What holds it at two invoices is the retry window being shorter than a
     billing period** ([F6.11](#f6-11)). Let the retries run past a cycle boundary and the
-    subscription raises another $100 invoice behind them, and there is no ceiling
-    at all — this invariant and that configuration constraint are the same fact
-    seen from two ends.
-  - **Reaching it requires a heavy user whose card fails and who keeps taking
-    calls right through the retry window.** The second invoice is bounded by that
-    window, not by a month, so in practice it is a fraction of $400.
+    subscription raises another $100 invoice behind them, and a third, and there
+    is **no ceiling at all** — this invariant and that configuration constraint
+    are the same fact seen from two ends.
   - **Tax sits outside it** ([F6.18](#f6-18)), and the departure record holds the figure
     exclusive of tax ([F9.9](#f9-9)) — tax was never Ringly's money and, on a debt never
     collected, was never remitted either.
