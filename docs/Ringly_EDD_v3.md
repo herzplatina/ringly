@@ -188,11 +188,11 @@ A timer that fires twice, a deploy that overlaps a run, and a retry after a
 gateway timeout are all ordinary. Three mechanisms cover every worker, and each
 job names which it uses:
 
-| Mechanism                | Used by                                                        | What it guarantees                                                                        |
-| ------------------------ | -------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
-| **Row claim**            | Email dispatcher ([§2.11.6](#2116-the-dispatcher-claim-send-record)) | `UPDATE … WHERE state='pending' … RETURNING` — one worker owns each row, decided by the database |
-| **Unique constraint**    | The rollover, the ledger, `provider_events`                    | The second attempt conflicts and aborts rather than inserting a duplicate                  |
-| **Advisory lock**        | Rollup, sweeper, reconciliation, classification                 | `pg_try_advisory_lock(job_id)` — a second concurrent run of the whole job exits immediately |
+| Mechanism             | Used by                                                              | What it guarantees                                                                               |
+| --------------------- | -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| **Row claim**         | Email dispatcher ([§2.11.6](#2116-the-dispatcher-claim-send-record)) | `UPDATE … WHERE state='pending' … RETURNING` — one worker owns each row, decided by the database |
+| **Unique constraint** | The rollover, the ledger, `provider_events`                          | The second attempt conflicts and aborts rather than inserting a duplicate                        |
+| **Advisory lock**     | Rollup, sweeper, reconciliation, classification                      | `pg_try_advisory_lock(job_id)` — a second concurrent run of the whole job exits immediately      |
 
 **The advisory lock is for jobs whose work is a scan, not a queue.** The rollup
 recomputes a day; two of them racing would double-count. The lock is taken for
@@ -317,12 +317,12 @@ column order.
 without bound are `calls`, `appointments` and `usage_records`; everything else is
 bounded by tenant count.
 
-| Pressure                       | When it bites                          | Answer                                                                                                       |
-| ------------------------------ | -------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| Dashboard scanning raw history | Immediately at any real volume         | **The rollup** ([§2.9.2](#292-the-rollup)) — no dashboard query touches `calls` except the one live median   |
-| Index size on `calls`          | ~10⁸ rows                              | Leading `business_id` keeps each tenant's slice shallow; the index is large but never scanned whole          |
-| Vacuum and bloat on `calls`    | High write rate, no deletes until teardown | Append-mostly, so autovacuum's work is index maintenance rather than row cleanup                          |
-| One tenant's history dominating | A very busy business                   | Accepted. [N2.2](Ringly_PRD_v3.md#n2-2) permits degradation as a function of the requesting tenant's own size         |
+| Pressure                        | When it bites                              | Answer                                                                                                        |
+| ------------------------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------- |
+| Dashboard scanning raw history  | Immediately at any real volume             | **The rollup** ([§2.9.2](#292-the-rollup)) — no dashboard query touches `calls` except the one live median    |
+| Index size on `calls`           | ~10⁸ rows                                  | Leading `business_id` keeps each tenant's slice shallow; the index is large but never scanned whole           |
+| Vacuum and bloat on `calls`     | High write rate, no deletes until teardown | Append-mostly, so autovacuum's work is index maintenance rather than row cleanup                              |
+| One tenant's history dominating | A very busy business                       | Accepted. [N2.2](Ringly_PRD_v3.md#n2-2) permits degradation as a function of the requesting tenant's own size |
 
 **Partitioning is deliberately not adopted in v3.** Time-partitioning `calls`
 would help retention if there were any — there is not; rows live until the
@@ -349,11 +349,11 @@ next call sees them too.
 **Three things are deliberately stale, each with a stated bound and a label on
 the screen** ([F5.16](Ringly_PRD_v3.md#f5-16)):
 
-| What                          | Staleness                | Why it is acceptable                                                             |
-| ----------------------------- | ------------------------ | ---------------------------------------------------------------------------------- |
-| Dashboard call metrics        | To yesterday             | Questions about shape and trend; the page states the date it is complete to        |
-| The agent's view of config    | ≤ 60s ([F3.2](Ringly_PRD_v3.md#f3-2)) | A cache with a short TTL; a caller mid-conversation keeps what they started with |
-| A conversation's config       | Frozen for its duration  | Deliberate — the alternative is a caller offered a service that vanishes mid-call  |
+| What                       | Staleness                             | Why it is acceptable                                                              |
+| -------------------------- | ------------------------------------- | --------------------------------------------------------------------------------- |
+| Dashboard call metrics     | To yesterday                          | Questions about shape and trend; the page states the date it is complete to       |
+| The agent's view of config | ≤ 60s ([F3.2](Ringly_PRD_v3.md#f3-2)) | A cache with a short TTL; a caller mid-conversation keeps what they started with  |
+| A conversation's config    | Frozen for its duration               | Deliberate — the alternative is a caller offered a service that vanishes mid-call |
 
 **Nothing about money or service state is ever stale.** `outstanding()` asks
 Stripe ([§2.10.7](#2107-outstanding-is-asked-of-stripe)), `service_state` is read from the row, and the checklist
@@ -668,8 +668,16 @@ trial, and there is exactly one of them.
 alike and are not: the trial's length comes from `pricing_policy` and Ringly
 tells Stripe about it, so Ringly is the origin and the copy is Stripe's. A
 period's boundary is minted by Stripe's billing cycle and Ringly reads it. **The
-rule is "whoever decides it, holds it"**, and it points different ways for the
-two.
+rule is "whoever decides it, holds it"** (2.1.7), and it points different ways
+for the two.
+
+**`trials.policy_id` pins a running trial to the terms it started under**, the
+same way `billing_periods.policy_id` pins a period (PRD [F6.16](Ringly_PRD_v3.md#f6-16), ⚠ edge case).
+`ends_at` and `call_allowance` are **copied onto the row** at creation rather
+than read through the policy each time, so shortening `trial_days` from 21 to 14
+cannot end a trial retroactively for a business that was told 21 on the
+checklist screen. The foreign key is what makes the figures explicable years
+later; the copies are what make them stable.
 
 #### `billing_events` stays in 005, with a narrower job
 
@@ -751,7 +759,8 @@ database is the first one that becomes immutable.)_
 ```
 dormancies(business_id pk fk, stopped_at, stopped_by, due_at,
            warned_at null,
-           paused_at null, paused_by null, pause_reason null)
+           paused_at null, paused_by null, pause_reason null,
+           pause_expires_at null)
 
 departed_businesses(business_id pk, name, joined_at, left_at, ended_by,
                     owed_at_departure_cents, lifetime_net_revenue_cents)
@@ -786,14 +795,17 @@ effect immediately. What is left needs no `kind` column, so it does not have one
 and the sweeper's query is the whole of the lifecycle:
 
 ```sql
--- delete
-SELECT business_id FROM dormancies
- WHERE due_at <= now() AND paused_at IS NULL;
-
 -- warn (48 hours out, once)
 SELECT business_id FROM dormancies
  WHERE due_at <= now() + interval '48 hours'
    AND warned_at IS NULL AND paused_at IS NULL;
+
+-- delete
+SELECT business_id FROM dormancies
+ WHERE due_at <= now() AND paused_at IS NULL;
+
+-- un-pause anything whose pause has run out  (§2.4/008)
+UPDATE dormancies SET … WHERE pause_expires_at <= now();
 ```
 
 ```sql
@@ -816,6 +828,25 @@ to null. A clock paused on day 4 of 60 and resumed three days later is due on da
 63, with 56 days left — the operator bought the business investigation time, not
 a different deadline. Leaving `due_at` fixed would mean a business emerging from a
 long pause is deleted immediately, which is the opposite of what pausing was for.
+
+**A pause expires on its own** (PRD [F9.1b](Ringly_PRD_v3.md#f9-1b), ⚠ edge case). `pause_expires_at`
+defaults to 30 days out, and the sweeper's third query resumes any pause that has
+run out and emails the operator:
+
+```sql
+UPDATE dormancies
+   SET due_at = due_at + (now() - paused_at),
+       paused_at = NULL, paused_by = NULL,
+       pause_reason = NULL, pause_expires_at = NULL
+ WHERE paused_at IS NOT NULL AND pause_expires_at <= now()
+ RETURNING business_id;
+```
+
+Without it a pause is unbounded: an investigation nobody closes holds a rented
+number and a full tenant database forever, and it is **invisible** — the account
+looks like any other dormant one. Extending is another explicit act, which is
+the point: the clock resuming is the default and continuing to hold it is the
+thing that needs a person.
 
 #### `departed_businesses` carries no consumer data by construction
 
@@ -979,6 +1010,23 @@ background; 8–9 are a screen they come back to.** The numbering is load-bearin
    remember, which is only reassuring if it is said. `service_state` is
    `pending`; **no deadline is written, because the product has only one clock and
    it starts when service stops** ([§2.4](#24-data-model)/008).
+
+   **One identity owns one business, and the constraint says so** (PRD [F1.7](Ringly_PRD_v3.md#f1-7),
+   ⚠ edge case):
+
+   ```sql
+   ALTER TABLE businesses ADD CONSTRAINT one_business_per_identity
+     UNIQUE (google_subject_id);
+   ```
+
+   A second signup from the same Google account hits it and is **refused with an
+   explanation** — a second business needs a second Google account today. The
+   alternative that happens by default is worse than the refusal: with no
+   constraint, sign-in resolves to the existing business and the person believes
+   they created a second one and cannot find it. **A unique index rather than an
+   application check**, because the check would be one race away from two
+   businesses on one identity and every screen in this design assumes one.
+
 6. **Scopes actually granted are checked, never assumed** ([F1.7a](Ringly_PRD_v3.md#f1-7a)). Granular
    consent means sign-in can succeed while calendar is refused; a refusal stops
    here on the explanation screen with a re-consent button ([F1.7b](Ringly_PRD_v3.md#f1-7b)) and the
@@ -1956,22 +2004,59 @@ business about a failure no customer has hit.
 ### 2.6.5 Identifying an existing appointment
 
 [F2.4](Ringly_PRD_v3.md#f2-4) is a matching problem, not a lookup, and the design has to be explicit
-about it because voice input is lossy.
+about it because voice input is lossy and because the requirement's "partial
+match" has no testable meaning on its own (PRD [F2.4](Ringly_PRD_v3.md#f2-4), ⚠ edge case).
 
-- The caller gives **a name plus the appointment's date, time and service**.
-- **Caller ID is not the identifying factor here.** A customer may ring from a
-  different phone or withhold the number; the search runs over appointments, not
-  over customer records.
-- **No attribute has to match exactly.** "Dave" matches "David", "Tuesday"
-  matches the date, "two" matches 14:00, "a cut" matches "Ladies' Cut". Each
-  attribute is scored for partial match.
-- **If any one attribute fails to match even partially, the caller is refused
-  and told which one** — name, date, time or service. A refusal that does not
-  say what was wrong sends the caller away with no way to correct it.
-- **A correction re-runs the search** against the corrected values ([F2.4](Ringly_PRD_v3.md#f2-4)).
-- **A relative day means the next one**: "Tuesday at 2" is the nearest future
-  Tuesday, and the agent states the full date back and waits for confirmation
-  before acting.
+**The search is a filter, not a score.** Each attribute is a predicate that the
+agent evaluates against what the caller actually said; there is no similarity
+threshold and no tunable constant, because a number in a config file cannot be
+reviewed against "does a person listening to this call think it matched".
+
+| Attribute   | Matches when                                                                                                              |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------- |
+| **Name**    | Any spoken form the caller offers resolves to the customer on the appointment — first name alone, a short form, a surname |
+| **Date**    | Resolves to exactly one calendar date after the agent has stated it back and been confirmed                               |
+| **Time**    | Resolves to exactly one clock time in the business's timezone, likewise confirmed                                         |
+| **Service** | The catalogue entry the caller names, or an obvious short form of it ("a cut" → "Ladies' Cut")                            |
+
+**Date and time are disambiguated by the agent before the search runs, not
+inside it.** "Tuesday at two" becomes a stated full date and a stated clock time
+that the caller confirms ([F2.4](Ringly_PRD_v3.md#f2-4)); only then is anything looked up. This is
+what keeps the query a plain equality filter over
+`(business_id, starts_at, service_id, customer_id)` — the index in
+[§2.3.3](#233-physical-layout) — rather than a fuzzy scan.
+
+**Caller ID is not the identifying factor here.** A customer may ring from a
+different phone or withhold the number, so the search runs over appointments,
+not over customer records.
+
+#### Two outcomes the requirement does not settle
+
+**No match** — the caller is refused and **told which attribute failed**: name,
+date, time or service. A refusal that does not say what was wrong sends the
+caller away with no way to correct it, and a correction re-runs the search
+against the corrected values.
+
+**More than one match** — the agent **reads back the candidates and asks which
+one**, rather than choosing. It is an ordinary situation: two slots on one day
+for one service, or a family sharing a name and a number.
+
+```
+matches = SELECT … WHERE business_id = $1
+                     AND customer_id  = $2
+                     AND service_id   = $3
+                     AND starts_at    = $4
+                     AND status       = 'booked'
+
+len 0  → refuse, naming the attribute that failed
+len 1  → proceed
+len 2+ → read them back, ask which
+```
+
+**Picking the soonest would be the cheaper design and is rejected.** It acts on
+a guess silently, and the caller discovers it by turning up on the wrong day —
+which is the same class of failure as a double booking, and 2.1.1 already
+settles how this design treats those.
 
 ### 2.6.6 Configuration on the call path
 
@@ -3004,10 +3089,15 @@ one ([F5.16](Ringly_PRD_v3.md#f5-16)).
 
 Three things, in this order ([F5](Ringly_PRD_v3.md#f5--business-dashboard)):
 
-**(a) The shape of the calls.** Two filters govern the whole page — unit
-(calendar month or billing period) and range (current / past 3 / 6 / 12), and no
-arbitrary date picker ([F5.2](Ringly_PRD_v3.md#f5-2)). Five tiles ([F5.3](Ringly_PRD_v3.md#f5-3)), one chart ([F5.4](Ringly_PRD_v3.md#f5-4)), three trends
-([F5.5](Ringly_PRD_v3.md#f5-5)).
+**(a) The shape of the calls.** One filter governs the whole page — the range,
+in billing periods, and no arbitrary date picker ([F5.2](Ringly_PRD_v3.md#f5-2)). Five tiles
+([F5.3](Ringly_PRD_v3.md#f5-3)), one chart ([F5.4](Ringly_PRD_v3.md#f5-4)), three trends ([F5.5](Ringly_PRD_v3.md#f5-5)).
+
+**A range is resolved to dates from `billing_periods`, never computed.** "Past
+3" is the three most recent rows for that business; the page labels itself with
+their actual dates, because a period anchored on the 14th does not line up with
+a calendar month and a business reading one against the other would be wrong
+without knowing it.
 
 **The one chart is one measure and two dimensions** ([F5.4](Ringly_PRD_v3.md#f5-4)). Its measure is the
 number of calls. Its dimensions are time of day and outcome, and **one groups
@@ -3019,6 +3109,21 @@ is why it is stored as a matrix rather than as two count arrays.
 different units and a single plot with two axes is the one construction that
 reliably misleads ([F5.9](Ringly_PRD_v3.md#f5-9)). The current period is the first row of that same
 table, live, not a separate panel beside it.
+
+**A business can hold two unpaid invoices at once** ([I3a](Ringly_PRD_v3.md#i3a)), so the table shows
+them as two rows rather than one total. They were raised for different things on
+different days and Stripe chases them separately; a single "amount outstanding"
+would be a number the business cannot reconcile against either email it
+received.
+
+**During a trial there is no period at all**, so the panel renders the trial
+instead (PRD [F5.9](Ringly_PRD_v3.md#f5-9)/[F5.10](Ringly_PRD_v3.md#f5-10), ⚠ edge case): **days left, calls left, the date
+the first invoice is raised, and what it will carry** — the fixed fee, no usage
+([F1.12d](Ringly_PRD_v3.md#f1-12d)). It answers the same question the table answers for everyone else —
+what will I be charged, and when — and it is the only place the trial's two
+bounds remain visible after the checklist. An empty table is the alternative,
+and it is the screen most likely to make a business conclude billing is broken
+on the day it is deciding whether to keep the product.
 
 **(c) Service status and controls.** Status at the top, never stale ([F5.18](Ringly_PRD_v3.md#f5-18)).
 Controls per F5.15.
@@ -3425,6 +3530,24 @@ local. Every other step is an external call and cannot join one. A crash between
 them would leave a business that is neither serving nor dormant, which is the one
 state the sweeper cannot see.
 
+**Step 2 closes the period under a conditional update, and that is what settles
+the same-day race** (PRD [F6.9a](Ringly_PRD_v3.md#f6-9a), ⚠ edge case). Service can stop on the very
+day a period rolls over, so two totalling paths can reach one period:
+
+```sql
+UPDATE billing_periods
+   SET closed_at = now(), closed_by = 'service_stopped', usage_charge_cents = $2
+ WHERE id = $1 AND closed_at IS NULL
+ RETURNING id;
+```
+
+**No row returned means somebody already closed it**, and the caller skips
+straight to the pause without raising a second invoice. **First close wins**, in
+either direction: a rollover that arrives after service stopped finds the period
+closed, and — because the subscription is by then paused — raises no fee for a
+successor that [I2](Ringly_PRD_v3.md#i2) forbids anyway. Ordering the two by wall-clock would make a
+money outcome depend on which webhook the provider happened to send first.
+
 **`pause`, never `cancel`.** Stripe cannot reactivate a cancelled subscription —
 _"You can't reactivate a canceled subscription"_ — and the whole of dormancy is
 the ability to resume this one ([F6.12b](Ringly_PRD_v3.md#f6-12b)). The single `cancel` call in the
@@ -3562,7 +3685,8 @@ restored the moment it settles, without asking; a business that cancelled owes
 nothing, so there is no event to trigger on and it asks from its dashboard.
 
 ```
-resume(businessId):
+resume(businessId, trigger):          ← 'payment' | 'requested'
+  0  if trigger = 'payment' AND dormancies.stopped_by <> 'nonpayment' → do nothing
   1  if await outstanding(businessId) > 0 → refuse, and say what remains
   2  stripe.subscriptions.resume(sub, {
        billing_cycle_anchor: 'now',
@@ -3576,6 +3700,19 @@ resume(businessId):
   6  enqueue the service-restored email
 ```
 
+**Step 0 is the guard, and without it the automatic path resurrects a business
+that asked to leave** (PRD [F6.11c](Ringly_PRD_v3.md#f6-11c), ⚠ edge case). A business that cancels while
+an invoice is outstanding ([F6.11a](Ringly_PRD_v3.md#f6-11a)) leaves two open invoices behind it; when
+the provider eventually collects one, `invoice.paid` arrives and — with no
+guard — rebinds its number and charges it $100 for a period it never asked for.
+`stopped_by` exists on `dormancies` for exactly this test and for nothing else
+that branches ([§2.4](#24-data-model)/008).
+
+**Collection and restoration are independent, and the guard is what keeps them
+so.** A cancelled business is still pursued for what it owes ([F9.3b](Ringly_PRD_v3.md#f9-3b)); it is
+simply never restored by paying. It comes back by asking, like any other
+cancelled business.
+
 **Step 1 is the same `outstanding()` both routes go through**, which is what makes
 "a business in debt cannot resume" ([F6.11c](Ringly_PRD_v3.md#f6-11c)) one rule rather than two. The
 self-serve control is disabled by the same reading that stops the automatic path.
@@ -3588,6 +3725,18 @@ depending only on which day it happened to come back.
 
 **`proration_behavior: 'none'`** because there is nothing to prorate — no service
 was given while paused, and the fixed fee is never refunded ([I6](Ringly_PRD_v3.md#i6)).
+
+**Resuming always opens a paid period, including for a business that left
+mid-trial** (PRD [F6.12b](Ringly_PRD_v3.md#f6-12b), ⚠ edge case). `resume` does not consult `trials` and
+has no branch for one that never ended; the row is closed with
+`ended_by = 'cancelled'` when service stops and is never reopened.
+
+- **Mechanically this is the absence of code rather than the presence of it**,
+  which is the reason to prefer it. Restoring a partial trial would mean pausing
+  a trial clock through dormancy, keeping it correct across an operator pause,
+  and deciding what happens when the policy changed in between.
+- **It also closes the obvious abuse**: cancel the moment the phone goes quiet,
+  return when it is busy, and never leave the trial.
 
 **Step 3 after step 2, and the failure is loud.** A business that has paid and is
 still not being answered is the worst state in the system ([F6.11d](Ringly_PRD_v3.md#f6-11d)), so a
@@ -3614,12 +3763,29 @@ const card = c.invoice_settings.default_payment_method;
 ```
 
 **One round trip, on a screen the business is already waiting on**, cached for
-the render and not beyond it. There is no `payment_method_attached_at` column,
-and no `billing_events` row standing in for one — attach and detach rows were
-written when the checklist read them and removed when it stopped, because nothing
-read them, Stripe's dashboard already holds that history, and keeping both meant
-weakening the `provider_ref` unique index to `(kind, provider_ref)`: trading the
-guarantee that protects charge idempotency for rows nobody consults.
+the render and not beyond it.
+
+**It is also the one checklist item that can regress after provisioning** (PRD
+[F6.2](Ringly_PRD_v3.md#f6-2), ⚠ edge case). A business can detach its card in Stripe's own hosted
+flows, and a trial that ends with no payment method produces an invoice that
+**cannot be attempted at all** — not declined, unpayable — so the retry window
+passes without a single real attempt and service stops without the business ever
+being asked for money.
+
+- **`payment_method.detached` is subscribed for this reason** ([§2.10.9](#2109-the-webhook-endpoint)), and
+  it is the trigger rather than a periodic check, because the gap between the
+  event and the trial ending can be minutes.
+- **It raises an operator condition and a dashboard banner** ([F5.18](Ringly_PRD_v3.md#f5-18)) rather
+  than stopping service. Stopping would punish an accident during a free trial —
+  the ordinary cause is a business replacing an expiring card — and the business
+  is the only party who can fix it.
+- **The banner is the same one the checklist would have shown**, computed the
+  same way, so there is no second definition of "has a working card". There is no `payment_method_attached_at` column,
+  and no `billing_events` row standing in for one — attach and detach rows were
+  written when the checklist read them and removed when it stopped, because nothing
+  read them, Stripe's dashboard already holds that history, and keeping both meant
+  weakening the `provider_ref` unique index to `(kind, provider_ref)`: trading the
+  guarantee that protects charge idempotency for rows nobody consults.
 
 ### 2.10.12 Cancellation
 
@@ -3638,6 +3804,21 @@ action is only defensible if the person taking it has been told what it costs.
 **The estimate is computed by the same function that raises the invoice**
 ([§2.10.4](#2104-the-clamp)), not by a second implementation for display. A screen that
 quotes one figure and charges another is worse than a screen with no figure.
+
+**It also states what the cancellation strands** (PRD [F6.12](Ringly_PRD_v3.md#f6-12), ⚠ edge case):
+how many appointments are booked ahead and the date of the last one.
+
+```sql
+SELECT count(*), max(starts_at) FROM appointments
+ WHERE business_id = $1 AND status = 'booked' AND starts_at > now();
+```
+
+Bookings stand up to the booking horizon ([F2.9](Ringly_PRD_v3.md#f2-9)), and after cancellation those
+customers cannot ring to move them — the number is unbound and Ringly has no
+channel to them (2.1.2). **Nothing is done to the appointments**: they are in the
+business's own calendar, they stay there, and deleting a customer's booking on a
+business's behalf is not Ringly's decision. The screen exists so the choice is
+made with the number in front of the person making it.
 
 **There is no revocation endpoint.** The old flow needed one because cancellation
 opened a reconsideration window; there is no window, and a business that changes
