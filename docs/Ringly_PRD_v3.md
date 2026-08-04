@@ -2193,7 +2193,7 @@ that assumed one is retired.
 
 **Still open:**
 
-- <a id="q1"></a>**Q1 — The per-connected-minute rate (Phase 4).** TBD; held as configuration
+- <a id="q1"></a>**Q1 — The per-connected-minute rate.** TBD; held as configuration
   ([F6.8](#f6-8)), so billing can be built and tested with a placeholder but **cannot be
   switched on for real customers until it is set**.
 - <a id="q3"></a>**Q3 — Ringly's contact email address** ([F9.2](#f9-2)). It is the single channel for
@@ -2226,8 +2226,9 @@ that assumed one is retired.
   from the day-1 decline to the day-60 deletion. The provider's automatic retry
   window is roughly two months, so this runs very close to its edge — and if it
   runs out, a recoverable business goes un-chased for the days that matter most,
-  silently. **Blocks Phase 4 shipping to real customers**, not Phase 4 starting.
-  A test clock answers it in an afternoon.
+  silently. **Blocks charging a real customer**; blocks nothing about building
+  the billing path, which can be written and tested against the answer either
+  way. A test clock answers it in an afternoon.
 
 ---
 

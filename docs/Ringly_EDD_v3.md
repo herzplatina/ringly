@@ -85,6 +85,15 @@ Every tenant table therefore leads its primary index with `business_id`, and no
 dashboard query is allowed to scan raw call history ([N4.3](Ringly_PRD_v3.md#n4-3)) — which is what makes
 the rollup in [§2.9](#29-analytics-and-the-two-dashboards) mandatory rather than an optimisation.
 
+**2.1.5a — The delivery plan is downstream of this design, never an input to
+it.** No decision in this document is justified by when something is scheduled to
+be built. Where a table lands is decided by what depends on it; where a mechanism
+lives is decided by the requirement it serves. A design shaped by build order
+encodes the build order permanently — the schema outlives the plan, and a column
+placed to suit a phase is still there long after the phase is forgotten.
+[§2.16](#216-delivery-plan) is therefore **derived from** the sections above it
+and is the one section expected to change without any of them changing.
+
 **2.1.6 — The host is undecided and must stay that way.** [N8](Ringly_PRD_v3.md#n8--hosting-undecided-and-the-application-must-stay-portable) leaves Vercel and
 Cloud Run both open. No host-specific primitive is adopted ([N8.2](Ringly_PRD_v3.md#n8-2)): no proprietary
 cron, queue, or key-value product. Background work is specified as idempotent HTTP
@@ -774,13 +783,12 @@ no address in the clear and nothing here becomes a record of who visited. Rows
 older than two days are removed by the lifecycle sweeper on its ordinary pass
 ([§2.2.2](#222-request-paths-and-background-work)) — it already runs hourly and this is one bounded delete.
 
-**Decision, not settled by the PRD — `enrichment_requests` is a new table and it
-lands in 005, not in a Phase 3 migration.** [N9.1](Ringly_PRD_v3.md#n9-1) requires a per-IP counter and
-2.1.6 forbids the managed key-value product that would otherwise hold it, so it
-has to be a row. [§2.16](#216-delivery-plan) gives Phase 3 no migration of its own, and the cheapest
-way to keep that true is to carry the table in `005` — which has not run
-anywhere, so amending it breaks no forward-only rule. It is not tenant data, it
-is not a money table, and it holds nothing a business can see.
+**Decision, not settled by the PRD — `enrichment_requests` is a table.**
+[N9.1](Ringly_PRD_v3.md#n9-1) requires a per-IP counter and a daily spend
+ceiling, and 2.1.6 forbids the managed key-value product that would otherwise
+hold the counter, so it has to be a row. It is not tenant data, it is not a money
+table, and it holds nothing a business can see, so it carries no RLS policy and
+no retention clock.
 
 **The daily ceiling needs no new state at all**, because [N9.2](Ringly_PRD_v3.md#n9-2) already requires
 the spend to be attributable before a business exists and [§2.4](#24-data-model)/009 already
@@ -863,7 +871,8 @@ calendar; `calendar.readonly` cannot create an event, and the full `calendar`
 scope grants calendar creation and sharing that Ringly never uses. It is also
 the smallest ask that still works, and the consent screen is where a larger ask
 costs conversions. It is a **sensitive** scope requiring verification, which is
-[R2](#r2) and why [§2.16](#216-delivery-plan) starts that submission in Phase 3.
+[R2](#r2) — a calendar-week dependency that gates real customers regardless of
+what is built when.
 
 The authorisation request is `access_type=offline` with `prompt=consent`,
 because the refresh token is returned only on a fresh consent and [§2.7](#27-scheduling-providers) needs it
@@ -1348,11 +1357,13 @@ was.
 current rather than rolled up, so a single-row read is the cheap answer and a
 scan of `calls` is not ([N4.3](Ringly_PRD_v3.md#n4-3)).
 
-**Phase ordering note.** [§2.16](#216-delivery-plan) puts onboarding in Phase 3 and billing, which
-owns `pricing_policy`, in Phase 4. The allowance is read through one accessor
-from the start; in Phase 3 it resolves from configuration and in Phase 4 it
-resolves from the policy row, with no call-site change. [F1.13](Ringly_PRD_v3.md#f1-13)'s "configuration,
-not a constant" is satisfied by both.
+**The allowance resolves from `pricing_policy`, like every other number in the
+commercial model.** [F1.13](Ringly_PRD_v3.md#f1-13) makes it "configuration, not a
+constant" on the same principle as [F6.15](Ringly_PRD_v3.md#f6-15), so the platform
+default lives in the versioned policy row while per-business consumption lives in
+`businesses.test_calls_used` — which is what lets
+[F9.1c](Ringly_PRD_v3.md#f9-1c)'s operator reset change one business without
+moving the default for everyone.
 
 #### 2.5.4.2 The crossing, and the race at the boundary
 
@@ -1439,20 +1450,20 @@ it** ([F9.1](Ringly_PRD_v3.md#f9-1), [§2.13.1](#2131-deadlines-and-the-sweeper)
 Collected so they are reviewable as decisions rather than discovered as
 implementation:
 
-| #   | Decision                                                                                                  | Because                                                                                                                                                                                                                                              |
-| --- | --------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1   | Commit the business row **before** checking granted scopes (steps 5 and 6 swapped)                        | [F1.7b](Ringly_PRD_v3.md#f1-7b)'s "the draft is kept" is only durable if it is a row                                                                                                                                                                 |
-| 2   | `enrichment_requests` and `test_call_confirmed_at` land in **005**; `billing_events` moves there from 007 | [N9.1](Ringly_PRD_v3.md#n9-1) and [F1.12](Ringly_PRD_v3.md#f1-12) need them, and the money ledger has to predate the first payment fact — a stored card, in the checklist. **Ratified 2026-08-01**: delivery order does not get to decide the schema |
-| 3   | Provisioning waits for the calendar credential                                                            | [F4.1](Ringly_PRD_v3.md#f4-1) makes a calendar-less business unable to become a customer; [N9.3](Ringly_PRD_v3.md#n9-3)'s argument, one step on                                                                                                      |
-| 4   | The idempotency key includes the payment method id                                                        | Otherwise a second card replays the first decline                                                                                                                                                                                                    |
-| 5   | Activate is submit-and-poll                                                                               | [F1.12a-i](Ringly_PRD_v3.md#f1-12a-i)'s "never press it again" cannot survive the state living in a response                                                                                                                                         |
-| 6   | An `activation_charge_attempted` ledger row precedes the charge                                           | Makes the charge-without-record window repairable from Ringly's own data                                                                                                                                                                             |
-| 7   | `starts_on` comes from the charge's timestamp, not from the clock at repair time                          | A late repair must compute the same period boundary or it moves every one after it                                                                                                                                                                   |
-| 8   | Intended bind state is derived from `billing_status` and never stored                                     | A stored intent has a crash window; a derived one has none, and it is what makes a failed unbind retryable                                                                                                                                           |
-| 9   | The lifecycle sweeper owns bind reconciliation                                                            | It already owns every other bind and unbind ([§2.13.2](#2132-unbinding-is-the-one-mechanism-for-stopping-service)); two components issuing binds for one number is worse than an hour of latency                                                     |
-| 10  | An address carrying Google's `email_verified` claim needs no second link. **Ratified 2026-08-01**         | The proof already happened in the token exchange. The test is the claim, not a string comparison                                                                                                                                                     |
-| 11  | **No `payment_method_attached_at` column.** The card item reads `billing_events`. **Ratified 2026-08-01** | A column is a second copy of a Stripe fact and drifts toward a green checklist over a dead card — the one state the checklist exists to prevent                                                                                                      |
-| 12  | `test_call_confirmed_at` is a nullable timestamp, not a boolean                                           | Every "has this happened" in this schema is a nullable `*_at`; a second idiom costs a reader more than seven bytes saves. Nothing reads the value today, and that is stated rather than dressed up ([§2.4](#24-data-model)/005)                      |
+| #   | Decision                                                                                                                                          | Because                                                                                                                                                                                                                                                             |
+| --- | ------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | Commit the business row **before** checking granted scopes (steps 5 and 6 swapped)                                                                | [F1.7b](Ringly_PRD_v3.md#f1-7b)'s "the draft is kept" is only durable if it is a row                                                                                                                                                                                |
+| 2   | `enrichment_requests` and `test_call_confirmed_at` are tables/columns in `005`; `billing_events` sits there too, with the rest of the foundations | Each lands where the things that depend on it can reach it — [N9.1](Ringly_PRD_v3.md#n9-1), [F1.12](Ringly_PRD_v3.md#f1-12), and a money ledger that must predate the first payment fact. **Ratified 2026-08-01: delivery order does not get to decide the schema** |
+| 3   | Provisioning waits for the calendar credential                                                                                                    | [F4.1](Ringly_PRD_v3.md#f4-1) makes a calendar-less business unable to become a customer; [N9.3](Ringly_PRD_v3.md#n9-3)'s argument, one step on                                                                                                                     |
+| 4   | The idempotency key includes the payment method id                                                                                                | Otherwise a second card replays the first decline                                                                                                                                                                                                                   |
+| 5   | Activate is submit-and-poll                                                                                                                       | [F1.12a-i](Ringly_PRD_v3.md#f1-12a-i)'s "never press it again" cannot survive the state living in a response                                                                                                                                                        |
+| 6   | An `activation_charge_attempted` ledger row precedes the charge                                                                                   | Makes the charge-without-record window repairable from Ringly's own data                                                                                                                                                                                            |
+| 7   | `starts_on` comes from the charge's timestamp, not from the clock at repair time                                                                  | A late repair must compute the same period boundary or it moves every one after it                                                                                                                                                                                  |
+| 8   | Intended bind state is derived from `billing_status` and never stored                                                                             | A stored intent has a crash window; a derived one has none, and it is what makes a failed unbind retryable                                                                                                                                                          |
+| 9   | The lifecycle sweeper owns bind reconciliation                                                                                                    | It already owns every other bind and unbind ([§2.13.2](#2132-unbinding-is-the-one-mechanism-for-stopping-service)); two components issuing binds for one number is worse than an hour of latency                                                                    |
+| 10  | An address carrying Google's `email_verified` claim needs no second link. **Ratified 2026-08-01**                                                 | The proof already happened in the token exchange. The test is the claim, not a string comparison                                                                                                                                                                    |
+| 11  | **No `payment_method_attached_at` column.** The card item reads `billing_events`. **Ratified 2026-08-01**                                         | A column is a second copy of a Stripe fact and drifts toward a green checklist over a dead card — the one state the checklist exists to prevent                                                                                                                     |
+| 12  | `test_call_confirmed_at` is a nullable timestamp, not a boolean                                                                                   | Every "has this happened" in this schema is a nullable `*_at`; a second idiom costs a reader more than seven bytes saves. Nothing reads the value today, and that is stated rather than dressed up ([§2.4](#24-data-model)/005)                                     |
 
 **Testing this section**
 
@@ -3958,7 +3969,9 @@ shows is the place a clamp compares two amounts and picks the wrong one.
 ### 2.10.13 What §2.4 must gain
 
 Collected here rather than scattered, so the migration is reviewable as one
-thing. **007 is Phase 4's migration** ([§2.16](#216-delivery-plan)) and none of this has run.
+thing. None of `005`–`011` has run anywhere, so amending them breaks no
+forward-only rule; **where each table lands is a question of what depends on it,
+never of when it is scheduled to be built.**
 
 **Two tables 007 does not currently declare:**
 
@@ -5360,6 +5373,12 @@ The scenario manifest and `CATALOGUE_SIZE` are regenerated with the catalogue
 
 ## 2.16 Delivery plan
 
+**Provisional, and downstream of everything above it (2.1.5a).** This section is
+_derived from_ the design; it does not constrain it. Nothing in §2.1–§2.15 is
+decided by what a phase contains, and re-cutting these phases must never require
+editing a schema or a mechanism. If it ever does, the design has picked up a
+dependency on its own build order and that is the defect, not the plan.
+
 Ordered by dependency, not by layer. Each phase is deliverable and leaves `main`
 deployable; anything spanning more than one PR lives behind a feature flag.
 
@@ -5393,8 +5412,8 @@ what was built rather than a check on it.
 ## 2.17 Verified vendor capabilities
 
 _Verified 2026-07-30, and carried forward unchanged: no vendor in this design is
-new, because [N7](Ringly_PRD_v3.md#n7--third-party-dependencies-and-degradation) fixes the dependency list. Re-verify before Phase 4 commits to
-Stripe's configuration surface._
+new, because [N7](Ringly_PRD_v3.md#n7--third-party-dependencies-and-degradation) fixes the dependency list. Re-verify before anything
+commits to Stripe's configuration surface._
 
 - **Stripe** _(billing model re-verified 2026-08-01 for [D1](#d1))_ — a subscription
   bills the recurring fee **one service interval in advance** and combines it
@@ -5437,7 +5456,7 @@ Stripe's configuration surface._
   **Not yet verified to the standard of the three above**: the exact rate limit
   on the send endpoint, which the docs do not state. [§2.11.10](#21110-decisions-this-section-makes-that-the-prd-does-not)'s batch-of-50 and
   concurrency-of-8 are sized on volume rather than on a published ceiling, and
-  should be checked against a real account before Phase 2 ships.
+  should be checked against a real account before any real mail is sent.
 
 ---
 
@@ -5447,7 +5466,7 @@ Stripe's configuration surface._
 
 - <a id="q1"></a>**Q1 — the per-connected-minute rate.** Held as configuration ([F6.8](Ringly_PRD_v3.md#f6-8)), so
   billing can be built and tested with a placeholder but **cannot be switched on
-  for real customers until it is set**. Blocks nothing before Phase 4 ships.
+  for real customers until it is set**.
 - <a id="q3"></a>**Q3 — Ringly's contact email address** ([F9.2](Ringly_PRD_v3.md#f9-2)). The single channel for
   cancellation, deletion and reactivation.
 - <a id="q6"></a>**Q6 — where the application is hosted** ([N8](Ringly_PRD_v3.md#n8--hosting-undecided-and-the-application-must-stay-portable)). Does not block a phase; 2.1.6
@@ -5459,12 +5478,13 @@ the PRD and from commit messages, so a retired risk keeps its number rather than
 freeing it.
 
 - <a id="r1"></a>**R1 — The shipped code fails open; the product requires fail-closed.** A
-  specification change, not only a bug fix ([F2.7](Ringly_PRD_v3.md#f2-7)). Phase 1.
+  specification change, not only a bug fix ([F2.7](Ringly_PRD_v3.md#f2-7)).
 - <a id="r2"></a>**R2 — LAUNCH BLOCKER: Google OAuth verification not submitted.** Refresh
   tokens are revoked after 7 days while the app is in _Testing_; with a mandatory
   calendar and fail-closed booking, every business stops taking bookings a week
-  after signup. Weeks of review, independent of every engineering phase — start
-  it in Phase 3.
+  after signup. **Weeks of review, and entirely independent of engineering** — the
+  calendar-week cost is the risk, so it is submitted as early as an application
+  can be, not when the code that depends on it is written.
 - <a id="r3"></a>**R3 — Cross-tenant leakage via the service role.** Mitigated by [§2.3.1](#231-row-level-security-is-the-floor-not-the-ceiling); must
   stay test-enforced ([N1.2](Ringly_PRD_v3.md#n1-2)).
 - <a id="r4"></a>**R4 — 005 cannot apply over existing overlapping appointments.** Needs a data
