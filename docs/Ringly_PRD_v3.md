@@ -1287,10 +1287,22 @@ should be:
   (`src/emails/`). They are reviewed in pull requests like any other code, so a
   change to what a customer reads goes through the same scrutiny as a change to
   what the code does. No hosted template editor, no copy living in a vendor UI.
-- <a id="f7-3a"></a>**F7.3a** **Ringly does not send the success path.** Receipts, invoices and
-  payment-succeeded notices are **Stripe's**, carrying Ringly branding ([F6.20](#f6-20)).
-  Ringly sends no email that Stripe already sends well — the split is by who
-  knows the consequence, not by who could technically send it ([F6.21](#f6-21)).
+- <a id="f7-3a"></a>**F7.3a** **The provider sends money documents; Ringly sends service
+  statements.** That one line decides every message in this section, and it is
+  drawn by **who knows the fact**, not by who could technically send it
+  ([F6.21](#f6-21)).
+  - **Money documents are the provider's**: the invoice, the receipt, the
+    payment-succeeded notice, the card-declined notice, and each retry. It sends
+    them with a hosted payment page, a PDF and correct tax, all carrying Ringly
+    branding. **Ringly sends none of them and never duplicates one.**
+  - **Service statements are Ringly's**: your number is live, your trial ends on
+    this date, your trial ended because you used your calls, your number has
+    stopped answering, it is answering again, your data goes in 48 hours. **The
+    provider cannot send any of these** — it does not know the phone number, does
+    not know the agent has been unbound, and was never told why a trial ended
+    early.
+  - **The test for a new message is which of the two it is.** If the answer is
+    "both", it is two messages, and the provider's goes first.
 - <a id="f7-4"></a>**F7.4** **Transactional email cannot be unsubscribed from.** A business
   cannot opt out of being told its payment failed or its data is about to be
   deleted. **Only the periodic stats digest is optional.**
@@ -1298,8 +1310,9 @@ should be:
   failure.** A worker that dies between handing a message to the provider and
   recording that it did will send it again. That is chosen, not tolerated: the
   only way to guarantee no duplicate is to risk losing the message, and **these
-  are the messages a business cannot afford to miss** — a payment failure, a
-  suspension, and the 48-hour warning that [I4](#i4) makes unconditional. Reading
+  are the messages a business cannot afford to miss** — that its number has
+  stopped answering ([F6.11b](#f6-11b)), and the 48-hour warning that [I4](#i4) makes
+  unconditional. Reading
   something twice is an annoyance. Never being told your data is about to be
   deleted is a broken promise, and it is one nobody would discover until the data
   was gone.
@@ -1345,61 +1358,65 @@ should be:
 
 **Business-facing email — the full set**
 
-**Every row below is an email Ringly sends.** Receipts, invoices and
-payment-succeeded notices are **absent by design** — they are Stripe's ([F7.3a](#f7-3a)),
+**Every row below is an email Ringly sends.** Invoices, receipts, payment-failed
+and retry notices are **absent by design** — they are the provider's ([F7.3a](#f7-3a)),
 and duplicating them is how a business ends up with two differently-worded
 messages from what looks like one company ([F6.21](#f6-21)).
 
-| Email                   | When                                                     | Tone default                                                                                                                                                                                                             |
-| ----------------------- | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Email verification      | Contact email entered ([F1.11](#f1-11))                  | Functional; one link, nothing else                                                                                                                                                                                       |
-| Welcome / now live      | Activation completes ([F1.12a](#f1-12a))                 | Welcoming; **states the number is now taking customer calls**                                                                                                                                                            |
-| Upcoming charge         | Before each period's fixed fee                           | Neutral; no action needed                                                                                                                                                                                                |
-| Payment failed          | First decline ([F6.11](#f6-11))                          | Calm, **leads with "your service is still running"**                                                                                                                                                                     |
-| Payment follow-up       | Through the grace period                                 | Firmer, counts down to the date service stops                                                                                                                                                                            |
-| Suspension notice       | Day 7 ([F9.3](#f9-3))                                    | Direct, **leads with "nothing has been deleted"**                                                                                                                                                                        |
-| **Service restored**    | Nothing outstanding after suspension ([F6.10b](#f6-10b)) | **Leads with "your number is answering again"**; states the new period end date, since the period was paused ([F6.11b](#f6-11b))                                                                                         |
-| Deletion warning        | 48 hours before deletion ([F9.3a](#f9-3a))               | Unambiguous; itemises exactly what is destroyed                                                                                                                                                                          |
-| Cap reached             | $500 reached ([F6.9b](#f6-9b))                           | **Good news** — they earned it, the rest is on Ringly                                                                                                                                                                    |
-| Cancellation confirmed  | Operator marks cancelled ([F6.10a](#f6-10a))             | Matter-of-fact; **states the fixed fee is not refunded** ([F6.12b](#f6-12b))                                                                                                                                             |
-| Cancellation countdown  | Through the reconsideration window ([F6.12](#f6-12))     | Neutral; the date service stops, and how to revoke                                                                                                                                                                       |
-| Closing statement       | Cancellation window closes ([F6.12c](#f6-12c))           | Final; usage charged, fee not refunded, deletion date                                                                                                                                                                    |
-| Calendar access failing | Bookings being refused ([F2.7](#f2-7))                   | Urgent, explains _why_ refusing beats double-booking                                                                                                                                                                     |
-| **Account deleted**     | Teardown completes, on every path ([F9.3c](#f9-3c))      | Final and factual: what was deleted, that the number is gone for good, and any amount recorded as owed. **Sent before anything irreversible — the number release and the row deletion both follow it** ([F9.3d](#f9-3d)) |
-| Test calls exhausted    | 5th test call, not activated ([F1.13a](#f1-13a))         | States plainly that the number has stopped answering, that they are not charged, and that activating turns it back on ([F1.13b](#f1-13b))                                                                                |
-| Stats digest            | Each billing period ([F7.4](#f7-4))                      | Light; the only unsubscribable email                                                                                                                                                                                     |
+| Email                        | When                                                  | Tone default                                                                                                                                                                                                             |
+| ---------------------------- | ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Email verification           | Contact email entered ([F1.11](#f1-11))               | Functional; one link, nothing else                                                                                                                                                                                       |
+| **Trial started / now live** | Number goes live ([F1.12a](#f1-12a))                  | Welcoming; **the number itself**, that it is taking customer calls, and **both trial bounds with the end date** ([F1.13](#f1-13))                                                                                        |
+| **Trial ending soon**        | Approaching either bound ([F1.13b](#f1-13b))          | Neutral; **states whichever bound is closer**, and what happens on the day. Ringly's alone — the provider knows only the day count ([F7.3a](#f7-3a))                                                                     |
+| **Trial ended — calls used** | Call allowance reached ([F1.13a](#f1-13a))            | Matter-of-fact; **the number keeps answering**, billing has begun, and on what terms. The provider cannot say _why_ the trial ended                                                                                      |
+| **Service stopped**          | Retries exhausted ([F6.11b](#f6-11b))                 | Direct; **leads with "your number has stopped answering"**, then that nothing has been deleted, what is owed, and that settling restores it the same day                                                                 |
+| **Service restored**         | Nothing outstanding after a pause ([F6.11c](#f6-11c)) | **Leads with "your number is answering again"**; states the new period's dates, since the anchor has moved ([F6.10c](#f6-10c))                                                                                           |
+| **Cancellation confirmed**   | Business cancels from the dashboard ([F6.12](#f6-12)) | Matter-of-fact; service has stopped, the fee is not refunded, a final invoice follows, and the date the account is deleted if they do not return                                                                         |
+| **Sorry to see you go**      | Cancellation with nothing owed ([F6.12a](#f6-12a))    | Warm and short; **replaces the $0 invoice that is not raised**, and asks for feedback. The only email in the registry that asks the reader for anything                                                                  |
+| Deletion warning             | 48 hours before deletion ([F9.3a](#f9-3a))            | Unambiguous; itemises exactly what is destroyed, **and that the subscription can no longer be resumed afterwards** ([F6.12b](#f6-12b))                                                                                   |
+| Cap reached                  | Cap crossed ([F6.9b](#f6-9b))                         | **Good news** — they earned it, the rest of the month is on Ringly                                                                                                                                                       |
+| Calendar access failing      | Bookings being refused ([F2.7](#f2-7))                | Urgent, explains _why_ refusing beats double-booking                                                                                                                                                                     |
+| **Account deleted**          | Teardown completes, on every path ([F9.3c](#f9-3c))   | Final and factual: what was deleted, that the number is gone for good, and any amount recorded as owed. **Sent before anything irreversible — the number release and the row deletion both follow it** ([F9.3d](#f9-3d)) |
+| Stats digest                 | Each billing period ([F7.4](#f7-4))                   | Light; the only unsubscribable email                                                                                                                                                                                     |
+
+**Four emails are gone, and each for the same reason** — the event it described
+no longer exists. The **upcoming-charge notice** (the invoice arrives on the day
+and says it better), the **payment-failed and follow-up notices** (the provider
+sends these now, and Ringly has nothing to add while service is running —
+[F6.21](#f6-21)), the **cancellation countdown** (there is no reconsideration window —
+[F6.12](#f6-12)), and the **closing statement** (the final invoice is the provider's —
+[F6.12a](#f6-12a)).
 
 **Who raises the money and who writes the words — every scenario**
 
-One rule underneath the table: **Stripe invoices, charges and retries; Ringly
-decides the amounts and writes every message except the three Stripe already
-sends well.** Stripe's dunning is off throughout ([F6.21](#f6-21)), including during
-suspension ([F6.11b-ii](#f6-11b-ii)).
+One rule underneath the table: **the provider invoices, charges, retries and
+chases; Ringly decides the amounts and reports what happened to the service**
+([F7.3a](#f7-3a)). Unlike the old model, **the provider's dunning stays on** — it is the
+thing that actually collects, and Ringly no longer competes with it ([F6.21](#f6-21)).
 
-| Scenario                    | Invoice + charge                                                                      | Email to the business                                               |
-| --------------------------- | ------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
-| Activation, period 1's $100 | **Stripe** (Ringly triggers)                                                          | Receipt: **Stripe** · "You're live": **Ringly**                     |
-| Each period's $100          | **Stripe**                                                                            | Upcoming charge: **Ringly** · Receipt: **Stripe**                   |
-| Usage settlement            | **Stripe** — Ringly computes and clamps ([F6.9](#f6-9))                               | Receipt: **Stripe**                                                 |
-| $500 cap reached            | — nothing charged                                                                     | **Ringly**                                                          |
-| Payment declines            | Stripe retries, 60-day schedule                                                       | **Ringly**                                                          |
-| Through grace               | Stripe still retrying                                                                 | **Ringly** — follow-ups                                             |
-| Suspension                  | Stripe **still retrying**; no new invoice ([F6.11c](#f6-11c))                         | **Ringly** — suspension notice, then follow-ups                     |
-| Service restored            | New period's $100, if one opens: **Stripe**                                           | **Ringly**                                                          |
-| 48h before deletion         | —                                                                                     | **Ringly**                                                          |
-| Deletion                    | Teardown voids open invoices (EDD [§2.13.4](Ringly_EDD_v3.md#2134-teardown-in-order)) | **Ringly** — to the business **and** the operator ([F9.3c](#f9-3c)) |
-| Cancellation requested      | — nothing charged in the window                                                       | **Ringly** — confirmation, then countdown                           |
-| Cancellation settles        | Final usage: **Stripe**                                                               | **Ringly** — closing statement                                      |
-| Refund (goodwill only)      | **Stripe**, by hand ([F5.9](#f5-9))                                                   | none automated                                                      |
-| Test calls exhausted        | — never charged                                                                       | **Ringly**                                                          |
-| Calendar unreachable        | —                                                                                     | **Ringly**                                                          |
-| Stats digest                | —                                                                                     | **Ringly**                                                          |
+| Scenario                          | Invoice + charge                                                               | Email to the business                                               |
+| --------------------------------- | ------------------------------------------------------------------------------ | ------------------------------------------------------------------- |
+| Checklist complete, number live   | — nothing charged; the card is authorised only ([F6.2](#f6-2))                 | **Ringly** — trial started                                          |
+| Trial running                     | — nothing charged                                                              | **Ringly** — trial ending soon                                      |
+| Trial ends on the day bound       | First invoice: **Stripe**                                                      | **Stripe** only — the invoice says it all ([F1.13b](#f1-13b))       |
+| Trial ends on the call bound      | First invoice: **Stripe**                                                      | **Ringly** — why it ended · Invoice: **Stripe**                     |
+| Each period's invoice             | **Stripe** — Ringly adds the usage line ([F6.1a](#f6-1a))                      | Invoice + receipt: **Stripe**                                       |
+| Cap crossed                       | — nothing extra charged                                                        | **Ringly**                                                          |
+| Payment declines, retries running | **Stripe** retries                                                             | **Stripe** — declined, and each retry. **Ringly: nothing**          |
+| Retries exhausted, service stops  | Final usage invoice: **Stripe** ([F6.9a](#f6-9a))                              | **Ringly** — service stopped · Invoice: **Stripe**                  |
+| Paused and dormant                | — nothing new; the open invoices are still chased by **Stripe**                | **Ringly** — the 48-hour warning only                               |
+| Settled, service restored         | New period's $100: **Stripe**                                                  | **Ringly** — restored · Invoice: **Stripe**                         |
+| Cancellation, usage owed          | Final usage invoice: **Stripe**                                                | **Ringly** — confirmed · Invoice: **Stripe**                        |
+| Cancellation, nothing owed        | — **no invoice is raised** ([F6.12a](#f6-12a))                                 | **Ringly** — sorry to see you go                                    |
+| Deletion                          | Subscription cancelled, unpaid invoices marked uncollectible ([F6.19](#f6-19)) | **Ringly** — to the business **and** the operator ([F9.3c](#f9-3c)) |
+| Refund (goodwill only)            | **Stripe**, by hand ([F5.9](#f5-9))                                            | none automated                                                      |
+| Calendar unreachable              | —                                                                              | **Ringly**                                                          |
+| Stats digest                      | —                                                                              | **Ringly**                                                          |
 
-**Stripe sends exactly three things to a business: invoices, receipts, and
-payment-succeeded** ([F7.3a](#f7-3a)). Everything else in the table is Ringly's, because
-every other message depends on something Stripe does not know — that service
-continues seven days, that the agent has been unbound, that no new period will
-open, or what is destroyed in forty-eight hours.
+**The provider now sends more than it used to and Ringly sends less**, which is
+the point of the change. Everything left to Ringly depends on something the
+provider does not know: what the number is doing, why a trial ended early, and
+what is destroyed in forty-eight hours.
 
 **Operator-facing email**
 
@@ -1408,11 +1425,17 @@ open, or what is destroyed in forty-eight hours.
   the money at stake**, and says what happens if it is ignored. No reassurance,
   no marketing voice.
 - <a id="f7-13"></a>**F7.13** The set: business hit its cap (with cost-to-serve and margin, so an
-  unprofitable tenant is visible immediately), payment failed, calendar
-  unreachable, activation stuck, **unactivated and about to expire** ([F8.6a](#f8-6a)),
-  **a number that would not release** ([F7.13a](#f7-13a)), and **business deleted** — the
-  last carrying lifetime net revenue and the amount left owing, since deletion
-  is the only moment those totals are final ([F9.3c](#f9-3c)).
+  unprofitable tenant is visible immediately), **service stopped for non-payment**
+  ([F6.11b](#f6-11b)), calendar unreachable, **a failing trial** ([F8.6a](#f8-6a)), **provisioning
+  stuck** ([F1.12a-i](#f1-12a-i)), **a number that would not release** ([F7.13a](#f7-13a)), and
+  **business deleted** — the last carrying lifetime net revenue and the amount
+  left owing, since deletion is the only moment those totals are final
+  ([F9.3c](#f9-3c)).
+  - **A payment merely declining is not on this list.** The provider is retrying
+    and service is running ([F6.11](#f6-11)); there is nothing for a human to do, and an
+    alert per decline would train the operator to ignore the one that matters.
+    **The alert fires when service stops**, which is the moment a business is
+    actually losing something.
 - <a id="f7-13a"></a>**F7.13a** **A failed unbind is raised to the operator**, naming the business,
   the number still answering, and the reason Ringly tried to release it. [F1.12a-ii](#f1-12a-ii)
   establishes that a failed unbind leaves a number **answering calls Ringly has
