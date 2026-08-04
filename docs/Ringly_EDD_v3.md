@@ -311,7 +311,7 @@ consider rows belonging to other tenants and discard them, so its cost is a
 function of the platform rather than of the caller — which is [N2.2](Ringly_PRD_v3.md#n2-2) violated by a
 column order.
 
-### 2.3.4 What breaks first at 10⁸ rows, and what is done about it
+### 2.3.4 What breaks first at scale, and what is done about it
 
 [N2.1](Ringly_PRD_v3.md#n2-1)'s target is 10,000 businesses × 10,000 customers. The tables that grow
 without bound are `calls`, `appointments` and `usage_records`; everything else is
@@ -2812,32 +2812,122 @@ _Behaviours owed to the catalogue_
 
 ## 2.8 Catalogue and opening hours
 
-[F3](Ringly_PRD_v3.md#f3--service-catalogue-and-opening-hours), and it is mostly about time.
+[F3](Ringly_PRD_v3.md#f3--service-catalogue-and-opening-hours), and it is mostly about time: two attributes of one service resolve at
+two different moments, and a change has to reach a live agent without reaching a
+live conversation.
 
-**A change is written on save and is authoritative from that moment** ([F3.5](Ringly_PRD_v3.md#f3-5)).
-No draft, no review, no operator step. The only bound is the ≤60s the agent may
-take to see it ([F3.2](Ringly_PRD_v3.md#f3-2), [§2.6.6](#266-configuration-on-the-call-path)).
+### 2.8.1 Versioning is temporal, and only for the two attributes that need it
 
-**Price and duration resolve at different moments** ([F3.4](Ringly_PRD_v3.md#f3-4)), which is why
-`service_versions` exists:
+```
+services         (id, business_id, name, description, position, active, deleted_at)
+service_versions (id, service_id, price_cents, duration_minutes, effective_from)
+```
 
-- **Price** — the version in force **at the appointment's start time**, because
-  these businesses charge after the appointment happens.
-- **Duration** — copied onto the appointment **at booking** and never revisited.
+**Name, description, position and `active` live on the service and are mutated in
+place.** They have no historical question attached: nobody asks what a service was
+called in March. Price and duration do, and they are the only two in
+`service_versions`.
 
-A worked consequence: a business raises a haircut from $40 to $45 on the 10th.
-An appointment booked on the 5th for the 15th is worth $45. An appointment
-booked on the 5th for the 8th is worth $40. Neither changes length, and neither
-overlaps its neighbours.
+**Price resolves at the appointment's start time:**
+
+```sql
+SELECT price_cents FROM service_versions
+ WHERE service_id = $1 AND effective_from <= $2      -- appointments.starts_at
+ ORDER BY effective_from DESC LIMIT 1;
+```
+
+```sql
+CREATE INDEX service_versions_lookup
+    ON service_versions (service_id, effective_from DESC);
+```
+
+**Duration is copied onto the appointment at booking** and never revisited
+([§2.4](#24-data-model)/005). It is not resolved through this query at all, and that asymmetry is
+the design: a duration that floated would silently overlap the appointments
+booked either side of it, whereas a price that floats is exactly what these
+businesses want — they charge after the appointment happens.
+
+A worked consequence: a haircut goes from $40 to $45 on the 10th. An appointment
+booked on the 5th for the 15th is worth $45. One booked on the 5th for the 8th is
+worth $40. Neither changes length.
+
+**A deleted service keeps its versions.** `services.deleted_at` is a soft delete
+and the foreign key from `appointments` is `ON DELETE RESTRICT`, so the price
+lookup above still resolves for an appointment whose service is gone ([F3.4](Ringly_PRD_v3.md#f3-4)).
+**An appointment never becomes unpriceable because the catalogue moved on**, and
+that is enforced by the schema rather than by a fallback in the pricing code.
+
+**`effective_from` is a timestamp, not a date**, and a new version is inserted
+rather than the current one being updated. Two edits in one day therefore produce
+two rows and the later wins, without an update path that could lose the earlier
+figure ([N10.4](Ringly_PRD_v3.md#n10-4) in spirit, though this is not a money table).
+
+### 2.8.2 How a change reaches the agent within 60s, and never mid-call
+
+Two mechanisms, and they pull in opposite directions on purpose.
+
+**Propagation is a cache TTL, not an invalidation.** The agent reads configuration
+through a 60-second cache ([§2.6.6](#266-configuration-on-the-call-path)); a save writes the row and does nothing
+else. There is no publish, no fan-out and no cache-busting call to a third party.
+
+- **Push would be faster and is rejected.** It needs an ordering guarantee
+  between the write and the notification, a retry for the notification, and a
+  reconciliation for when it is lost — three mechanisms to save 60 seconds on a
+  change that a business makes a handful of times a year.
+- **The TTL is the entire propagation guarantee**, which is why [F3.2](Ringly_PRD_v3.md#f3-2)'s bound and
+  the cache's TTL are the same number and are set in one place.
+
+**A conversation already running keeps what it started with**, because the
+per-call snapshot froze it ([§2.6.6.2](#2662-the-per-call-snapshot--freezing-config-for-one-conversation)). A caller offered a service at
+one price must not be quoted another two turns later, and the snapshot makes that
+impossible rather than unlikely.
+
+**So a save has a bounded window in which two callers get different answers**, and
+that is accepted and stated: up to 60 seconds, only for calls that started before
+the save, and always in the direction of the older catalogue. The alternative —
+invalidating mid-conversation — is a caller being told the price changed while
+they are on the phone.
+
+### 2.8.3 Concurrent edits, and why there is no locking
+
+**One business has exactly one owner account** ([§1.4](Ringly_PRD_v3.md#14-scope)), so concurrent editing
+is one person with two tabs. Last write wins, per field, and nothing locks.
+
+**Reordering is the one operation where that is not obviously safe**, because
+`position` is a total order across rows. It is written as a single statement over
+the whole list rather than as one update per row:
+
+```sql
+UPDATE services SET position = v.position
+  FROM (VALUES …) AS v(id, position)
+ WHERE services.id = v.id AND services.business_id = $1;
+```
+
+One transaction, so two tabs cannot interleave into an order neither of them
+chose. **`position` is not unique** — a gap or a duplicate is a cosmetic defect,
+and a unique constraint here would turn a reorder into a multi-step dance around
+it for no benefit a caller can hear.
+
+### 2.8.4 Opening hours
+
+`business_hours(business_id, weekday, opens_at, closes_at)` — local wall-clock
+times, no dates, and the timezone comes from the business row. **This is why the
+table stores `time` rather than `timestamptz`**: "we open at nine" is a fact about
+the clock on the wall, and it stays true across a DST transition that would move
+any instant stored alongside it ([§2.14.1](#2141-timezone-n5)).
 
 **Narrowing hours never moves or cancels an existing appointment** ([F3.5](Ringly_PRD_v3.md#f3-5)). A
-time was agreed with a customer Ringly has no way to contact (2.1.2), so
-breaking it silently is worse than honouring it. Widening makes new slots
-bookable immediately.
+time was agreed with a customer Ringly has no way to contact (2.1.2), so breaking
+it silently is worse than honouring it — and the availability check is a forward
+question only, so an appointment outside the new hours is simply never something
+the check is asked about.
 
-**Timezone is not self-serve** ([F3.6](Ringly_PRD_v3.md#f3-6)). It is resolved once at onboarding and
-changing it re-interprets every stored instant and every billing boundary, so it
-is an operator action.
+**Timezone is not self-serve** ([F3.6](Ringly_PRD_v3.md#f3-6)) and the reason is mechanical rather than
+procedural: `business_hours` holds wall-clock times and `appointments` holds
+instants, so changing the timezone re-interprets one against the other. Every
+existing appointment would move relative to the opening hours it was booked
+inside. It is an operator action because it is a data migration wearing a
+dropdown.
 
 **Testing this section**
 
@@ -3049,27 +3139,67 @@ change.
 
 ### 2.9.2 The rollup
 
-Nightly, per business, in that business's timezone ([N5.2](Ringly_PRD_v3.md#n5-2)). It writes one
-`daily_call_rollups` row per business per day: counts, durations, appointments
-booked, revenue booked, and the 5 × 6 outcome-by-window matrix.
-
-**This is what makes [N4.3](Ringly_PRD_v3.md#n4-3) and [F5.14](Ringly_PRD_v3.md#f5-14) achievable at 10,000 tenants.** A dashboard
+One `daily_call_rollups` row per business per local day: counts, durations,
+appointments booked, revenue booked, and the 5 × 6 outcome-by-window matrix.
+**This is what makes [N4.3](Ringly_PRD_v3.md#n4-3) and [F5.14](Ringly_PRD_v3.md#f5-14) achievable at 10,000 tenants** — a dashboard
 that scanned raw calls would degrade with total platform volume, which [N2.2](Ringly_PRD_v3.md#n2-2)
 forbids.
 
-**A day can be rolled up before all of its outcomes exist**, because
-classification is batched and asynchronous ([§2.9.1](#291-outcome-classification)). The rollup therefore records
-`computed_at` and **recomputes any day holding a call whose `classified_at` is
-later than that** — which is the reason the call carries the timestamp. Without
-the rule, a call classified after its day was rolled up is counted in the totals
-and missing from the outcome breakdown, and the two figures disagree permanently
-with nothing on the page to explain why.
+**"Nightly" is a business's own midnight, so the worker runs hourly and processes
+whoever just crossed one.** There is no single nightly batch: with tenants across
+US timezones, midnight arrives at several different instants, and a job pinned to
+one of them would either run before a business's day ended or hours after.
 
-**The consequence is that today's calls are not shown**, and the dashboard must
-say so in plain words ([F5.16](Ringly_PRD_v3.md#f5-16)): complete to a stated date, today appears
-tomorrow. A business that has just taken a call, cannot find it, and is given no
-explanation concludes the product is broken — and it will do that on day one,
-when it is testing exactly this.
+```sql
+-- businesses whose local day just closed and has not been rolled up
+SELECT b.id, (now() AT TIME ZONE b.timezone)::date - 1 AS day
+  FROM businesses b
+ WHERE extract(hour FROM now() AT TIME ZONE b.timezone) = 0
+```
+
+**The write is an upsert keyed on `(business_id, day)`**, so a timer that fires
+twice, a deploy that overlaps a run, and a manual re-run all converge on the same
+row rather than doubling it ([§2.2.2](#222-request-paths-and-background-work)).
+
+#### Late classification, and why the rollup is not write-once
+
+Classification is batched and asynchronous ([§2.9.1](#291-outcome-classification)), so **a day can be rolled
+up before all of its outcomes exist**. Without a rule for this, a call classified
+after its day closed is counted in the totals and missing from the outcome
+breakdown, and the two figures disagree permanently with nothing on the page to
+explain why.
+
+The rollup records `computed_at` and recomputes any day holding a call classified
+after it:
+
+```sql
+SELECT DISTINCT r.business_id, r.day
+  FROM daily_call_rollups r
+  JOIN calls c ON c.business_id = r.business_id
+              AND c.classified_at > r.computed_at
+ WHERE r.computed_at > now() - interval '7 days';
+```
+
+**Bounded to seven days deliberately.** Classification that has not completed
+within a week has failed rather than lagged, and it is visible as unclassified
+calls on the operator's own panel. An unbounded recompute query is one that walks
+the whole rollup table every hour — the exact shape [N2.3](Ringly_PRD_v3.md#n2-3) forbids, arriving
+through the back door of a repair path.
+
+**A recompute is the same upsert**, so correctness does not depend on catching
+every case: the worst outcome of a missed recompute is a stale outcome breakdown
+on one old day, and the next classification of any call in that day fixes it.
+
+#### Cost is bounded by due rows, not by platform size
+
+Each hourly run touches the businesses that just crossed midnight — roughly one
+timezone's worth — and, for each, one day of that business's own calls. **Nothing
+in the query plan references the platform's total volume**, which is [N2.3](Ringly_PRD_v3.md#n2-3)
+restated as an index requirement: `calls (business_id, started_at desc)`
+([§2.3.3](#233-physical-layout)) makes one business's day a range scan rather than a filter.
+
+**The trigger for revisiting this is measured**: an hourly pass taking longer than
+the hour it runs in ([§2.3.4](#234-what-breaks-first-at-scale-and-what-is-done-about-it)).
 
 ### 2.9.3 What is live, and why each one is
 
@@ -3084,6 +3214,23 @@ when it is testing exactly this.
 
 **Anything live is labelled live**, so the two kinds of figure are never read as
 one ([F5.16](Ringly_PRD_v3.md#f5-16)).
+
+**The median is the only live query against raw `calls`, and it is bounded twice**
+— by the selected range and by the requesting business:
+
+```sql
+SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY connected_seconds)
+  FROM calls
+ WHERE business_id = $1 AND started_at >= $2 AND started_at < $3
+   AND connected_seconds > 0;
+```
+
+At the [N2.1](Ringly_PRD_v3.md#n2-1) target a busy business over twelve periods is order 10⁴ rows on a
+covering index — well inside [F5.14](Ringly_PRD_v3.md#f5-14)'s 500ms — and **it does not grow as other
+tenants arrive**, which is the property that matters. It is the one figure
+[N4.3](Ringly_PRD_v3.md#n4-3)'s "no dashboard query scans raw call history" is knowingly bent for, and
+the bend is worth naming: a median cannot be reconstructed from daily aggregates
+at all, so the alternatives are a live query or no median.
 
 ### 2.9.4 The business dashboard
 
