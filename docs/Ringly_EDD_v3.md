@@ -331,11 +331,12 @@ _second_ one means the first payment fact the product learns has nowhere to go.
 events that carry no money — a payment method attached, a SetupIntent confirmed —
 and those are exactly the ones the checklist reads ([§2.5.1.7](#2517-the-checklist-step-8)).
 
-**The checklist's three items are answered from three different places, and that
-is deliberate**: `contact_email_verified_at` and `test_call_confirmed_at` are
-Ringly's own facts and live here; the card is Stripe's fact and is read from the
-ledger of what Stripe told us ([§2.5.1.7](#2517-the-checklist-step-8)). There is no `payment_method_attached_at`
-column, and there should not be one.
+**The checklist's three items split by who owns the fact, and that is
+deliberate**: `contact_email_verified_at` and `test_call_confirmed_at` are
+Ringly's own and live here; **the card is Stripe's, and is read from Stripe**
+([§2.5.1.7](#2517-the-checklist-step-8), [§2.10.10a](#21010a-the-card-facts-stripe-answers-the-ledger-remembers)).
+There is no `payment_method_attached_at` column and no ledger row standing in for
+one — the payment-method rows below are history, not an answer.
 
 **`test_call_confirmed_at` is a timestamp rather than a boolean for one honest
 reason: every "has this happened" in this schema is a nullable `*_at`.**
@@ -491,12 +492,14 @@ CREATE UNIQUE INDEX billing_events_provider_ref_per_kind
     ON billing_events (kind, provider_ref) WHERE provider_ref IS NOT NULL;
 ```
 
-A payment method attaching is observed by up to three paths — the browser's return
-and two Stripe webhooks ([§2.10.10a](#21010a-the-card-facts-and-what-a-dropped-webhook-costs))
-— and this index is what makes them idempotent rather than triplicated. Same
-technique as the calendar incident's partial index
-([§2.6.4](#264-fail-closed-concretely)): the writer does not check first, it writes
-and reads what came back.
+A payment method attaching may be observed twice — `setup_intent.succeeded` and
+`payment_method.attached` both describe it — and this index collapses them to one
+history row rather than two. Same technique as the calendar incident's partial
+index ([§2.6.4](#264-fail-closed-concretely)): the writer does not check first, it
+writes and reads what came back. **Nothing depends on this for correctness now**
+that the checklist asks Stripe
+([§2.10.10a](#21010a-the-card-facts-stripe-answers-the-ledger-remembers)); it keeps
+the history clean, which is a smaller claim than the one it used to carry.
 
 **Recording the whole payment lifecycle rather than only the money is the point.**
 A ledger that holds charges but not the card those charges will be made against
@@ -971,12 +974,12 @@ thing that can detect a silent bind failure believe the write instead.
 Three items, no ordering, each answered from a single row read so the screen is
 never stale ([F5.18](Ringly_PRD_v3.md#f5-18) applies the same rule to the dashboard):
 
-| Item                   | Answered by                                                                                  | Cleared by                           |
-| ---------------------- | -------------------------------------------------------------------------------------------- | ------------------------------------ |
-| Contact email verified | `businesses.contact_email_verified_at`                                                       | Editing the address                  |
-| Test call confirmed    | `businesses.test_call_confirmed_at`                                                          | Nothing; it is the owner's judgement |
-| Card added             | a `payment_method_attached` row in `billing_events`, with no later `payment_method_detached` | The provider detaching it            |
-| Test calls remaining   | allowance − `businesses.test_calls_used`                                                     | —                                    |
+| Item                   | Answered by                                                                                                                          | Cleared by                                   |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------- |
+| Contact email verified | `businesses.contact_email_verified_at`                                                                                               | Editing the address                          |
+| Test call confirmed    | `businesses.test_call_confirmed_at`                                                                                                  | Nothing; it is the owner's judgement         |
+| Card added             | **Stripe, live** — does the customer have a payment method ([§2.10.10a](#21010a-the-card-facts-stripe-answers-the-ledger-remembers)) | Nothing to clear; the answer is never stored |
+| Test calls remaining   | allowance − `businesses.test_calls_used`                                                                                             | —                                            |
 
 **The three items have three different owners, and the schema follows the
 ownership rather than the screen.**
@@ -995,23 +998,25 @@ never activate are never rescued ([F9.1b](Ringly_PRD_v3.md#f9-1b), [F9.1c](Ringl
 
 **Item 3 is Stripe's fact, and Ringly stores no second copy of it.** _(Decision,
 ratified 2026-08-01, replacing an earlier `payment_method_attached_at` column.)_
-The checklist reads `billing_events` for a `payment_method_attached` row with no
-later `payment_method_detached` ([§2.4](#24-data-model)/005). **What writes those
-rows, and what a lost webhook costs, is
-[§2.10.10a](#21010a-the-card-facts-and-what-a-dropped-webhook-costs)** — attach
-has three independent writers and detach has one, so the two fail differently and
-only one of them needs a sweep. A dedicated column would be a second
+The checklist asks Stripe, on every render, whether the customer has a payment
+method ([§2.10.10a](#21010a-the-card-facts-stripe-answers-the-ledger-remembers)).
+**Nothing about the card is stored to answer this**, because any stored answer is
+a copy of somebody else's state — and that is true of a `billing_events` row
+standing in for the column just as much as of the column. A copy with three
+writers and a repair sweep is still a copy. A dedicated column would be a second
 copy of somebody else's state, and it drifts in exactly the direction that hurts:
 a card detached or a SetupIntent invalidated leaves the column saying "added", so
 the Activate button is available, the press charges, and the charge declines —
 reaching [F1.12a-i](Ringly_PRD_v3.md#f1-12a-i)'s declined-card row _through a green checklist_, which is the
 state the checklist exists to prevent.
 
-**Reading the ledger rather than calling Stripe on every render** is what makes
-that safe without a third-party call on a screen a business refreshes while it
-decides. The ledger is Ringly's durable record of what Stripe has told it
-([§2.4](#24-data-model)/005), kept current by the webhook ([§2.10](#210-billing)), so the answer survives Stripe
-being unreachable ([N7.1](Ringly_PRD_v3.md#n7-1)) without being a fact Ringly invented.
+**The cost of asking Stripe every time is small and was measured, not assumed**
+([§2.10.10a](#21010a-the-card-facts-stripe-answers-the-ledger-remembers)): no
+per-request fee, rate limits far above this volume, and a population bounded by
+the ten-day clock, because only unactivated businesses ever see this screen. Items
+1 and 2 still render from Ringly's own rows if Stripe is slow, and item 3 says so
+— which costs nothing real, since a business cannot add a card while Stripe is
+down and Ringly could not charge one either.
 
 **Editing the contact address clears its verification**, because [F1.11](Ringly_PRD_v3.md#f1-11) exists to
 stop the 48-hour deletion warning going to an address nobody reads, and a
@@ -1468,20 +1473,20 @@ it** ([F9.1](Ringly_PRD_v3.md#f9-1), [§2.13.1](#2131-deadlines-and-the-sweeper)
 Collected so they are reviewable as decisions rather than discovered as
 implementation:
 
-| #   | Decision                                                                                                                                          | Because                                                                                                                                                                                                                                                             |
-| --- | ------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1   | Commit the business row **before** checking granted scopes (steps 5 and 6 swapped)                                                                | [F1.7b](Ringly_PRD_v3.md#f1-7b)'s "the draft is kept" is only durable if it is a row                                                                                                                                                                                |
-| 2   | `enrichment_requests` and `test_call_confirmed_at` are tables/columns in `005`; `billing_events` sits there too, with the rest of the foundations | Each lands where the things that depend on it can reach it — [N9.1](Ringly_PRD_v3.md#n9-1), [F1.12](Ringly_PRD_v3.md#f1-12), and a money ledger that must predate the first payment fact. **Ratified 2026-08-01: delivery order does not get to decide the schema** |
-| 3   | Provisioning waits for the calendar credential                                                                                                    | [F4.1](Ringly_PRD_v3.md#f4-1) makes a calendar-less business unable to become a customer; [N9.3](Ringly_PRD_v3.md#n9-3)'s argument, one step on                                                                                                                     |
-| 4   | The idempotency key includes the payment method id                                                                                                | Otherwise a second card replays the first decline                                                                                                                                                                                                                   |
-| 5   | Activate is submit-and-poll                                                                                                                       | [F1.12a-i](Ringly_PRD_v3.md#f1-12a-i)'s "never press it again" cannot survive the state living in a response                                                                                                                                                        |
-| 6   | An `activation_charge_attempted` ledger row precedes the charge                                                                                   | Makes the charge-without-record window repairable from Ringly's own data                                                                                                                                                                                            |
-| 7   | `starts_on` comes from the charge's timestamp, not from the clock at repair time                                                                  | A late repair must compute the same period boundary or it moves every one after it                                                                                                                                                                                  |
-| 8   | Intended bind state is derived from `billing_status` and never stored                                                                             | A stored intent has a crash window; a derived one has none, and it is what makes a failed unbind retryable                                                                                                                                                          |
-| 9   | The lifecycle sweeper owns bind reconciliation                                                                                                    | It already owns every other bind and unbind ([§2.13.2](#2132-unbinding-is-the-one-mechanism-for-stopping-service)); two components issuing binds for one number is worse than an hour of latency                                                                    |
-| 10  | An address carrying Google's `email_verified` claim needs no second link. **Ratified 2026-08-01**                                                 | The proof already happened in the token exchange. The test is the claim, not a string comparison                                                                                                                                                                    |
-| 11  | **No `payment_method_attached_at` column.** The card item reads `billing_events`. **Ratified 2026-08-01**                                         | A column is a second copy of a Stripe fact and drifts toward a green checklist over a dead card — the one state the checklist exists to prevent                                                                                                                     |
-| 12  | `test_call_confirmed_at` is a nullable timestamp, not a boolean                                                                                   | Every "has this happened" in this schema is a nullable `*_at`; a second idiom costs a reader more than seven bytes saves. Nothing reads the value today, and that is stated rather than dressed up ([§2.4](#24-data-model)/005)                                     |
+| #   | Decision                                                                                                                                                                           | Because                                                                                                                                                                                                                                                             |
+| --- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | Commit the business row **before** checking granted scopes (steps 5 and 6 swapped)                                                                                                 | [F1.7b](Ringly_PRD_v3.md#f1-7b)'s "the draft is kept" is only durable if it is a row                                                                                                                                                                                |
+| 2   | `enrichment_requests` and `test_call_confirmed_at` are tables/columns in `005`; `billing_events` sits there too, with the rest of the foundations                                  | Each lands where the things that depend on it can reach it — [N9.1](Ringly_PRD_v3.md#n9-1), [F1.12](Ringly_PRD_v3.md#f1-12), and a money ledger that must predate the first payment fact. **Ratified 2026-08-01: delivery order does not get to decide the schema** |
+| 3   | Provisioning waits for the calendar credential                                                                                                                                     | [F4.1](Ringly_PRD_v3.md#f4-1) makes a calendar-less business unable to become a customer; [N9.3](Ringly_PRD_v3.md#n9-3)'s argument, one step on                                                                                                                     |
+| 4   | The idempotency key includes the payment method id                                                                                                                                 | Otherwise a second card replays the first decline                                                                                                                                                                                                                   |
+| 5   | Activate is submit-and-poll                                                                                                                                                        | [F1.12a-i](Ringly_PRD_v3.md#f1-12a-i)'s "never press it again" cannot survive the state living in a response                                                                                                                                                        |
+| 6   | An `activation_charge_attempted` ledger row precedes the charge                                                                                                                    | Makes the charge-without-record window repairable from Ringly's own data                                                                                                                                                                                            |
+| 7   | `starts_on` comes from the charge's timestamp, not from the clock at repair time                                                                                                   | A late repair must compute the same period boundary or it moves every one after it                                                                                                                                                                                  |
+| 8   | Intended bind state is derived from `billing_status` and never stored                                                                                                              | A stored intent has a crash window; a derived one has none, and it is what makes a failed unbind retryable                                                                                                                                                          |
+| 9   | The lifecycle sweeper owns bind reconciliation                                                                                                                                     | It already owns every other bind and unbind ([§2.13.2](#2132-unbinding-is-the-one-mechanism-for-stopping-service)); two components issuing binds for one number is worse than an hour of latency                                                                    |
+| 10  | An address carrying Google's `email_verified` claim needs no second link. **Ratified 2026-08-01**                                                                                  | The proof already happened in the token exchange. The test is the claim, not a string comparison                                                                                                                                                                    |
+| 11  | **Nothing about the card is stored.** The card item asks Stripe on every render ([§2.10.10a](#21010a-the-card-facts-stripe-answers-the-ledger-remembers)). **Ratified 2026-08-03** | A column is a second copy of a Stripe fact and drifts toward a green checklist over a dead card — the one state the checklist exists to prevent                                                                                                                     |
+| 12  | `test_call_confirmed_at` is a nullable timestamp, not a boolean                                                                                                                    | Every "has this happened" in this schema is a nullable `*_at`; a second idiom costs a reader more than seven bytes saves. Nothing reads the value today, and that is stated rather than dressed up ([§2.4](#24-data-model)/005)                                     |
 
 **Testing this section**
 
@@ -3877,20 +3882,20 @@ is the first one, on a timer.
 
 **Events subscribed, and what each adds beyond `reevaluate()`:**
 
-| Event                             | Additional work                                                                                                                                                                                          |
-| --------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `invoice.paid`                    | `billing_events` row; stamp `fixed_fee_state`/`usage_*` observed state                                                                                                                                   |
-| `invoice.payment_failed`          | `billing_events` row; enter [§2.10.4](#2104-when-a-charge-fails) if the cause is a card error                                                                                                            |
-| `invoice.payment_action_required` | Treated as a decline ([§2.10.4](#2104-when-a-charge-fails))                                                                                                                                              |
-| `invoice.finalized`               | Record `provider_ref` if T2 never landed ([§2.10.11](#21011-transaction-boundaries-and-what-a-crash-leaves))                                                                                             |
-| `invoice.voided`                  | `billing_events` row — teardown and hand-corrections both produce it                                                                                                                                     |
-| `invoice.marked_uncollectible`    | `billing_events` row; should not occur, so it also alerts                                                                                                                                                |
-| `charge.refunded`                 | `billing_events` row. Goodwill only; no rule produces one ([F5.9](Ringly_PRD_v3.md#f5-9))                                                                                                                |
-| `charge.dispute.created`          | `billing_events` row; enters [§2.10.4](#2104-when-a-charge-fails) exactly as a decline ([F6.17](Ringly_PRD_v3.md#f6-17))                                                                                 |
-| `charge.dispute.closed`           | `billing_events` row; a win clears the synthesised debt ([§2.10.6](#2106-coming-back))                                                                                                                   |
-| `setup_intent.succeeded`          | Set the customer's default payment method ([§2.10.9](#2109-the-stripe-object-lifecycle-end-to-end), step 4); write the attach row ([§2.10.10a](#21010a-the-card-facts-and-what-a-dropped-webhook-costs)) |
-| `payment_method.attached`         | Write a `payment_method_attached` ledger row ([§2.10.10a](#21010a-the-card-facts-and-what-a-dropped-webhook-costs))                                                                                      |
-| `payment_method.detached`         | Write a `payment_method_detached` ledger row; alert — a business with no card cannot be charged next period                                                                                              |
+| Event                             | Additional work                                                                                                                                                                                             |
+| --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `invoice.paid`                    | `billing_events` row; stamp `fixed_fee_state`/`usage_*` observed state                                                                                                                                      |
+| `invoice.payment_failed`          | `billing_events` row; enter [§2.10.4](#2104-when-a-charge-fails) if the cause is a card error                                                                                                               |
+| `invoice.payment_action_required` | Treated as a decline ([§2.10.4](#2104-when-a-charge-fails))                                                                                                                                                 |
+| `invoice.finalized`               | Record `provider_ref` if T2 never landed ([§2.10.11](#21011-transaction-boundaries-and-what-a-crash-leaves))                                                                                                |
+| `invoice.voided`                  | `billing_events` row — teardown and hand-corrections both produce it                                                                                                                                        |
+| `invoice.marked_uncollectible`    | `billing_events` row; should not occur, so it also alerts                                                                                                                                                   |
+| `charge.refunded`                 | `billing_events` row. Goodwill only; no rule produces one ([F5.9](Ringly_PRD_v3.md#f5-9))                                                                                                                   |
+| `charge.dispute.created`          | `billing_events` row; enters [§2.10.4](#2104-when-a-charge-fails) exactly as a decline ([F6.17](Ringly_PRD_v3.md#f6-17))                                                                                    |
+| `charge.dispute.closed`           | `billing_events` row; a win clears the synthesised debt ([§2.10.6](#2106-coming-back))                                                                                                                      |
+| `setup_intent.succeeded`          | Set the customer's default payment method ([§2.10.9](#2109-the-stripe-object-lifecycle-end-to-end), step 4); write the attach row ([§2.10.10a](#21010a-the-card-facts-stripe-answers-the-ledger-remembers)) |
+| `payment_method.attached`         | Write a `payment_method_attached` ledger row ([§2.10.10a](#21010a-the-card-facts-stripe-answers-the-ledger-remembers))                                                                                      |
+| `payment_method.detached`         | Write a `payment_method_detached` ledger row; alert — a business with no card cannot be charged next period                                                                                                 |
 
 **Nothing outside that list is subscribed to.** An endpoint receiving events it
 does not handle is an endpoint whose logs cannot be read for what went wrong.
@@ -3903,73 +3908,66 @@ answer to "does this business owe anything" is the single most dangerous stale
 value in the product: too high and a paying business stays suspended, too low and
 a debtor is served for free.
 
-### 2.10.10a The card facts, and what a dropped webhook costs
+### 2.10.10a The card facts: Stripe answers, the ledger remembers
 
-The checklist's third item is answered from the ledger rather than from a column
-([§2.5.1.7](#2517-the-checklist-step-8)), which moves the question from _can this
-drift?_ to _what writes these rows, and what happens when that fails?_ Attach and
-detach have different answers, because they have different numbers of sources.
-
-**Attach has two independent sources, and that is what makes it survivable.**
+**"Does this business have a card" is asked of Stripe, every time it is asked.**
+Not of a column ([§2.5.1.7](#2517-the-checklist-step-8)), and not of the ledger
+either. Stripe owns payment methods; anything Ringly stores about them is a copy
+of somebody else's state, and the whole argument for deleting
+`payment_method_attached_at` applies just as well to a `billing_events` row that
+stands in for it. A copy with three writers and a repair sweep is still a copy.
 
 ```
-browser returns from Stripe Elements ─┐
-                                      ├─► INSERT INTO billing_events
-setup_intent.succeeded webhook       ─┤     (kind 'payment_method_attached', provider_ref = pm_id)
-payment_method.attached webhook      ─┘     ON CONFLICT (provider_ref, kind) DO NOTHING
+checklist render
+  ├─ items 1 and 2  ← one local row read              (Ringly's own facts)
+  └─ item 3         ← stripe.paymentMethods.list({ customer, limit: 1 })
+                       AbortSignal.timeout(3000), issued in parallel with the above
 ```
 
-Three paths, one row. The conflict target is the payment-method id, so **whichever
-arrives first writes and the others are no-ops** — the same shape as
-[§2.10.9](#2109-the-stripe-object-lifecycle-end-to-end)'s step 4, which is already
-written to be reached twice.
+**What that costs, measured rather than assumed:**
 
-That redundancy is the point. **A dropped webhook does not cost the business its
-checklist**, because the browser's own return already wrote the row before Stripe
-tried to tell us anything. A business that adds a card and immediately sees the
-item go green is seeing its own request's result, not a push feed's.
+|                       |                                                                                                                                       |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| Per-request fee       | **None.** Stripe prices per transaction, not per API call                                                                             |
+| Rate limit            | 100 req/s live, 25 req/s per endpoint — not the binding constraint                                                                    |
+| Read allocation       | Average **≤500 reads per transaction**, floor **10,000/month**                                                                        |
+| Ringly's transactions | ~2 per business per month (fee, settlement) — 20,000/month at [N2.1](Ringly_PRD_v3.md#n2-1)'s 10⁴ businesses, so a 10M read allowance |
+| Latency               | One same-region round trip. Bounded by the 3s timeout, not by Stripe's median                                                         |
 
-**Detach has one source, and that is the exposure.** A card is detached inside
-Stripe — expiry, a support action, the customer's bank — with no Ringly request in
-flight to observe it. If `payment_method.detached` is lost, the ledger keeps
-saying "attached" and the checklist stays green over a card that is gone.
+**The allocation floor is what to watch, not the rate limit.** Early on, 10,000
+reads a month is the ceiling regardless of how few transactions there are, and it
+is comfortable only because **the checklist is seen by unactivated businesses
+alone** — a population bounded by the ten-day clock ([F9.1](Ringly_PRD_v3.md#f9-1))
+and by onboarding volume that [N9](Ringly_PRD_v3.md#n9--cost-control-on-the-unauthenticated-surface)
+already describes as a handful of businesses a day.
 
-**Which is the drift the column had, and it is bounded here in a way the column
-was not:**
+**Which makes one implementation detail load-bearing: the card is read on page
+load, never on a timer.** The activation screen does poll — [§2.5.2](#252-activation-touches-three-systems-and-can-fail-at-each)'s
+submit-and-poll needs it — but it polls **Ringly's own activation state**, not
+Stripe. A five-second poll that included the card read would turn one ten-minute
+session into 120 reads and put a handful of businesses through the monthly
+allocation on their own.
 
-|               | The removed column       | The ledger                                         |
-| ------------- | ------------------------ | -------------------------------------------------- |
-| Attach missed | Green, wrongly           | **Cannot happen** — the browser return writes it   |
-| Detach missed | Green, wrongly, for ever | Green, wrongly, **until the next charge or sweep** |
-| Repaired by   | Nothing                  | The charge itself, and the unactivated sweep below |
+**Stripe being slow or down degrades one item, never the page.** Items 1 and 2
+are Ringly's facts and always render. On timeout item 3 reads _"can't check right
+now"_ and Activate stays unavailable — which is not a degradation at all, because
+a business cannot add a card while Stripe is down, and Ringly could not charge one
+either. **The screen was always Stripe-dependent; this makes the dependency
+visible instead of pretending a local row had escaped it.**
 
-**Two things repair a missed detach, and neither is a new mechanism.**
+**The ledger still records `payment_method_attached` and
+`payment_method_detached`, and that is not a contradiction.** They are history,
+not the answer — the record of what Stripe told Ringly and when, which is what
+`billing_events` is for ([F6.14](Ringly_PRD_v3.md#f6-14), [N10.4](Ringly_PRD_v3.md#n10-4)).
+Support asking _"when did they add a card?"_ is answered from it; the checklist
+never is.
 
-- **Every charge is the reconciliation.** The settlement worker's invoice goes to
-  Stripe, and a customer with no payment method declines — which is
-  [§2.10.4](#2104-when-a-charge-fails) exactly as any other decline. An activated
-  business therefore cannot stay wrong for longer than one period boundary.
-- **Unactivated businesses get a cheap sweep**, because for them there is no
-  charge to discover it and the checklist is the whole product surface. The set is
-  small and self-limiting — a business without a card is deleted at day ten
-  ([F9.1](Ringly_PRD_v3.md#f9-1)) — so the lifecycle sweeper, which already visits
-  them, asks Stripe once a day whether the customer still has a payment method and
-  writes the missing detach row if not. **Bounded by the number of unactivated
-  businesses, not by tenant count.**
-
-**What is deliberately not done: reading Stripe on every checklist render.** It
-would answer the question exactly, and it would put a third-party call on a screen
-a business refreshes while deciding, make the checklist unavailable whenever
-Stripe is ([N7.1](Ringly_PRD_v3.md#n7-1)), and still not help the far more
-important case — the Activate press — which already goes to Stripe and already
-declines. The ledger is the durable answer; Stripe is the authority at the moment
-money moves.
-
-**If both webhook and browser return are lost**, the row is absent, the checklist
-says no card, and the business adds one again. **The failure is visible and it is
-in the safe direction**: a business that cannot press Activate complains, where a
-business that presses it over a dead card is charged nothing and told its card
-declined — the state [§2.5.1.7](#2517-the-checklist-step-8) exists to avoid.
+**That inversion is the whole simplification.** When the ledger was the answer, a
+lost webhook was a wrong answer and needed three independent writers, a
+`(kind, provider_ref)` uniqueness rule, and a daily sweep over unactivated
+businesses to repair a missed detach. Now a lost webhook is **a gap in history**:
+it costs a support question its precise date and costs the product nothing. None
+of that repair machinery exists, because there is nothing left for it to repair.
 
 ### 2.10.11 Transaction boundaries, and what a crash leaves
 
