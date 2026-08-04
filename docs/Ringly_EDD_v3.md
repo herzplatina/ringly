@@ -916,13 +916,39 @@ SELECT business_id FROM dormancies
  WHERE due_at <= now() + interval '48 hours'
    AND warned_at IS NULL AND paused_at IS NULL;
 
--- delete
-SELECT business_id FROM dormancies
- WHERE due_at <= now() AND paused_at IS NULL;
+-- delete — only once the warning has actually LEFT Ringly
+SELECT d.business_id FROM dormancies d
+  JOIN email_sends e ON e.business_id = d.business_id
+                    AND e.kind = 'deletion_warning'
+ WHERE d.due_at <= now() AND d.paused_at IS NULL
+   AND e.sent_at IS NOT NULL
+   AND e.sent_at <= now() - interval '48 hours';
 
 -- un-pause anything whose pause has run out  (§2.4/008)
 UPDATE dormancies SET … WHERE pause_expires_at <= now();
 ```
+
+**The delete query joins the warning's delivery, and that join is [I4](Ringly_PRD_v3.md#i4).**
+`warned_at` is stamped when the message is **enqueued**, in the same transaction
+as the sweeper's own write ([§2.11.5](#2115-rendering-happens-at-enqueue-not-at-send)) — which is right for "have we
+decided to warn", and is **not** the same question as "did the warning leave".
+
+Without the join the two queries are independent: a mail provider outage across
+the 48 hours would leave `warned_at` stamped, `sent_at` null, and the business
+deleted having been told nothing. [I4](Ringly_PRD_v3.md#i4) admits no exception, so the deletion waits
+instead — **the clock is what slips, not the promise.**
+
+**A warning that can never be sent therefore blocks deletion indefinitely**, and
+that is the intended failure direction: the business keeps its number and its
+data, Ringly keeps paying a rental, and the row appears on the operator queue as
+an undeliverable message ([F7.15](Ringly_PRD_v3.md#f7-15)) for a human to resolve. **Deleting on
+schedule and warning nobody is the alternative**, and it is the one thing [I4](Ringly_PRD_v3.md#i4)
+exists to forbid.
+
+**`sent_at` means Resend accepted it, not that it arrived** — a bounce is
+observed later ([§2.11.7a](#2117a-delivered-is-not-the-same-as-accepted--the-bounce-webhook)) and surfaces on the same queue. [F9.3c](Ringly_PRD_v3.md#f9-3c) already
+settles that best effort to the address on file is what "warned" means; this
+makes sure the best effort was actually made.
 
 ```sql
 CREATE INDEX dormancies_due ON dormancies (due_at) WHERE paused_at IS NULL;
@@ -1978,11 +2004,33 @@ when caller ID does not supply one, and the tool refuses without it.
 
 ```
 1. verify signature                                  (reject → 401)
+BEGIN
 2. INSERT INTO calls (...) ON CONFLICT (provider_call_id) DO NOTHING
-3. INSERT INTO usage_records (...) if the period is open
-4. DELETE FROM call_sessions WHERE provider_call_id = $1
-5. return 204
+     RETURNING id                       ← no row ⇒ redelivery: skip 3 and 4
+3. INSERT INTO usage_records (...)      ← the open period; call_id is UNIQUE
+4. UPDATE trials SET calls_used = calls_used + 1
+     WHERE business_id = $1 AND ended_at IS NULL
+     RETURNING calls_used, call_allowance
+COMMIT
+5. DELETE FROM call_sessions WHERE provider_call_id = $1
+6. if step 4 returned calls_used = call_allowance → end the trial   (§2.10.2)
+7. return 204
 ```
+
+**Step 2's `RETURNING` is what makes the whole handler idempotent, and steps 3
+and 4 are gated on it.** Retell delivers at least once. `usage_records.call_id`
+is unique so a redelivered usage insert is harmless on its own — but
+**`trials.calls_used` has no such protection**: it is a counter, and a redelivered
+webhook that reached it would consume a trial call the business never made, and
+could end a trial early. Gating on the call insert is what stops that, and it is
+the reason 2–4 are one transaction rather than three statements.
+
+**Step 6 is outside the transaction, deliberately.** Ending the trial is a Stripe
+call ([§2.10.2](#2102-ending-the-trial-on-the-call-bound)), and no transaction in this design is held across a vendor
+call ([§2.10.13](#21013-transaction-boundaries-and-what-a-crash-leaves)). A crash between the commit and step 6 leaves a trial whose
+allowance is spent and whose subscription is still in trial — repaired by the
+daily reconciliation, and free service in the meantime, which is the harmless
+direction.
 
 **`is_trial_call` comes from the snapshot, not from the business row.** [F1.12d](Ringly_PRD_v3.md#f1-12d)
 defines a trial call by whether the trial had ended **when the call arrived** — so
@@ -3651,6 +3699,8 @@ on invoice.created (subscription invoice, draft):
   BEGIN
     1  close the open period:
          usage_seconds     ← SUM(connected_seconds) over its usage_records
+                             JOIN calls ON call_id
+                             WHERE calls.outcome = ANY(policy.billable_outcomes)
          usage_charge_cents← clamp(round_up_to_minute(usage_seconds) × rate)
          closed_at         ← now(), closed_by ← 'rollover'
     2  open the new period, with Stripe's own boundaries:
@@ -3685,6 +3735,31 @@ invoice item exists and Ringly has no record of it — a charge with no reasonin
 behind it, which is the one outcome [N10.1](Ringly_PRD_v3.md#n10-1) forbids. Committing first means the
 worst case is a period marked closed with `usage_invoiced_at` still null, which
 the next rollover fixes by design.
+
+#### An unclassified call is not billed, and the join is what makes that true
+
+`usage_records` is written at call end ([§2.6.2.3](#2623-call-end)), before anything knows how
+the call ended — outcome classification is batched and hourly ([§2.9.1](#291-outcome-classification)). **So
+the usage record exists for every connected call, and the outcome test that
+decides billability ([F6.6](Ringly_PRD_v3.md#f6-6)) is applied at close, not at write.**
+
+The join is therefore load-bearing rather than incidental. Without it the sum
+covers every call the business took — enquiries, wrong numbers, dropped calls —
+and the business is charged for all of them.
+
+**`calls.outcome IS NULL` fails the predicate, which is the intended answer**
+([§2.9.1.4](#2914-failure-is-safe-by-construction)): a call that could not be classified is not billed, and
+Ringly does not chase it later. **The exposure is bounded by the classifier's
+cadence against the period's length** — hourly against monthly, so at worst the
+last hour of a period goes unbilled — and it fails in the business's favour, which
+is the direction this design chooses everywhere the classifier is involved.
+
+**It does mean a classifier outage is a revenue outage.** A classifier down for
+the last day of a period silently loses that day's usage rather than deferring
+it. That is accepted over the alternative — holding the period open until
+classification completes — because the period boundary is Stripe's ([I1](Ringly_PRD_v3.md#i1)) and
+nothing in Ringly may move it. **It is why unclassified-call volume is an
+operator figure and not just a log line** ([§2.9.1.4](#2914-failure-is-safe-by-construction)).
 
 **Idempotency is the `unique (business_id, starts_at)` on `billing_periods`.**
 Stripe delivers at least once; a redelivered `invoice.created` tries to open a
@@ -4033,6 +4108,34 @@ visibly mid-restore rather than silently `serving` with a dead number.
 row, no pause, and `outstanding() == 0` is resumed. A lost webhook may cost such
 a business hours; it must never cost it days.
 
+#### What the daily reconciliation checks, in full
+
+Every check is a disagreement between Ringly's state and Stripe's, and each names
+its repair. **It is the only place in the design that reads across both systems
+looking for drift**, so the list is exhaustive rather than illustrative:
+
+| Disagreement                                                                       | Repair                                                                                                            |
+| ---------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| Dormant, unpaused, owes nothing                                                    | Resume ([§2.10.10](#21010-coming-back))                                                                           |
+| **Dormant, but the subscription is not paused**                                    | **Pause it** — a `stopService` that died before its pause ([§2.10.6](#2106-stopping-service))                     |
+| **Dormant, and an invoice was raised anyway**                                      | **Void it.** No new charge may arise while paused ([I5](Ringly_PRD_v3.md#i5))                                     |
+| Serving, but the subscription is paused or cancelled                               | Alert. Ringly believes it is serving a business Stripe has stopped billing                                        |
+| **Stripe's `current_period_start` is newer than the newest `billing_periods` row** | **Open the missing period** — an `invoice.created` that never arrived ([R28](#r28))                               |
+| A closed period with `usage_invoiced_at` null and a non-zero charge                | Attach it to the next invoice — normally the rollover's own sweep does this                                       |
+| **Trialing, allowance spent, subscription still in trial**                         | **End the trial** — a crash between the counter and the Stripe call ([§2.6.2.3](#2623-call-end))                  |
+| Trialing with no `stripe_subscription_id`                                          | Create it ([§2.5.2](#252-provisioning-and-the-start-of-the-trial))                                                |
+| Serving with no payment method                                                     | Raise the banner and the operator condition ([§2.10.11](#21011-the-card-is-stripes-fact-and-is-read-from-stripe)) |
+
+**Every row is a repair, not an alert, except the one that cannot be repaired
+safely.** A serving business whose subscription Stripe has cancelled is the one
+case where Ringly cannot know which side is right — cancellation is terminal
+([§2.10.6](#2106-stopping-service)) and re-creating a subscription would start billing a business
+that may have disputed its way out. **That one goes to a human.**
+
+**It runs daily rather than hourly because every row is a slow drift, not an
+outage.** The fast paths have their own webhooks; this is what catches the
+webhook that never came.
+
 ### 2.10.11 The card is Stripe's fact, and is read from Stripe
 
 The checklist's third item and the dashboard's payment-method panel both ask
@@ -4123,9 +4226,19 @@ Stripe with a key that makes the call replayable**.
 | ----------------------------------------- | ----------------------------------------------- | ------------------------------------------------------------------------------------------- |
 | Rollover, after commit, before the item   | Period closed, `usage_invoiced_at` null         | The next rollover's sweep ([§2.10.3](#2103-the-rollover-one-webhook-does-the-whole-thing))  |
 | Stop, after unbind, before the invoice    | Phone dead, nothing invoiced                    | Retry — the period is still open and `stopService` is keyed                                 |
-| Stop, after the invoice, before the pause | Invoice raised, subscription live               | Retry; `pause` is keyed and the next cycle is at least a fortnight away                     |
+| Stop, after the invoice, before the pause | Invoice raised, subscription live               | Retry; if the next cycle arrives first, the reconciliation pauses it and voids the invoice  |
 | Stop, after the pause, before the commit  | Paused at Stripe, `serving` locally, phone dead | The daily reconciliation: paused subscription, no `dormancies` row                          |
 | Resume, after Stripe, before the rebind   | Billing live, phone dead                        | Alerted immediately ([§2.10.10](#21010-coming-back)); the worst state, so it is the loudest |
+
+**Row three is the one worth reading twice.** Between the final invoice and the
+pause, the subscription is still live and will raise the next month's $100 on its
+own schedule — and **service can stop on any day of the period, including the
+last**. There is no "the next cycle is far away" to lean on. Two things cover it:
+the pause is retried immediately with a derived key ([§2.10.8](#2108-every-write-to-stripe-carries-a-key-ringly-can-recompute)), and if Stripe
+is unreachable long enough that a cycle passes anyway, the daily reconciliation
+both pauses the subscription and **voids the invoice that should never have been
+raised** ([§2.10.10](#21010-coming-back)). Without that second repair a dormant business
+accumulates $100 a month, which is exactly what [I5](Ringly_PRD_v3.md#i5) forbids.
 
 **Every row of that table is recoverable and none of them charges twice**, which
 is the property the whole design is arranged around. The one asymmetry is
@@ -5081,6 +5194,13 @@ takes on a carrier quarantine that is the provider's to bear.
 
 **Every step is load-bearing** ([F6.19](Ringly_PRD_v3.md#f6-19), [F9.10](Ringly_PRD_v3.md#f9-10)):
 
+- **1 blocks the whole thing if the provider is unreachable.** Teardown does not
+  proceed on a partial read: a departure record with a guessed or missing
+  `lifetime_net_revenue_cents` is a money record that is wrong forever ([N10.1](Ringly_PRD_v3.md#n10-1)),
+  and the business is deleted in the same run, so there is nothing left to
+  recompute it from. **A failed step 1 leaves the business dormant and due**, and
+  the next sweeper pass tries again — which costs a number rental per day and
+  loses nothing.
 - **1 before 3 and 5.** Net revenue comes from balance transactions that deleting
   the customer destroys, and `owed_at_departure_cents` comes from the open
   invoices step 3 closes. **The owed figure is read here rather than carried
@@ -5356,12 +5476,155 @@ list.
 copies live in one account and share its fate. Recorded as a decision rather than
 an oversight.
 
+### 2.14.6 What breaks when something fails
+
+Collected in one place because the individual sections argue their own failure
+path and none of them can see the shape of the whole. **Two rules decide every
+row below**, and where a section departs from them it says so:
+
+1. **Fail in the direction that costs Ringly rather than the business.** An
+   unclassified call is unbilled, a stopped subscription that will not pause is
+   voided, a warning that cannot be sent delays a deletion. Every one of those
+   costs Ringly money and none of them costs a business its service or charges
+   it wrongly.
+2. **A failure that nobody would notice must raise an alert; a failure somebody
+   will notice within a day may repair itself quietly.** This is why a failed
+   unbind is alerted and a failed rollover is not.
+
+#### 2.14.6.1 A vendor is unreachable
+
+| Vendor                     | Immediate effect                                       | What the business sees                                              | Repair                                                                                                                            |
+| -------------------------- | ------------------------------------------------------ | ------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| **Google Calendar**        | **No booking is written** — fail closed (2.1.1)        | Caller: apology, ring back. Owner: dashboard banner + one email     | Incident row; closes on the first successful read ([§2.6.4](#264-fail-closed-concretely))                                         |
+| **Retell** (routing)       | The number does not answer                             | **Nothing** — this is [R34](#r34), the gap the read-back cannot see | None automatic; [A1](Ringly_PRD_v3.md#a1)'s manual QA                                                                             |
+| **Retell** (bind/unbind)   | Provisioning or a stop cannot complete                 | "Being connected", or nothing on a stop                             | Retried, then alerted ([§2.5.3](#253-bind-and-unbind-are-verified-by-reading-provider-state-back)); the sweeper reconciles hourly |
+| **Stripe** (webhooks in)   | No rollover, no stop-on-retries-exhausted              | Nothing; service continues                                          | Stripe redelivers for days; the daily reconciliation covers what it does not                                                      |
+| **Stripe** (calls out)     | Cannot pause, resume, invoice, or read `outstanding()` | A resume attempt fails **safely** — see below                       | Every write is keyed and replayed ([§2.10.8](#2108-every-write-to-stripe-carries-a-key-ringly-can-recompute))                     |
+| **Anthropic** (classifier) | Calls stay unclassified                                | Outcome breakdown lags; **usage goes unbilled**                     | Retried hourly; the rollup recomputes for 7 days ([§2.9.2](#292-the-rollup))                                                      |
+| **Resend**                 | Nothing leaves; the queue grows                        | Silence                                                             | ≈14¾-hour ladder; **a deletion blocks rather than proceeding unwarned**                                                           |
+| **Places** (enrichment)    | Onboarding falls back to manual entry                  | A form instead of a filled draft                                    | None needed — it is already the designed fallback ([N9](Ringly_PRD_v3.md#n9--cost-control-on-the-unauthenticated-surface))        |
+
+**A failed `outstanding()` is refused, never assumed.** Resume asks Stripe what
+is owed ([§2.10.7](#2107-outstanding-is-asked-of-stripe)); if Stripe cannot answer, the business is told **Ringly
+cannot check right now and to try shortly** — not that it owes money, and not
+that it owes nothing. Guessing low restores a debtor for free; guessing high
+tells a business that has paid that it has not, which is the worst message in the
+product ([F6.11d](Ringly_PRD_v3.md#f6-11d)).
+
+**A classifier outage is the one vendor failure that silently costs revenue**
+rather than costing service, and it is accepted rather than mitigated: the period
+boundary is Stripe's and Ringly may not hold a period open waiting for
+classification ([I1](Ringly_PRD_v3.md#i1)). Unclassified-call volume is an operator figure for
+exactly this reason.
+
+#### 2.14.6.2 A vendor accepts the write and Ringly never learns
+
+The dangerous class, because the naive repair is a second write.
+
+**Every vendor write carries a key derived from state** ([§2.10.8](#2108-every-write-to-stripe-carries-a-key-ringly-can-recompute)), so the
+retry after a lost response is the _same_ operation rather than a new one. That
+is what makes "retry blindly" safe everywhere in this design, and it is why no
+key anywhere is a random UUID.
+
+**Where a key is not available, the read-back is.** Retell has no idempotency
+key, so a bind whose response is lost is resolved by asking the provider what it
+holds ([§2.5.3](#253-bind-and-unbind-are-verified-by-reading-provider-state-back)) rather than by writing again. The two mechanisms cover the same
+failure by different means, and every vendor call in this design uses one or the
+other.
+
+**Google is the exception, and it is bounded.** A calendar event written whose
+response is lost leaves an event Ringly has no row for. The next availability
+check reads the calendar ([F2.3](Ringly_PRD_v3.md#f2-3)) and sees it, so **no double booking results** —
+what is lost is Ringly's own record, so the appointment is missing from the
+dashboard and from revenue booked. **Accepted:** the customer is served correctly,
+which is the property that matters, and reconciling Google's events back into
+`appointments` would mean claiming events the business created itself.
+
+#### 2.14.6.3 A process dies mid-sequence
+
+Every multi-step sequence in this design is written so that dying between any two
+steps leaves a state that is either self-repairing or visibly wrong. Collected:
+
+| Sequence                                                                     | Worst crash point                     | What it leaves                                     | Repair                                                        |
+| ---------------------------------------------------------------------------- | ------------------------------------- | -------------------------------------------------- | ------------------------------------------------------------- |
+| Provisioning ([§2.5.2.2](#2522-the-one-transaction-and-what-a-crash-leaves)) | After commit, before the subscription | Trialing, live, no subscription — **free service** | Daily reconciliation                                          |
+| Call end ([§2.6.2.3](#2623-call-end))                                        | After commit, before the trial ends   | Allowance spent, still in trial — **free service** | Daily reconciliation                                          |
+| Rollover ([§2.10.3](#2103-the-rollover-one-webhook-does-the-whole-thing))    | After commit, before the invoice item | Period closed, usage unbilled                      | The next rollover's sweep                                     |
+| Stop ([§2.10.6](#2106-stopping-service))                                     | After the invoice, before the pause   | Dormant locally, billable at Stripe                | Reconciliation pauses **and voids**                           |
+| Resume ([§2.10.10](#21010-coming-back))                                      | After Stripe, before the rebind       | Billing live, **phone dead**                       | Alerted immediately — the worst state, so the loudest         |
+| Teardown ([§2.13.4](#2134-teardown-in-order))                                | Anywhere in 2–7                       | Partially torn down, row still present             | Every step is a no-op the second time; the sweeper re-runs it |
+
+**Only one row leaves a business worse off than before the crash**, and it is the
+resume. Every other row costs Ringly — free service, unbilled usage, a rental —
+which is rule 1 applied by construction rather than by accident.
+
+**No transaction spans a vendor call anywhere in the table**, which is what makes
+"commit, then call" the pattern in every sequence and why the crash points all
+fall in the same place: after a local commit and before an external effect.
+
+#### 2.14.6.4 Two of something happen at once
+
+| Race                                       | Settled by                                                                                                    |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------------------------- |
+| Two callers offered the same slot          | The exclusion constraint on `appointments`; the loser is re-offered ([F2.3a](Ringly_PRD_v3.md#f2-3a))         |
+| Two calls ending on the allowance boundary | `UPDATE … RETURNING`; exactly one worker sees the count equal the allowance                                   |
+| A redelivered call-end webhook             | `calls.provider_call_id` unique, and steps 3–4 gated on the insert ([§2.6.2.3](#2623-call-end))               |
+| A redelivered Stripe webhook               | `provider_events` unique on the event id                                                                      |
+| A redelivered `invoice.created`            | `billing_periods (business_id, starts_at)` unique                                                             |
+| Rollover and stop on the same day          | `UPDATE … WHERE closed_at IS NULL RETURNING`; first close wins                                                |
+| Two timer firings of one worker            | Advisory lock for wasted work; the claim or constraint underneath for correctness                             |
+| Two dashboard tabs reordering services     | One statement over the whole list ([§2.8.3](#283-concurrent-edits-and-why-there-is-no-locking))               |
+| Webhooks arriving out of order             | Handlers re-evaluate live state; they never apply the event as a fact ([§2.10.9](#2109-the-webhook-endpoint)) |
+
+**Not one of those is settled in application code.** Every row is a database
+constraint, a conditional update, or a live re-read — because a race settled by
+ordering is a race that comes back the first time the deployment topology
+changes.
+
+#### 2.14.6.5 A worker does not run
+
+| Worker            | Missed for a day means                              | Bounded by                                                                                    |
+| ----------------- | --------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| Analytics rollup  | Yesterday missing from every dashboard figure       | Catches up; the page states the date it is complete to                                        |
+| Lifecycle sweeper | Warnings late, deletions late, binds not reconciled | **[I4](Ringly_PRD_v3.md#i4) still holds** — the warning gate is on delivery, not on the clock |
+| Email dispatcher  | Nothing leaves                                      | The ladder is ≈14¾ hours; a deletion blocks rather than proceeding                            |
+| Reconciliation    | Drift persists a day longer                         | Every entry is a slow drift by construction ([§2.10.10](#21010-coming-back))                  |
+| Classification    | Usage for that window goes unbilled                 | Revenue, not correctness ([§2.10.3](#2103-the-rollover-one-webhook-does-the-whole-thing))     |
+| Calendar probe    | An incident stays open after the calendar recovers  | The next successful booking closes it anyway                                                  |
+
+**Nothing in this table stops a caller being served or produces a wrong charge**,
+which is the property worth checking after any change to the worker set. Billing
+is unaffected because no worker settles it ([§2.2.2](#222-request-paths-and-background-work)) — Stripe raises the
+invoice whether or not Ringly's timers are healthy.
+
+#### 2.14.6.6 Ringly itself is down
+
+**The most severe failure in the product, and the one it currently answers least
+well.** The number stops being answered, every caller is lost, and the dashboard
+that [F5.18](Ringly_PRD_v3.md#f5-18) makes the way to check is down with it.
+
+Three things hold regardless, and they are the ones worth knowing:
+
+- **No booking is lost or duplicated.** Writes are transactional and the agent
+  cannot reach the booking path at all, so the failure is total rather than
+  partial — which is the safe shape.
+- **Billing continues correctly.** Stripe raises invoices, retries and dunning
+  without Ringly; the usage line for the affected period lands late rather than
+  wrong ([§2.10.3](#2103-the-rollover-one-webhook-does-the-whole-thing)).
+- **Deadlines do not fire.** The sweeper is not running, so nothing is deleted
+  during an outage.
+
+**What is not designed is telling anybody**, which is a gap in the requirements
+rather than in this design (PRD [N7](Ringly_PRD_v3.md#n7--third-party-dependencies-and-degradation), ⚠ gap) — the status page and the
+after-the-fact notice both need a requirement before they need a mechanism.
+
 **Testing this section**
 
 _Observable_ — figures rendered in the business's own timezone; a booking refused
 at a nonexistent local time; that a webhook without a valid signature changes
 nothing; that onboarding degrades rather than spends; that a local write failing
-after a charge does not lose the charge.
+after a vendor call repairs itself; **that every failure in [§2.14.6](#2146-what-breaks-when-something-fails) leaves the
+state that section says it does**.
 
 _Internal_ — encryption, backup configuration, rate-limiter internals, the
 signature helpers.
@@ -5383,6 +5646,16 @@ _Behaviours owed to the catalogue_
 - No number is bought before the whole checklist is green.
 - A local write failing immediately after a successful vendor call leaves state
   that repairs itself, and never charges twice.
+- An unclassified call is not billed, and a classifier outage across a period
+  boundary loses that usage rather than deferring or guessing it.
+- A redelivered call-end webhook spends no trial call and writes no second usage
+  record.
+- A business is never deleted while its 48-hour warning is still unsent, however
+  long the mail provider is down.
+- A subscription that could not be paused is paused by the next reconciliation,
+  and any invoice raised meanwhile is voided.
+- A resume attempted while the payment provider is unreachable refuses, and says
+  it could not check rather than asserting a balance.
 
 ---
 
